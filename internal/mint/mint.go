@@ -28,6 +28,10 @@ type Service struct {
 	Roles    *roles.Registry
 	Broker   broker.Broker
 	Bindings map[string]RoleBinding // role name -> broker paths
+
+	// MintFunc overrides the githubapp.Mint call. When nil, githubapp.Mint is
+	// used. Set in tests to intercept the outbound GitHub API call.
+	MintFunc func(context.Context, githubapp.MintRequest) (githubapp.Token, error)
 }
 
 // Mint resolves the role, reads its App credentials from the broker, and returns
@@ -58,7 +62,11 @@ func (s *Service) Mint(ctx context.Context, roleName string, repos []string) (gi
 		return githubapp.Token{}, fmt.Errorf("read private key for role %q: %w", roleName, err)
 	}
 
-	return githubapp.Mint(ctx, githubapp.MintRequest{
+	mintFn := s.MintFunc
+	if mintFn == nil {
+		mintFn = githubapp.Mint
+	}
+	return mintFn(ctx, githubapp.MintRequest{
 		APIBase:        s.APIBase,
 		AppID:          appID,
 		InstallationID: installID,

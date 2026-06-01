@@ -26,12 +26,16 @@ type Config struct {
 
 // New constructs the configured Broker. AppRole/token credentials are read from
 // the environment by the implementation, never from config or the repo.
-//
-// TODO(build): implement openbao, vault, env, and file brokers in sibling files.
 func New(cfg Config) (Broker, error) {
 	switch cfg.Type {
-	case "openbao", "vault", "env", "file":
-		return nil, fmt.Errorf("broker %q: not yet implemented", cfg.Type)
+	case "openbao":
+		return newOpenBao(cfg)
+	case "vault":
+		return newVault(cfg)
+	case "env":
+		return &envbroker{}, nil
+	case "file":
+		return &filebroker{}, nil
 	default:
 		return nil, fmt.Errorf("unknown broker type %q", cfg.Type)
 	}
