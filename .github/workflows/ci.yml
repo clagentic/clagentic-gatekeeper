@@ -1,4 +1,4 @@
-# Public CI — runs on the GitHub mirror/release repo. Unlimited minutes on public repos.
+# Public CI. Unlimited Actions minutes on public repos.
 name: ci
 on:
   push:
