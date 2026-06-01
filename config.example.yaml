@@ -1,0 +1,51 @@
+# Clagentic: Gatekeeper — example configuration.
+#
+# Copy to config.yaml and fill in your own values. config.yaml is gitignored.
+# Every value here is deployment-specific. The code contains NO hardcoded
+# org names, hostnames, secret paths, or identities — they all come from here.
+
+# GitHub org/account the Apps are installed on.
+github:
+  # The org or user login that owns the target repositories.
+  owner: your-org-name
+  # GitHub API base. Override for GitHub Enterprise Server.
+  api_base: https://api.github.com
+
+# Secret broker. Pluggable: "openbao" | "vault" | "env" | "file".
+# "env"/"file" exist for local dev and CI; "openbao"/"vault" for production.
+broker:
+  type: openbao
+  # Endpoint of the broker. Ignored for type: env|file.
+  endpoint: https://broker.example.com
+  # Auth method against the broker: "approle" | "token".
+  auth: approle
+  # AppRole credentials are read from the environment, never committed:
+  #   BROKER_ROLE_ID, BROKER_SECRET_ID   (auth: approle)
+  #   BROKER_TOKEN                        (auth: token)
+
+# Token policy.
+token:
+  # Installation token lifetime. GitHub caps at 1h.
+  ttl_minutes: 60
+
+# Role definitions. Each role binds to one GitHub App and one permission set.
+# The permission sets themselves are defined in docs/ROLES.md and enforced in
+# code; this section only binds a role NAME to the broker paths holding that
+# role's App credentials.
+roles:
+  builder:
+    # Broker paths for this role's App credentials. The private key is read
+    # server-side only and never returned to the caller.
+    app_id_path: secret/gatekeeper/builder/app-id
+    installation_id_path: secret/gatekeeper/builder/installation-id
+    private_key_path: secret/gatekeeper/builder/private-key
+
+  reviewer:
+    app_id_path: secret/gatekeeper/reviewer/app-id
+    installation_id_path: secret/gatekeeper/reviewer/installation-id
+    private_key_path: secret/gatekeeper/reviewer/private-key
+
+  merger:
+    app_id_path: secret/gatekeeper/merger/app-id
+    installation_id_path: secret/gatekeeper/merger/installation-id
+    private_key_path: secret/gatekeeper/merger/private-key

@@ -1,0 +1,23 @@
+# Secrets — NEVER commit. App private keys, tokens, env.
+*.pem
+*.key
+.env
+.env.local
+.env.*.local
+config.local.*
+*-credentials.*
+
+# Go build artifacts
+/gatekeeper
+/dist/
+/build/
+*.test
+*.out
+
+# Editor / OS
+.DS_Store
+*.swp
+*.log
+
+# Test caches
+.pytest_cache/

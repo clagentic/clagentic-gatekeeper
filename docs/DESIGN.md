@@ -1,0 +1,79 @@
+# Clagentic: Gatekeeper — design
+
+## Goal
+
+Mint short-lived, role-scoped GitHub App installation tokens for automated agents,
+such that:
+
+- Each role (builder / reviewer / merger) gets a token narrowed to its permissions.
+- App private keys are read server-side from a broker and never reach the caller.
+- The code is generic: no agent names, no org names, no hostnames, no PII — all
+  deployment values come from config and environment.
+
+## Module boundaries (`internal/`)
+
+Modularity is the brief. Four packages, each with one job and a narrow interface.
+
+```
+cmd/gatekeeper/        CLI entry. Parses `mint --role <r> --repo <owner/name>`,
+                       loads config, wires the modules, prints the token.
+
+internal/roles/        The role model. Role name -> permission set (the ROLES.md
+                       tables, as data). Pure, no I/O. Validates a role exists and
+                       returns its GitHub permissions map + which repos it may scope.
+
+internal/broker/       Pluggable secret broker. Interface:
+                         Get(ctx, path) (string, error)
+                       Implementations: openbao, vault, env, file. Selected by
+                       config.broker.type. This is the ONLY place secrets are read.
+
+internal/githubapp/    GitHub App JWT signing + installation-token exchange.
+                         MintInstallationToken(ctx, appID, installID, key, perms, repos)
+                       Signs the App JWT, calls POST /app/installations/{id}/access_tokens
+                       with narrowed `permissions` + `repositories`. Returns token+expiry.
+
+internal/mint/         Orchestration. Ties roles + broker + githubapp together:
+                         1. roles.Resolve(roleName) -> permissions, scope
+                         2. broker.Get(role.app_id / installation_id / private_key)
+                         3. githubapp.MintInstallationToken(...)
+                       Returns the scoped token. No I/O of its own beyond the deps.
+```
+
+Dependency direction is one-way: `cmd -> mint -> {roles, broker, githubapp}`.
+`roles` is pure. `broker` and `githubapp` are I/O leaves. Nothing imports `cmd`.
+
+## Secret flow (the security invariant)
+
+```
+config.yaml  ──►  mint  ──►  broker.Get(private_key_path)  ──►  githubapp (signs JWT)
+                                                                      │
+caller  ◄──────────  scoped installation token (≤1h)  ◄──────────────┘
+```
+
+The private key lives in the broker, is read only inside the mint path, is used
+only to sign the App JWT, and is never returned, logged, or written to disk. The
+caller receives only the short-lived installation token.
+
+## Parameterization rules (release gate)
+
+These are non-negotiable for the repo to be releasable:
+
+1. No org name, repo name, hostname, username, email, or path constant in any `.go`
+   file. All such values come from `config.yaml` or environment.
+2. No secret material in the repo, ever. `.gitignore` blocks `*.pem`, `*.key`,
+   `.env`. Tests use fixtures with fake keys generated at test time.
+3. Broker is an interface with ≥2 implementations so no single broker is assumed.
+4. The three roles are the reference model; the role model is data-driven enough
+   that a consumer can add a role via config without forking.
+5. Every error path that touches a secret scrubs it from the message.
+
+## Out of scope (consumer's job)
+
+- Mapping specific agents to roles (lives in the consumer's dispatcher).
+- Registering the GitHub Apps (manual, one-time, per installer — see README).
+- Configuring repo rulesets / CODEOWNERS (see GOVERNANCE.md).
+
+## Language
+
+Go. Matches the clagentic daemon family (relay, router, cli), ships as a single
+static binary, and integrates with the `clagentic` CLI multiplexer.

@@ -1,0 +1,3 @@
+# LORE project config — committed, not gitignored
+project_id: clagentic-gatekeeper
+health_monitoring: basic
