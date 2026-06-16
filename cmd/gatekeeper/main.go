@@ -11,6 +11,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/clagentic/clagentic-gatekeeper/internal/broker"
@@ -110,7 +111,11 @@ func runMint(args []string) error {
 
 	var repos []string
 	if *repo != "" {
-		repos = []string{*repo}
+		bare, err := parseRepoName(*repo)
+		if err != nil {
+			return fmt.Errorf("--repo %q: %w", *repo, err)
+		}
+		repos = []string{bare}
 	}
 
 	token, err := svc.Mint(context.Background(), *roleName, repos)
@@ -120,4 +125,41 @@ func runMint(args []string) error {
 
 	fmt.Println(token.Value)
 	return nil
+}
+
+// parseRepoName accepts a repository identifier in "owner/name" or bare "name"
+// form and returns the bare repository name.
+//
+// GitHub's POST /app/installations/{id}/access_tokens `repositories` field
+// expects bare names ("clagentic-directory"), not "owner/name" — the
+// installation is already org-scoped via the installation ID. The CLI flag
+// deliberately accepts "owner/name" so callers don't need to strip the owner.
+//
+// Rules:
+//   - "" is rejected: caller must pass a non-empty value or omit --repo.
+//   - Bare "name" (no '/') passes through unchanged.
+//   - "owner/name" (exactly one '/') returns the name segment.
+//   - Any other form (leading '/', trailing '/', multiple '/') is rejected.
+func parseRepoName(s string) (string, error) {
+	if s == "" {
+		return "", fmt.Errorf("repository name must not be empty")
+	}
+	idx := strings.IndexByte(s, '/')
+	if idx == -1 {
+		// Bare name — no owner prefix, pass through.
+		return s, nil
+	}
+	// Ensure exactly one '/'.
+	if strings.Count(s, "/") != 1 {
+		return "", fmt.Errorf("repository must be 'owner/name' or bare 'name'; got %q", s)
+	}
+	owner := s[:idx]
+	name := s[idx+1:]
+	if owner == "" {
+		return "", fmt.Errorf("owner segment must not be empty in %q", s)
+	}
+	if name == "" {
+		return "", fmt.Errorf("name segment must not be empty in %q", s)
+	}
+	return name, nil
 }
