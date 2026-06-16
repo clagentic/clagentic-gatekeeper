@@ -1,19 +1,22 @@
-GOCACHE ?= /tmp/go-cache
+GOPATH     ?= /root/go
+GOMODCACHE ?= $(GOPATH)/pkg/mod
+GOCACHE    ?= /root/.cache/go
+GOENV      := GOPATH=$(GOPATH) GOMODCACHE=$(GOMODCACHE) GOCACHE=$(GOCACHE)
 
 .PHONY: build test lint vet fmt check
 
 build:
-	GOCACHE=$(GOCACHE) go build ./...
+	$(GOENV) go build ./...
 
 test:
-	GOCACHE=$(GOCACHE) go test ./...
+	$(GOENV) go test ./...
 
 lint: vet fmt
 
 vet:
-	GOCACHE=$(GOCACHE) go vet ./...
+	$(GOENV) go vet ./...
 
 fmt:
-	go fmt ./...
+	$(GOENV) go fmt ./...
 
 check: vet test
