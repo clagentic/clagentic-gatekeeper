@@ -21,6 +21,8 @@
 
 schema_version: 1
 
+reviewer_bot_login: clagentic-reviewer[bot]
+
 reviewer:
   rules:
     # ------------------------------------------------------------------
