@@ -90,6 +90,16 @@ func runMint(args []string) error {
 		}
 	}
 
+	// Startup validation: a config role that has a broker binding but neither
+	// config-supplied permissions nor a reference definition cannot be resolved
+	// at mint time. Catch it here — before any broker call — so the user gets a
+	// clear config error rather than a confusing "unknown role" at runtime.
+	for name, rc := range cfg.Roles {
+		if len(rc.Permissions) == 0 && !roles.IsReference(name) {
+			return fmt.Errorf("config error: role %q has a broker binding but no permissions defined", name)
+		}
+	}
+
 	br, err := broker.New(broker.Config{
 		Type:     cfg.Broker.Type,
 		Endpoint: cfg.Broker.Endpoint,
