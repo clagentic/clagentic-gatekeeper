@@ -12,7 +12,7 @@ import (
 func TestResolveReferenceRoles(t *testing.T) {
 	reg := roles.NewRegistry()
 
-	for _, name := range []string{"builder", "reviewer", "merger"} {
+	for _, name := range []string{"builder", "reviewer", "merger", "security"} {
 		name := name
 		t.Run(name, func(t *testing.T) {
 			role, err := reg.Resolve(name)
@@ -146,6 +146,39 @@ func TestReviewerPermissions(t *testing.T) {
 	}
 }
 
+// TestSecurityRolePermissions asserts the security role's expected permission set.
+// security can post review comments and request changes (pull_requests:write),
+// read the diff (contents:read), and read linked issues for context (issues:read).
+// It must not hold contents:write (no push) or any merge capability.
+func TestSecurityRolePermissions(t *testing.T) {
+	reg := roles.NewRegistry()
+
+	role, err := reg.Resolve("security")
+	if err != nil {
+		t.Fatalf("Resolve(\"security\"): %v", err)
+	}
+
+	if got := role.Permissions["pull_requests"]; got != roles.Write {
+		t.Errorf("security pull_requests = %q, want %q", got, roles.Write)
+	}
+	if got := role.Permissions["contents"]; got != roles.Read {
+		t.Errorf("security contents = %q, want %q", got, roles.Read)
+	}
+	if got := role.Permissions["issues"]; got != roles.Read {
+		t.Errorf("security issues = %q, want %q", got, roles.Read)
+	}
+
+	// security must not be able to push — contents must be read-only.
+	if role.Permissions["contents"] == roles.Write {
+		t.Error("security must not have contents:write (no push permission)")
+	}
+
+	// security must not hold administration (no branch protection bypass).
+	if _, hasAdmin := role.Permissions["administration"]; hasAdmin {
+		t.Error("security must not have \"administration\" permission")
+	}
+}
+
 // TestReferenceRoleGitHubPermissionsIdentical asserts that the GitHub permission
 // output for all three reference roles is byte-identical to the expected maps.
 // This is a regression guard: the refactor from a direct map conversion to a
@@ -168,6 +201,10 @@ func TestReferenceRoleGitHubPermissionsIdentical(t *testing.T) {
 		{
 			name: "merger",
 			want: map[string]string{"contents": "write", "pull_requests": "write"},
+		},
+		{
+			name: "security",
+			want: map[string]string{"pull_requests": "write", "contents": "read", "issues": "read"},
 		},
 	}
 
