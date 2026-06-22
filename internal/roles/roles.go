@@ -31,12 +31,18 @@ type Role struct {
 	Permissions map[string]Permission
 }
 
-// reference holds the three shipped roles. It is the reference model, not a
+// reference holds the four shipped roles. It is the reference model, not a
 // hard limit — Resolve also accepts roles supplied from config (see Registry).
 var reference = map[string]map[string]Permission{
 	"builder":  {"contents": Write, "pull_requests": Write, "issues": Write},
 	"reviewer": {"pull_requests": Write, "contents": Read},
 	"merger":   {"contents": Write, "pull_requests": Write},
+	// security: reads code and diffs, posts review comments / requests changes.
+	// pull_requests:write — submit reviews (REQUEST_CHANGES event).
+	// contents:read       — read the diff and file tree under review.
+	// issues:read         — read linked issues for security context.
+	// No contents:write (no push), no merge action (that is merger's exclusive).
+	"security": {"pull_requests": Write, "contents": Read, "issues": Read},
 }
 
 // Registry resolves role definitions. Built from the reference roles plus any

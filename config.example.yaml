@@ -30,7 +30,7 @@ token:
 
 # Role definitions. Each role binds to one GitHub App and one permission set.
 #
-# Gatekeeper ships three reference roles (builder/reviewer/merger) whose
+# Gatekeeper ships four reference roles (builder/reviewer/merger/security) whose
 # permission sets are defined in docs/ROLES.md. You may override or extend them
 # here without forking code.
 #
@@ -63,6 +63,11 @@ roles:
     app_id_path: secret/gatekeeper/merger/app-id
     installation_id_path: secret/gatekeeper/merger/installation-id
     private_key_path: secret/gatekeeper/merger/private-key
+
+  security:
+    app_id_path: secret/gatekeeper/security/app-id
+    installation_id_path: secret/gatekeeper/security/installation-id
+    private_key_path: secret/gatekeeper/security/private-key
 
   # --- Optional custom role example ---
   # A "releaser" role scoped only to what release automation needs:
