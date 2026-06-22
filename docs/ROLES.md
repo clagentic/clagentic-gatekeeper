@@ -1,6 +1,6 @@
 # Roles and per-role GitHub App permissions
 
-Gatekeeper ships three generic roles. Each maps to one GitHub App registered with
+Gatekeeper ships four generic roles. Each maps to one GitHub App registered with
 exactly the installation permissions below. The token Gatekeeper mints for a role
 is narrowed to these permissions at mint time — defense in depth on top of whatever
 the App itself was granted.
@@ -42,6 +42,27 @@ Purpose: land work. Merges PRs and pushes the default branch.
 | `pull_requests`     | `write` | Including the merge action.                        |
 
 The default-branch ruleset's push restriction should name **only** the merger App.
+
+## security
+
+Purpose: security review. Reads code and diffs, posts findings and requests
+changes. Must NOT merge or push.
+
+| GitHub permission   | Level   | Note                                              |
+|---------------------|---------|---------------------------------------------------|
+| `pull_requests`     | `write` | Submit review events (REQUEST_CHANGES) and post review comments. |
+| `contents`          | `read`  | Read the diff and file tree under review.          |
+| `issues`            | `read`  | Read linked issues to gather threat context.       |
+
+The security reviewer App **must be a different App than builder, reviewer, and
+merger**. A separate identity means security findings are auditably attributed to
+a distinct actor. Like the reviewer, it cannot push or merge — it can only gate
+a PR from proceeding by requesting changes.
+
+`contents` is read-only: the security role has no push capability. Merge is
+exclusively the merger's domain; security does not hold it. `issues:read` is
+included so the reviewer can follow linked issue context when assessing impact;
+it confers no write capability.
 
 ## Adding a custom role
 
@@ -89,7 +110,7 @@ or the GitHub renderer.
 
 ### Reference roles and overrides
 
-The three reference roles (builder/reviewer/merger) are pre-seeded from code.
+The four reference roles (builder/reviewer/merger/security) are pre-seeded from code.
 You may override their permission set in `config.yaml` using the same
 `permissions:` block — the config-supplied set wins. Omitting `permissions:`
 for a reference role uses the built-in table above.

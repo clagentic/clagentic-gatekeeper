@@ -17,15 +17,18 @@ Role-scoped GitHub App installation tokens for automated agents. Part of the [cl
 
 Gatekeeper stands at the GitHub gate. When an automated agent needs to act on a repository, Gatekeeper mints a **short-lived, role-scoped GitHub App installation token** narrowed to exactly what that role is allowed to do — and nothing more.
 
-It ships three generic roles out of the box:
+It ships four generic roles out of the box:
 
 | Role       | Can do                                                        | Cannot do                          |
 |------------|---------------------------------------------------------------|------------------------------------|
 | `builder`  | Push feature branches, open/update PRs                        | Merge, push to the default branch  |
 | `reviewer` | Submit PR reviews (approve / request changes), comment        | Push code, merge                   |
 | `merger`   | Merge PRs, push to the default branch                         | Open PRs, author feature work      |
+| `security` | Post security review comments, request changes                | Push code, merge                   |
 
 The roles are **generic**. Gatekeeper does not know or care what agents you run. You map your own agents to roles in your own configuration. Gatekeeper's only job is: given a role, return a token scoped to that role's permissions.
+
+You can also define **custom roles** in `config.yaml` without forking code — for example a `releaser` scoped only to tagging, or a `deployer` with deployment write access. See [`docs/ROLES.md`](docs/ROLES.md) under "Adding a custom role" for the config schema.
 
 ## Why it exists
 
@@ -78,7 +81,7 @@ See [`config.example.yaml`](config.example.yaml) for the full reference.
 
 Registering a GitHub App requires a one-time manual step — Gatekeeper cannot script first-time App creation.
 
-1. Register three GitHub Apps on your org: one each for `builder`, `reviewer`, `merger`, with the per-role permissions in [`docs/ROLES.md`](docs/ROLES.md).
+1. Register four GitHub Apps on your org: one each for `builder`, `reviewer`, `merger`, and `security`, with the per-role permissions in [`docs/ROLES.md`](docs/ROLES.md).
 2. Install each App on the target repos.
 3. Store each App's `app-id`, `installation-id`, and `private-key` in your broker at the paths your `config.yaml` points to.
 4. Apply a branch ruleset (see [`docs/GOVERNANCE.md`](docs/GOVERNANCE.md)) that requires PR + review and restricts who may push the default branch.
