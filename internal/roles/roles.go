@@ -45,6 +45,15 @@ var reference = map[string]map[string]Permission{
 	"security": {"pull_requests": Write, "contents": Read, "issues": Read},
 }
 
+// IsReference reports whether name is one of the four shipped reference roles
+// (builder, reviewer, merger, security). Callers that must distinguish a
+// reference role from a purely config-defined role use this rather than
+// duplicating the name list.
+func IsReference(name string) bool {
+	_, ok := reference[name]
+	return ok
+}
+
 // Registry resolves role definitions. Built from the reference roles plus any
 // roles declared in config. No deployment-specific data lives here.
 type Registry struct {

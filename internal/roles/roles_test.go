@@ -7,6 +7,21 @@ import (
 	"github.com/clagentic/clagentic-gatekeeper/internal/roles"
 )
 
+// TestIsReference verifies that IsReference correctly identifies the four
+// shipped reference roles and rejects anything else.
+func TestIsReference(t *testing.T) {
+	for _, name := range []string{"builder", "reviewer", "merger", "security"} {
+		if !roles.IsReference(name) {
+			t.Errorf("IsReference(%q) = false, want true", name)
+		}
+	}
+	for _, name := range []string{"deployer", "custom", "", "BUILDER", "Builder"} {
+		if roles.IsReference(name) {
+			t.Errorf("IsReference(%q) = true, want false", name)
+		}
+	}
+}
+
 // TestResolveReferenceRoles checks that each reference role resolves with a
 // non-empty name and at least one permission.
 func TestResolveReferenceRoles(t *testing.T) {

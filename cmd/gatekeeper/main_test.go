@@ -9,6 +9,9 @@ import (
 	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/clagentic/clagentic-gatekeeper/internal/mint"
@@ -170,6 +173,108 @@ func TestMintWithRepoCapturesBareRepoName(t *testing.T) {
 	}
 	if capturedRepos[0] != "clagentic-directory" {
 		t.Errorf("repositories[0] = %q, want %q", capturedRepos[0], "clagentic-directory")
+	}
+}
+
+// writeTempConfig writes content to a temp dir as config.yaml and returns the path.
+func writeTempConfig(t *testing.T, content string) string {
+	t.Helper()
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
+		t.Fatalf("write temp config: %v", err)
+	}
+	return p
+}
+
+// TestRunMint_InvalidRoleNoPermissions verifies that a config role that is not
+// a reference role and has no permissions block causes runMint to return a clear
+// config error at startup, before any broker call.
+func TestRunMint_InvalidRoleNoPermissions(t *testing.T) {
+	path := writeTempConfig(t, `
+github:
+  owner: testorg
+
+broker:
+  type: env
+
+roles:
+  ghostrole:
+    app_id_path: secret/gk/ghost/app-id
+    installation_id_path: secret/gk/ghost/install-id
+    private_key_path: secret/gk/ghost/key
+`)
+	// ghostrole has no permissions and is not a reference role — startup must fail.
+	err := runMint([]string{"--role", "ghostrole", "--config", path})
+	if err == nil {
+		t.Fatal("runMint: expected config error for role with no permissions, got nil")
+	}
+	if !strings.Contains(err.Error(), "ghostrole") {
+		t.Errorf("runMint error = %q; want it to mention the offending role name", err.Error())
+	}
+	if !strings.Contains(err.Error(), "config error") {
+		t.Errorf("runMint error = %q; want it to contain \"config error\"", err.Error())
+	}
+}
+
+// TestRunMint_ReferenceRoleWithoutConfigPermissions verifies that a reference
+// role (builder, reviewer, merger, security) listed in config without a
+// permissions block is accepted — it resolves from the reference definition.
+//
+// This test does not exercise the broker or GitHub API; it checks only that
+// runMint passes the startup validation step. It expects an error from the
+// broker (env broker returns empty strings for unknown paths, which causes a
+// downstream failure in the app-id parse), but NOT the config-validation error.
+func TestRunMint_ReferenceRoleWithoutConfigPermissions(t *testing.T) {
+	path := writeTempConfig(t, `
+github:
+  owner: testorg
+
+broker:
+  type: env
+
+roles:
+  builder:
+    app_id_path: secret/gk/builder/app-id
+    installation_id_path: secret/gk/builder/install-id
+    private_key_path: secret/gk/builder/key
+`)
+	// builder is a reference role — startup validation must pass.
+	// The env broker returns "" for unknown paths, which causes a downstream
+	// error in githubapp (not in our validation). We only care that the error
+	// is NOT the config-validation error.
+	err := runMint([]string{"--role", "builder", "--config", path})
+	if err != nil && strings.Contains(err.Error(), "config error") {
+		t.Errorf("runMint returned config-validation error for reference role builder: %v", err)
+	}
+	// Any non-config-validation error (e.g. broker/app error) is acceptable —
+	// it means validation passed and execution advanced to the broker/mint path.
+}
+
+// TestRunMint_CustomRoleWithPermissions verifies that a non-reference role that
+// declares a permissions block passes startup validation (error, if any, is not
+// a config-validation error).
+func TestRunMint_CustomRoleWithPermissions(t *testing.T) {
+	path := writeTempConfig(t, `
+github:
+  owner: testorg
+
+broker:
+  type: env
+
+roles:
+  releaser:
+    app_id_path: secret/gk/releaser/app-id
+    installation_id_path: secret/gk/releaser/install-id
+    private_key_path: secret/gk/releaser/key
+    permissions:
+      contents: write
+      pull_requests: read
+`)
+	// releaser has explicit permissions — startup validation must pass.
+	err := runMint([]string{"--role", "releaser", "--config", path})
+	if err != nil && strings.Contains(err.Error(), "config error") {
+		t.Errorf("runMint returned config-validation error for custom role with permissions: %v", err)
 	}
 }
 
