@@ -29,9 +29,23 @@ token:
   ttl_minutes: 60
 
 # Role definitions. Each role binds to one GitHub App and one permission set.
-# The permission sets themselves are defined in docs/ROLES.md and enforced in
-# code; this section only binds a role NAME to the broker paths holding that
-# role's App credentials.
+#
+# Gatekeeper ships three reference roles (builder/reviewer/merger) whose
+# permission sets are defined in docs/ROLES.md. You may override or extend them
+# here without forking code.
+#
+# To add a custom role:
+#   1. Register a GitHub App with the desired permission set.
+#   2. Add a roles.<name> block with broker paths for its credentials.
+#   3. Add a permissions map to declare the narrowing. Gatekeeper will mint
+#      a token restricted to exactly these permissions regardless of what the
+#      App itself was granted.
+#
+# Permission values are "read" or "write". Keys are GitHub App permission
+# resource names (see docs/ROLES.md and the GitHub Apps documentation).
+# Tokens are rendered per-provider; today GitHub is the only provider.
+# Forgejo scope-string rendering is added by lr-bb2f without changing this
+# config schema.
 roles:
   builder:
     # Broker paths for this role's App credentials. The private key is read
@@ -49,3 +63,16 @@ roles:
     app_id_path: secret/gatekeeper/merger/app-id
     installation_id_path: secret/gatekeeper/merger/installation-id
     private_key_path: secret/gatekeeper/merger/private-key
+
+  # --- Optional custom role example ---
+  # A "releaser" role scoped only to what release automation needs:
+  # push release tags (contents:write) and update release notes (pull_requests:read).
+  # This demonstrates defining a 4th role via config alone — no code change needed.
+  #
+  # releaser:
+  #   app_id_path: secret/gatekeeper/releaser/app-id
+  #   installation_id_path: secret/gatekeeper/releaser/installation-id
+  #   private_key_path: secret/gatekeeper/releaser/private-key
+  #   permissions:
+  #     contents: write
+  #     pull_requests: read
