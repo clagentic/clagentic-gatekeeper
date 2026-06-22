@@ -180,7 +180,7 @@ func TestSecurityRolePermissions(t *testing.T) {
 }
 
 // TestReferenceRoleGitHubPermissionsIdentical asserts that the GitHub permission
-// output for all three reference roles is byte-identical to the expected maps.
+// output for all four reference roles is byte-identical to the expected maps.
 // This is a regression guard: the refactor from a direct map conversion to a
 // Renderer must not change the output for any reference role.
 func TestReferenceRoleGitHubPermissionsIdentical(t *testing.T) {

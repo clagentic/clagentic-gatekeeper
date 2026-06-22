@@ -32,7 +32,7 @@ You can also define **custom roles** in `config.yaml` without forking code — f
 
 ## Why it exists
 
-GitHub forbids an actor from approving its own pull request. A workflow where one identity builds, reviews, and merges therefore cannot produce a credible, auditable "built → reviewed → merged by separate actors" trail. Gatekeeper solves this by minting distinct, role-narrowed tokens from distinct GitHub Apps, so every PR visibly flows through three independent automated actors.
+GitHub forbids an actor from approving its own pull request. A workflow where one identity builds, reviews, and merges therefore cannot produce a credible, auditable "built → reviewed → merged by separate actors" trail. Gatekeeper solves this by minting distinct, role-narrowed tokens from distinct GitHub Apps, so every PR visibly flows through separate build, review, and merge actors. An optional `security` role can add an independent security review gate on top of that core trail.
 
 The App private keys never touch the agent. Gatekeeper reads them from a pluggable secret broker (OpenBao by default), signs the App JWT server-side, and hands the agent only a ≤1-hour installation token narrowed to its role.
 
