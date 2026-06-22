@@ -14,6 +14,11 @@ config.local.*
 *.test
 *.out
 
+# Private agent instructions / session state / crew config — NEVER commit to a released repo.
+CLAUDE.md
+.claude/
+.crew/
+
 # Editor / OS
 .DS_Store
 *.swp
