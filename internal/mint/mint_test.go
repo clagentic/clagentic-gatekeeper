@@ -198,6 +198,113 @@ func TestMintBrokerError(t *testing.T) {
 	}
 }
 
+// TestMintCustomRoleExactPermissions asserts that a config-supplied custom role
+// mints with exactly the permissions declared in the registry, using the
+// default GitHub renderer (the zero-value Renderer field).
+func TestMintCustomRoleExactPermissions(t *testing.T) {
+	reg := roles.NewRegistry()
+	// "releaser": push release tags, read PR context only.
+	reg.Add("releaser", map[string]roles.Permission{
+		"contents":      roles.Write,
+		"pull_requests": roles.Read,
+	})
+
+	broker := &fakeBroker{vals: map[string]string{
+		testAppIDPath:      testAppID,
+		testInstallIDPath:  testInstallID,
+		testPrivateKeyPath: testFakeKey,
+	}}
+
+	var capturedPerms map[string]string
+	svc := &mint.Service{
+		APIBase: "https://api.github.com",
+		TTL:     5 * time.Minute,
+		Roles:   reg,
+		Broker:  broker,
+		Bindings: map[string]mint.RoleBinding{
+			"releaser": builderBinding(),
+		},
+		// Renderer is nil — defaults to DefaultGitHubRenderer.
+		MintFunc: func(_ context.Context, req githubapp.MintRequest) (githubapp.Token, error) {
+			capturedPerms = req.Permissions
+			return fakeToken, nil
+		},
+	}
+
+	_, err := svc.Mint(context.Background(), "releaser", nil)
+	if err != nil {
+		t.Fatalf("Mint() unexpected error: %v", err)
+	}
+
+	want := map[string]string{
+		"contents":      "write",
+		"pull_requests": "read",
+	}
+	if len(capturedPerms) != len(want) {
+		t.Errorf("Permissions length = %d, want %d; got %v", len(capturedPerms), len(want), capturedPerms)
+	}
+	for k, wantV := range want {
+		if got := capturedPerms[k]; got != wantV {
+			t.Errorf("Permissions[%q] = %q, want %q", k, got, wantV)
+		}
+	}
+	// "issues" must not be present — it was not declared in the custom role.
+	if v, present := capturedPerms["issues"]; present {
+		t.Errorf("Permissions[\"issues\"] = %q, should be absent for releaser role", v)
+	}
+}
+
+// TestMintRendererFieldOverridesDefault asserts that setting Service.Renderer
+// replaces the default GitHub renderer. This is the seam lr-bb2f uses to plug
+// in the Forgejo scope-string renderer without touching Service.Mint logic.
+func TestMintRendererFieldOverridesDefault(t *testing.T) {
+	broker := &fakeBroker{vals: map[string]string{
+		testAppIDPath:      testAppID,
+		testInstallIDPath:  testInstallID,
+		testPrivateKeyPath: testFakeKey,
+	}}
+
+	var capturedPerms map[string]string
+	svc := &mint.Service{
+		APIBase: "https://api.github.com",
+		TTL:     5 * time.Minute,
+		Roles:   roles.NewRegistry(),
+		Broker:  broker,
+		Bindings: map[string]mint.RoleBinding{
+			"builder": builderBinding(),
+		},
+		// Override the renderer with a stub that prefixes values.
+		Renderer: stubRenderer{prefix: "stub:"},
+		MintFunc: func(_ context.Context, req githubapp.MintRequest) (githubapp.Token, error) {
+			capturedPerms = req.Permissions
+			return fakeToken, nil
+		},
+	}
+
+	_, err := svc.Mint(context.Background(), "builder", nil)
+	if err != nil {
+		t.Fatalf("Mint() unexpected error: %v", err)
+	}
+
+	for k, v := range capturedPerms {
+		if !strings.HasPrefix(v, "stub:") {
+			t.Errorf("Permissions[%q] = %q; expected stub renderer output (prefix \"stub:\")", k, v)
+		}
+	}
+}
+
+// stubRenderer is a minimal roles.Renderer used to verify the Service.Renderer
+// seam. It prefixes all permission values with a configurable string.
+type stubRenderer struct{ prefix string }
+
+func (s stubRenderer) RenderPermissions(role roles.Role) map[string]string {
+	out := make(map[string]string, len(role.Permissions))
+	for k, v := range role.Permissions {
+		out[k] = s.prefix + string(v)
+	}
+	return out
+}
+
 // TestMintReposPassedThrough asserts that the repos slice provided to Mint is
 // forwarded unchanged to MintFunc.
 func TestMintReposPassedThrough(t *testing.T) {

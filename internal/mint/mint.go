@@ -29,6 +29,15 @@ type Service struct {
 	Broker   broker.Broker
 	Bindings map[string]RoleBinding // role name -> broker paths
 
+	// Renderer translates a role's permission set into the provider's expected
+	// format. When nil, roles.DefaultGitHubRenderer is used, which preserves
+	// the existing GitHub installation-token behaviour for all callers that do
+	// not set this field.
+	//
+	// lr-bb2f: set this to a ForgejoRenderer to produce Forgejo scope strings
+	// instead. The rest of Service.Mint is provider-agnostic.
+	Renderer roles.Renderer
+
 	// MintFunc overrides the githubapp.Mint call. When nil, githubapp.Mint is
 	// used. Set in tests to intercept the outbound GitHub API call.
 	MintFunc func(context.Context, githubapp.MintRequest) (githubapp.Token, error)
@@ -62,6 +71,11 @@ func (s *Service) Mint(ctx context.Context, roleName string, repos []string) (gi
 		return githubapp.Token{}, fmt.Errorf("read private key for role %q: %w", roleName, err)
 	}
 
+	renderer := s.Renderer
+	if renderer == nil {
+		renderer = roles.DefaultGitHubRenderer
+	}
+
 	mintFn := s.MintFunc
 	if mintFn == nil {
 		mintFn = githubapp.Mint
@@ -71,7 +85,7 @@ func (s *Service) Mint(ctx context.Context, roleName string, repos []string) (gi
 		AppID:          appID,
 		InstallationID: installID,
 		PrivateKeyPEM:  privateKey,
-		Permissions:    role.GitHubPermissions(),
+		Permissions:    renderer.RenderPermissions(role),
 		Repositories:   repos,
 		TTL:            s.TTL,
 	})

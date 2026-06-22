@@ -45,13 +45,56 @@ The default-branch ruleset's push restriction should name **only** the merger Ap
 
 ## Adding a custom role
 
-Roles are data, not hardcoded enums where avoidable. A consumer with a different
-trust model (e.g. a single `maintainer` role, or a fourth `releaser` role) defines
-it by:
+Roles are data, not hardcoded enums. A consumer with a different trust model
+(e.g. a `maintainer` between reviewer and merger, or a `releaser` scoped only
+to tagging) defines one by:
 
-1. Registering an App with the desired permission set.
-2. Adding a `roles.<name>` block to `config.yaml` with the broker paths.
-3. Declaring the role's permission narrowing (the table above, as data) so
-   Gatekeeper narrows the minted token correctly.
+1. Registering a GitHub App with the desired permission set.
+2. Adding a `roles.<name>` block to `config.yaml` with the broker paths for
+   that App's credentials.
+3. Declaring the role's permission narrowing in the same block.
 
-The three shipped roles are the reference model, not a hard limit.
+### Config schema for step 3
+
+```yaml
+roles:
+  releaser:
+    app_id_path: secret/gatekeeper/releaser/app-id
+    installation_id_path: secret/gatekeeper/releaser/installation-id
+    private_key_path: secret/gatekeeper/releaser/private-key
+    permissions:          # optional; omit to use the reference set for this role name
+      contents: write     # push release tags / commits
+      pull_requests: read # read PR context; does not include merge
+```
+
+**Permission keys** are GitHub App permission resource names (e.g. `contents`,
+`pull_requests`, `issues`, `deployments`, `checks`, `statuses`). See the
+[GitHub Apps permissions documentation](https://docs.github.com/en/rest/apps/apps)
+for the full list.
+
+**Permission values** are `read` or `write`.
+
+Gatekeeper mints the token with exactly the permissions declared here,
+regardless of what the underlying App was granted. This is the narrowing step;
+the App's own grant is the ceiling, but the minted token is narrowed further
+to only what the role needs.
+
+### Provider rendering
+
+The permission map in `config.yaml` is provider-neutral. Today Gatekeeper
+renders it to the GitHub installation-token `permissions` object (the only
+supported provider). Forgejo scope-string rendering (`read:repository`,
+`write:issue`, etc.) is added by lr-bb2f without changing this config schema
+or the GitHub renderer.
+
+### Reference roles and overrides
+
+The three reference roles (builder/reviewer/merger) are pre-seeded from code.
+You may override their permission set in `config.yaml` using the same
+`permissions:` block — the config-supplied set wins. Omitting `permissions:`
+for a reference role uses the built-in table above.
+
+Note: a role binding (`app_id_path` / `installation_id_path` / `private_key_path`)
+with no resolvable permission set (neither a `permissions:` block nor a matching
+reference role) is a misconfiguration. Startup validation for this case is tracked
+in lr-1b65.
