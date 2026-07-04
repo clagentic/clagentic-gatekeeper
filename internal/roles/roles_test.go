@@ -207,7 +207,7 @@ func TestReferenceRoleGitHubPermissionsIdentical(t *testing.T) {
 	}{
 		{
 			name: "builder",
-			want: map[string]string{"contents": "write", "pull_requests": "write", "issues": "write"},
+			want: map[string]string{"contents": "write", "pull_requests": "write", "issues": "write", "workflows": "write"},
 		},
 		{
 			name: "reviewer",
