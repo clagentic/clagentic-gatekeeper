@@ -34,7 +34,7 @@ type Role struct {
 // reference holds the four shipped roles. It is the reference model, not a
 // hard limit — Resolve also accepts roles supplied from config (see Registry).
 var reference = map[string]map[string]Permission{
-	"builder":  {"contents": Write, "pull_requests": Write, "issues": Write},
+	"builder":  {"contents": Write, "pull_requests": Write, "issues": Write, "workflows": Write},
 	"reviewer": {"pull_requests": Write, "contents": Read},
 	"merger":   {"contents": Write, "pull_requests": Write},
 	// security: reads code and diffs, posts review comments / requests changes.

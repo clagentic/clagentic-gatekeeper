@@ -14,6 +14,7 @@ Purpose: author work. Pushes feature branches, opens and updates PRs.
 | `contents`          | `write` | Feature branches only. The default-branch ruleset must bar pushes to the protected branch. |
 | `pull_requests`     | `write` | Open / update PRs. Does not include merge.        |
 | `issues`            | `write` | Optional; for linking / commenting.               |
+| `workflows`         | `write` | Edit .github/workflows/* on feature branches. Granted because the clagentic-builder App now holds the workflows permission. |
 
 Builder **must not** be able to merge. Enforcement is two-layer: the merge happens
 via a separate API surface the merger token holds, and the default-branch ruleset
