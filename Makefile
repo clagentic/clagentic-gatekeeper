@@ -1,22 +1,21 @@
-GOPATH     ?= /root/go
-GOMODCACHE ?= $(GOPATH)/pkg/mod
-GOCACHE    ?= /root/.cache/go
-GOENV      := GOPATH=$(GOPATH) GOMODCACHE=$(GOMODCACHE) GOCACHE=$(GOCACHE)
-
+# GOPATH/GOMODCACHE/GOCACHE are intentionally left unset here. The Go
+# toolchain computes sane per-user defaults on its own (rooted under
+# $HOME), and any caller (CI, container, local env) that already exports
+# these wins automatically since we never touch them in the recipes below.
 .PHONY: build test lint vet fmt check
 
 build:
-	$(GOENV) go build ./...
+	go build ./...
 
 test:
-	$(GOENV) go test ./...
+	go test ./...
 
 lint: vet fmt
 
 vet:
-	$(GOENV) go vet ./...
+	go vet ./...
 
 fmt:
-	$(GOENV) go fmt ./...
+	go fmt ./...
 
 check: vet test
