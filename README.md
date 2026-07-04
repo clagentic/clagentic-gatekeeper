@@ -115,6 +115,22 @@ go build ./cmd/gatekeeper
 
 Requires Go 1.22+. No external dependencies beyond the standard library.
 
+## Install
+
+```bash
+make install
+```
+
+Builds the `gatekeeper` binary and installs it to `/usr/local/bin` by default. Override the destination with `PREFIX` and/or `DESTDIR` — no paths are hardcoded to any specific environment:
+
+```bash
+# Install under your home directory instead of /usr/local
+PREFIX=$HOME/.local make install
+
+# Stage into a packaging root without touching the live prefix
+make install DESTDIR=/tmp/staging PREFIX=/usr
+```
+
 ## Support
 
 If clagentic:gatekeeper is useful to you: [ko-fi.com/clagentic](https://ko-fi.com/clagentic)
