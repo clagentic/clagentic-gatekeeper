@@ -31,6 +31,6 @@ check: vet test
 
 install:
 	go build -o gatekeeper ./cmd/gatekeeper
-	install -d $(BINDIR)
-	install -m 0755 gatekeeper $(BINDIR)/gatekeeper
+	install -d "$(BINDIR)"
+	install -m 0755 gatekeeper "$(BINDIR)/gatekeeper"
 	rm -f gatekeeper
