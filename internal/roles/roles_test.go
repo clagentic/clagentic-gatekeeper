@@ -7,10 +7,10 @@ import (
 	"github.com/clagentic/clagentic-gatekeeper/internal/roles"
 )
 
-// TestIsReference verifies that IsReference correctly identifies the four
+// TestIsReference verifies that IsReference correctly identifies the five
 // shipped reference roles and rejects anything else.
 func TestIsReference(t *testing.T) {
-	for _, name := range []string{"builder", "reviewer", "merger", "security"} {
+	for _, name := range []string{"builder", "reviewer", "merger", "security", "reader"} {
 		if !roles.IsReference(name) {
 			t.Errorf("IsReference(%q) = false, want true", name)
 		}
@@ -27,7 +27,7 @@ func TestIsReference(t *testing.T) {
 func TestResolveReferenceRoles(t *testing.T) {
 	reg := roles.NewRegistry()
 
-	for _, name := range []string{"builder", "reviewer", "merger", "security"} {
+	for _, name := range []string{"builder", "reviewer", "merger", "security", "reader"} {
 		name := name
 		t.Run(name, func(t *testing.T) {
 			role, err := reg.Resolve(name)
@@ -194,8 +194,42 @@ func TestSecurityRolePermissions(t *testing.T) {
 	}
 }
 
+// TestReaderRolePermissions asserts the reader role's expected permission set:
+// read-only access to contents, pull_requests, and issues, with no write
+// capability whatsoever.
+func TestReaderRolePermissions(t *testing.T) {
+	reg := roles.NewRegistry()
+
+	role, err := reg.Resolve("reader")
+	if err != nil {
+		t.Fatalf("Resolve(\"reader\"): %v", err)
+	}
+
+	if got := role.Permissions["contents"]; got != roles.Read {
+		t.Errorf("reader contents = %q, want %q", got, roles.Read)
+	}
+	if got := role.Permissions["pull_requests"]; got != roles.Read {
+		t.Errorf("reader pull_requests = %q, want %q", got, roles.Read)
+	}
+	if got := role.Permissions["issues"]; got != roles.Read {
+		t.Errorf("reader issues = %q, want %q", got, roles.Read)
+	}
+
+	// reader must not hold any write permission.
+	for k, v := range role.Permissions {
+		if v == roles.Write {
+			t.Errorf("reader must not have write permission, got %q = %q", k, v)
+		}
+	}
+
+	// reader must not hold administration (no branch protection bypass).
+	if _, hasAdmin := role.Permissions["administration"]; hasAdmin {
+		t.Error("reader must not have \"administration\" permission")
+	}
+}
+
 // TestReferenceRoleGitHubPermissionsIdentical asserts that the GitHub permission
-// output for all four reference roles is byte-identical to the expected maps.
+// output for all five reference roles is byte-identical to the expected maps.
 // This is a regression guard: the refactor from a direct map conversion to a
 // Renderer must not change the output for any reference role.
 func TestReferenceRoleGitHubPermissionsIdentical(t *testing.T) {
@@ -220,6 +254,10 @@ func TestReferenceRoleGitHubPermissionsIdentical(t *testing.T) {
 		{
 			name: "security",
 			want: map[string]string{"pull_requests": "write", "contents": "read", "issues": "read"},
+		},
+		{
+			name: "reader",
+			want: map[string]string{"contents": "read", "pull_requests": "read", "issues": "read"},
 		},
 	}
 
