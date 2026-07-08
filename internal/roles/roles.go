@@ -31,7 +31,7 @@ type Role struct {
 	Permissions map[string]Permission
 }
 
-// reference holds the four shipped roles. It is the reference model, not a
+// reference holds the five shipped roles. It is the reference model, not a
 // hard limit — Resolve also accepts roles supplied from config (see Registry).
 var reference = map[string]map[string]Permission{
 	"builder":  {"contents": Write, "pull_requests": Write, "issues": Write, "workflows": Write},
@@ -43,11 +43,15 @@ var reference = map[string]map[string]Permission{
 	// issues:read         — read linked issues for security context.
 	// No contents:write (no push), no merge action (that is merger's exclusive).
 	"security": {"pull_requests": Write, "contents": Read, "issues": Read},
+	// reader: read-only access for leads and observers that need to verify
+	// repo state (diffs, PR status, linked issues) without any write
+	// capability. No contents:write, no merge action.
+	"reader": {"contents": Read, "pull_requests": Read, "issues": Read},
 }
 
-// IsReference reports whether name is one of the four shipped reference roles
-// (builder, reviewer, merger, security). Callers that must distinguish a
-// reference role from a purely config-defined role use this rather than
+// IsReference reports whether name is one of the five shipped reference roles
+// (builder, reviewer, merger, security, reader). Callers that must distinguish
+// a reference role from a purely config-defined role use this rather than
 // duplicating the name list.
 func IsReference(name string) bool {
 	_, ok := reference[name]

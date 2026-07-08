@@ -1,6 +1,6 @@
 # Roles and per-role GitHub App permissions
 
-Gatekeeper ships four generic roles. Each maps to one GitHub App registered with
+Gatekeeper ships five generic roles. Each maps to one GitHub App registered with
 exactly the installation permissions below. The token Gatekeeper mints for a role
 is narrowed to these permissions at mint time — defense in depth on top of whatever
 the App itself was granted.
@@ -65,6 +65,21 @@ exclusively the merger's domain; security does not hold it. `issues:read` is
 included so the reviewer can follow linked issue context when assessing impact;
 it confers no write capability.
 
+## reader
+
+Purpose: read-only observation. For leads and other consumers that must verify
+repo state (diffs, PR status, linked issues) but perform no write action at all.
+
+| GitHub permission   | Level   | Note                                              |
+|---------------------|---------|---------------------------------------------------|
+| `contents`          | `read`  | Read files and diffs.                              |
+| `pull_requests`     | `read`  | Read PR status and content. No review or merge.    |
+| `issues`            | `read`  | Read issues for context.                           |
+
+reader holds no write permission of any kind — no `contents:write`, no merge
+action. It is the read-only counterpart to the four write-capable reference
+roles above.
+
 ## Adding a custom role
 
 Roles are data, not hardcoded enums. A consumer with a different trust model
@@ -111,7 +126,7 @@ or the GitHub renderer.
 
 ### Reference roles and overrides
 
-The four reference roles (builder/reviewer/merger/security) are pre-seeded from code.
+The five reference roles (builder/reviewer/merger/security/reader) are pre-seeded from code.
 You may override their permission set in `config.yaml` using the same
 `permissions:` block — the config-supplied set wins. Omitting `permissions:`
 for a reference role uses the built-in table above.
