@@ -28,6 +28,28 @@ token:
   # Installation token lifetime. GitHub caps at 1h.
   ttl_minutes: 60
 
+# Attestation-provider chain: resolves the ATTESTED invoking identity, in
+# order (a) configured -> (b) sidecar -> (c) built-in fallback (always on,
+# no config needed). All fields below are optional; a bare install with
+# nothing set here still resolves via the built-in fallback. See
+# internal/attestation for resolution order and the full design rationale.
+attestation:
+  # Layer (a): a deployment's own identity source. type: "env" | "file".
+  # Leave type empty to disable this layer.
+  configured:
+    type: ""
+    source: ""
+  # Layer (b): the crew-sidecar adapter. This is ONE adapter behind the
+  # attestation interface, never assumed to exist — all three fields are
+  # required together to enable it; a partial setting is treated as
+  # disabled. Example values match the crew-manifest plugin's
+  # /tmp/lore-agent-name-<session_id> convention, but nothing here
+  # hardcodes that plugin as a dependency.
+  sidecar:
+    dir: ""
+    file_prefix: ""
+    session_id_env: ""
+
 # Role definitions. Each role binds to one GitHub App and one permission set.
 #
 # Gatekeeper ships five reference roles (builder/reviewer/merger/security/reader)
