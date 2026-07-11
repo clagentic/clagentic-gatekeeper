@@ -62,12 +62,24 @@ attestation:
 #   3. Add a permissions map to declare the narrowing. Gatekeeper will mint
 #      a token restricted to exactly these permissions regardless of what the
 #      App itself was granted.
+#   4. Add entitled_identities so mint can verify the attested invoking
+#      identity may mint this role.
+#   5. Add app_slug + app_slug_path so mint can verify its broker paths
+#      actually resolved to the App legitimately configured for this role.
 #
 # Permission values are "read" or "write". Keys are GitHub App permission
 # resource names (see docs/ROLES.md and the GitHub Apps documentation).
 # Tokens are rendered per-provider; today GitHub is the only provider.
 # Forgejo scope-string rendering is added by lr-bb2f without changing this
 # config schema.
+#
+# Mint-time verification (tome #700, layer (2)->(3)): both entitled_identities
+# and the app_slug/app_slug_path pair are REQUIRED for a role to mint at all.
+# Neither has an "open" default — a role missing either setting fails closed
+# rather than minting with an unverified identity or an unverified App. This
+# is why the example values below are filled in rather than left commented
+# out: a role block copied from this file with the verification fields
+# removed will refuse to mint until they are added back.
 roles:
   builder:
     # Broker paths for this role's App credentials. The private key is read
@@ -75,26 +87,52 @@ roles:
     app_id_path: secret/gatekeeper/builder/app-id
     installation_id_path: secret/gatekeeper/builder/installation-id
     private_key_path: secret/gatekeeper/builder/private-key
+    # Attested invoking identities (internal/attestation Identity.Subject
+    # values) entitled to mint this role. List your deployment's actual
+    # crew/agent identities here — there is no default entitlement.
+    entitled_identities:
+      - your-builder-agent-identity
+    # Expected slug of the GitHub App these broker paths must resolve to,
+    # and the broker path holding the App's ACTUAL slug (read at mint time
+    # and compared against app_slug). Both are required together.
+    app_slug: your-builder-app-slug
+    app_slug_path: secret/gatekeeper/builder/app-slug
 
   reviewer:
     app_id_path: secret/gatekeeper/reviewer/app-id
     installation_id_path: secret/gatekeeper/reviewer/installation-id
     private_key_path: secret/gatekeeper/reviewer/private-key
+    entitled_identities:
+      - your-reviewer-agent-identity
+    app_slug: your-reviewer-app-slug
+    app_slug_path: secret/gatekeeper/reviewer/app-slug
 
   merger:
     app_id_path: secret/gatekeeper/merger/app-id
     installation_id_path: secret/gatekeeper/merger/installation-id
     private_key_path: secret/gatekeeper/merger/private-key
+    entitled_identities:
+      - your-merger-agent-identity
+    app_slug: your-merger-app-slug
+    app_slug_path: secret/gatekeeper/merger/app-slug
 
   security:
     app_id_path: secret/gatekeeper/security/app-id
     installation_id_path: secret/gatekeeper/security/installation-id
     private_key_path: secret/gatekeeper/security/private-key
+    entitled_identities:
+      - your-security-agent-identity
+    app_slug: your-security-app-slug
+    app_slug_path: secret/gatekeeper/security/app-slug
 
   reader:
     app_id_path: secret/gatekeeper/reader/app-id
     installation_id_path: secret/gatekeeper/reader/installation-id
     private_key_path: secret/gatekeeper/reader/private-key
+    entitled_identities:
+      - your-reader-agent-identity
+    app_slug: your-reader-app-slug
+    app_slug_path: secret/gatekeeper/reader/app-slug
 
   # --- Optional custom role example ---
   # A "releaser" role scoped only to what release automation needs:
@@ -108,3 +146,7 @@ roles:
   #   permissions:
   #     contents: write
   #     pull_requests: read
+  #   entitled_identities:
+  #     - your-releaser-agent-identity
+  #   app_slug: your-releaser-app-slug
+  #   app_slug_path: secret/gatekeeper/releaser/app-slug

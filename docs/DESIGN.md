@@ -32,15 +32,30 @@ internal/githubapp/    GitHub App JWT signing + installation-token exchange.
                        Signs the App JWT, calls POST /app/installations/{id}/access_tokens
                        with narrowed `permissions` + `repositories`. Returns token+expiry.
 
-internal/mint/         Orchestration. Ties roles + broker + githubapp together:
-                         1. roles.Resolve(roleName) -> permissions, scope
-                         2. broker.Get(role.app_id / installation_id / private_key)
-                         3. githubapp.MintInstallationToken(...)
-                       Returns the scoped token. No I/O of its own beyond the deps.
+internal/attestation/  Resolves the ATTESTED invoking identity via a fixed-order
+                       provider chain (configured -> sidecar -> built-in
+                       fallback). Pure resolution, no policy — mint decides
+                       what an identity is allowed to do.
+
+internal/mint/         Orchestration. Ties attestation + roles + broker +
+                       githubapp together:
+                         1. attestation.Resolve(ctx) -> attested identity
+                         2. verify identity is entitled to roleName (config-driven)
+                         3. roles.Resolve(roleName) -> permissions, scope
+                         4. broker.Get(role.app_id / installation_id / private_key)
+                         5. broker.Get(role.app_slug_path); verify == role.app_slug
+                         6. githubapp.MintInstallationToken(...)
+                       Steps 2 and 5 are the (2)->(3) trust-layer gates (tome
+                       #700): entitlement (attested identity -> role) and a
+                       verifiable App-slug binding (role -> App). Both are
+                       fail-closed — an unresolvable identity, an unentitled
+                       identity, or a missing/mismatched App-slug binding all
+                       refuse to mint, never fall back. Returns the scoped
+                       token. No I/O of its own beyond the deps.
 ```
 
-Dependency direction is one-way: `cmd -> mint -> {roles, broker, githubapp}`.
-`roles` is pure. `broker` and `githubapp` are I/O leaves. Nothing imports `cmd`.
+Dependency direction is one-way: `cmd -> mint -> {attestation, roles, broker, githubapp}`.
+`roles` is pure. `attestation`, `broker`, and `githubapp` are I/O leaves. Nothing imports `cmd`.
 
 ## Secret flow (the security invariant)
 
