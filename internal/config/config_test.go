@@ -35,6 +35,11 @@ roles:
     app_id_path: secret/gk/builder/app-id
     installation_id_path: secret/gk/builder/install-id
     private_key_path: secret/gk/builder/key
+    entitled_identities:
+      - crew-agent-amos
+      - crew-agent-naomi
+    app_slug: clagentic-builder
+    app_slug_path: secret/gk/builder/app-slug
   custom:
     app_id_path: secret/gk/custom/app-id
     installation_id_path: secret/gk/custom/install-id
@@ -90,6 +95,21 @@ attestation:
 	if builder.PrivateKeyPath != "secret/gk/builder/key" {
 		t.Errorf("builder.PrivateKeyPath = %q, want %q", builder.PrivateKeyPath, "secret/gk/builder/key")
 	}
+	wantEntitled := []string{"crew-agent-amos", "crew-agent-naomi"}
+	if len(builder.EntitledIdentities) != len(wantEntitled) {
+		t.Fatalf("builder.EntitledIdentities = %v, want %v", builder.EntitledIdentities, wantEntitled)
+	}
+	for i, want := range wantEntitled {
+		if builder.EntitledIdentities[i] != want {
+			t.Errorf("builder.EntitledIdentities[%d] = %q, want %q", i, builder.EntitledIdentities[i], want)
+		}
+	}
+	if builder.AppSlug != "clagentic-builder" {
+		t.Errorf("builder.AppSlug = %q, want %q", builder.AppSlug, "clagentic-builder")
+	}
+	if builder.AppSlugPath != "secret/gk/builder/app-slug" {
+		t.Errorf("builder.AppSlugPath = %q, want %q", builder.AppSlugPath, "secret/gk/builder/app-slug")
+	}
 
 	custom, ok := cfg.Roles["custom"]
 	if !ok {
@@ -100,6 +120,16 @@ attestation:
 	}
 	if custom.Permissions["issues"] != "read" {
 		t.Errorf("custom.Permissions[issues] = %q, want %q", custom.Permissions["issues"], "read")
+	}
+	// "custom" declares no entitlement or App-slug settings — the schema
+	// leaves both optional-with-safe-default (zero value), and it is
+	// internal/mint's job to fail closed on the zero value rather than
+	// config assuming a default that opens access.
+	if len(custom.EntitledIdentities) != 0 {
+		t.Errorf("custom.EntitledIdentities = %v, want empty (not declared in config)", custom.EntitledIdentities)
+	}
+	if custom.AppSlug != "" || custom.AppSlugPath != "" {
+		t.Errorf("custom.AppSlug/AppSlugPath = %q/%q, want both empty (not declared in config)", custom.AppSlug, custom.AppSlugPath)
 	}
 
 	if cfg.Attestation.Configured.Type != "env" {

@@ -168,10 +168,10 @@ func TestMintWithRepoCapturesBareRepoName(t *testing.T) {
 	}}
 
 	svc := &mint.Service{
-		APIBase:              srv.URL,
-		Roles:                roles.NewRegistry(),
-		Broker:               broker,
-		AttestationResolver:  testResolver(),
+		APIBase:             srv.URL,
+		Roles:               roles.NewRegistry(),
+		Broker:              broker,
+		AttestationResolver: testResolver(),
 		Bindings: map[string]mint.RoleBinding{
 			"merger": {
 				AppIDPath:          fakeAppIDPath,
