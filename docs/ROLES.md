@@ -102,7 +102,35 @@ roles:
     permissions:          # optional; omit to use the reference set for this role name
       contents: write     # push release tags / commits
       pull_requests: read # read PR context; does not include merge
+    entitled_identities:  # REQUIRED — see "Mint-time verification" below
+      - your-releaser-agent-identity
+    app_slug: your-releaser-app-slug        # REQUIRED together with app_slug_path
+    app_slug_path: secret/gatekeeper/releaser/app-slug
 ```
+
+### Mint-time verification (tome #700, layer (2)->(3))
+
+Two additional gates run at mint time, in front of the broker read:
+
+1. **Entitlement.** `entitled_identities` lists the attested invoking
+   identities (resolved by `internal/attestation` — the ATTESTED identity,
+   not a caller-supplied one) permitted to mint this role. A role with an
+   empty or absent list is fail-closed: no identity is entitled to it, so
+   mint always refuses. There is no "open by default" behavior.
+2. **Verifiable App-slug binding.** `app_slug` is the App slug this role's
+   broker paths are legitimately expected to resolve to. `app_slug_path` is
+   a broker path holding the *actual* slug of the App those paths resolve
+   to. Mint reads both and requires an exact match before minting. Both
+   fields are required together — a role with only one set fails closed
+   the same as a role with neither set. This is what prevents a role's
+   broker paths from silently pointing at the wrong App installation (the
+   class of bug tracked as lr-e41f): the binding is a verified equality
+   check, not an assumption that the map key names the right App.
+
+A role block missing either gate's configuration cannot mint, regardless of
+whether its broker paths and permissions are otherwise valid. This is
+intentional: a bare install (nothing configured beyond broker paths) must
+fail closed rather than mint an unverified token for an unverified caller.
 
 **Permission keys** are GitHub App permission resource names (e.g. `contents`,
 `pull_requests`, `issues`, `deployments`, `checks`, `statuses`). See the
