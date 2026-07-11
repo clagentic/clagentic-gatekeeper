@@ -91,11 +91,41 @@ type AttestationSidecarConfig struct {
 // RoleConfig binds a role name to broker paths for its GitHub App credentials.
 // Permissions is optional; when set it overrides the reference permission set
 // for that role name.
+//
+// Two mint-time gates are configured here (tome #700, layer (2)->(3)):
+//
+//  1. Entitlement: EntitledIdentities lists the attested invoking identities
+//     (internal/attestation) allowed to mint this role. An identity not in
+//     this list — or an empty list — is fail-closed: Mint refuses rather
+//     than assuming an unconfigured role is open to everyone.
+//  2. Verifiable App-slug binding: AppSlug is the App slug this role is
+//     legitimately bound to, and AppSlugPath is the broker path holding the
+//     ACTUAL slug of the App the broker paths above resolve to. Mint reads
+//     both and requires they match — this is the safeguard against the
+//     lr-e41f class of bug (a role's broker paths silently resolving to the
+//     wrong App installation). A role missing either half of this pair fails
+//     closed rather than skipping the check.
 type RoleConfig struct {
 	AppIDPath          string            `yaml:"app_id_path"`
 	InstallationIDPath string            `yaml:"installation_id_path"`
 	PrivateKeyPath     string            `yaml:"private_key_path"`
 	Permissions        map[string]string `yaml:"permissions,omitempty"`
+
+	// EntitledIdentities is the set of attested identities (internal/attestation
+	// Identity.Subject values) permitted to mint this role. No identity is
+	// entitled by default — an empty or absent list fails closed.
+	EntitledIdentities []string `yaml:"entitled_identities,omitempty"`
+
+	// AppSlug is the expected GitHub App slug this role's broker-resolved App
+	// must match. Required together with AppSlugPath to enable the App-slug
+	// verification gate; a role that sets one without the other fails closed
+	// at mint time rather than silently skipping verification.
+	AppSlug string `yaml:"app_slug,omitempty"`
+
+	// AppSlugPath is the broker path holding the actual slug of the App the
+	// role's AppIDPath/InstallationIDPath/PrivateKeyPath resolve to. Read
+	// at mint time and compared against AppSlug.
+	AppSlugPath string `yaml:"app_slug_path,omitempty"`
 }
 
 // Load reads path, unmarshals it as YAML, applies defaults, and returns the

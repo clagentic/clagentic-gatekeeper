@@ -14,9 +14,32 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/clagentic/clagentic-gatekeeper/internal/attestation"
 	"github.com/clagentic/clagentic-gatekeeper/internal/mint"
 	"github.com/clagentic/clagentic-gatekeeper/internal/roles"
 )
+
+// testAttestedIdentity is the attested identity used by tests that need a
+// resolver but do not exercise the entitlement failure path itself. It is
+// wired as the sole entitled identity on any test RoleBinding below.
+const testAttestedIdentity = "test-attested-caller"
+
+// testResolver returns an attestation.Resolver that always resolves to
+// testAttestedIdentity, via a single-provider chain. Mint requires a
+// non-nil AttestationResolver (fail-closed by contract); tests exercising
+// the mint happy path use this to satisfy that requirement without
+// depending on the real OS/env/sidecar providers.
+func testResolver() *attestation.Resolver {
+	return attestation.NewResolver(fixedIdentityProvider{})
+}
+
+// fixedIdentityProvider is a stub attestation.Provider that always resolves
+// to testAttestedIdentity.
+type fixedIdentityProvider struct{}
+
+func (fixedIdentityProvider) Resolve(_ context.Context) (attestation.Identity, error) {
+	return attestation.Identity{Subject: testAttestedIdentity, Source: "test"}, nil
+}
 
 // generateTestPEM returns a freshly generated RSA-2048 private key in PKCS#1
 // PEM format, suitable for use in tests that exercise the GitHub API path.
@@ -133,23 +156,30 @@ func TestMintWithRepoCapturesBareRepoName(t *testing.T) {
 		fakeAppIDPath      = "secret/app/id"
 		fakeInstallIDPath  = "secret/app/install_id"
 		fakePrivateKeyPath = "secret/app/private_key"
+		fakeAppSlugPath    = "secret/app/slug"
+		fakeAppSlug        = "clagentic-merger"
 	)
 
 	broker := &fakeGitHubBroker{vals: map[string]string{
 		fakeAppIDPath:      "12345",
 		fakeInstallIDPath:  "67890",
 		fakePrivateKeyPath: generateTestPEM(t),
+		fakeAppSlugPath:    fakeAppSlug,
 	}}
 
 	svc := &mint.Service{
-		APIBase: srv.URL,
-		Roles:   roles.NewRegistry(),
-		Broker:  broker,
+		APIBase:              srv.URL,
+		Roles:                roles.NewRegistry(),
+		Broker:               broker,
+		AttestationResolver:  testResolver(),
 		Bindings: map[string]mint.RoleBinding{
 			"merger": {
 				AppIDPath:          fakeAppIDPath,
 				InstallationIDPath: fakeInstallIDPath,
 				PrivateKeyPath:     fakePrivateKeyPath,
+				EntitledIdentities: []string{testAttestedIdentity},
+				AppSlug:            fakeAppSlug,
+				AppSlugPath:        fakeAppSlugPath,
 			},
 		},
 		// Use real MintFunc (githubapp.Mint) so we actually hit the stub server.
@@ -305,23 +335,30 @@ func TestMintWithoutRepoSendsEmptyRepos(t *testing.T) {
 		fakeAppIDPath      = "secret/app/id"
 		fakeInstallIDPath  = "secret/app/install_id"
 		fakePrivateKeyPath = "secret/app/private_key"
+		fakeAppSlugPath    = "secret/app/slug"
+		fakeAppSlug        = "clagentic-merger"
 	)
 
 	broker := &fakeGitHubBroker{vals: map[string]string{
 		fakeAppIDPath:      "12345",
 		fakeInstallIDPath:  "67890",
 		fakePrivateKeyPath: generateTestPEM(t),
+		fakeAppSlugPath:    fakeAppSlug,
 	}}
 
 	svc := &mint.Service{
-		APIBase: srv.URL,
-		Roles:   roles.NewRegistry(),
-		Broker:  broker,
+		APIBase:             srv.URL,
+		Roles:               roles.NewRegistry(),
+		Broker:              broker,
+		AttestationResolver: testResolver(),
 		Bindings: map[string]mint.RoleBinding{
 			"merger": {
 				AppIDPath:          fakeAppIDPath,
 				InstallationIDPath: fakeInstallIDPath,
 				PrivateKeyPath:     fakePrivateKeyPath,
+				EntitledIdentities: []string{testAttestedIdentity},
+				AppSlug:            fakeAppSlug,
+				AppSlugPath:        fakeAppSlugPath,
 			},
 		},
 	}

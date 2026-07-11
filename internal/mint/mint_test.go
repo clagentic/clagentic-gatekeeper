@@ -8,10 +8,29 @@ import (
 	"testing"
 	"time"
 
+	"github.com/clagentic/clagentic-gatekeeper/internal/attestation"
 	"github.com/clagentic/clagentic-gatekeeper/internal/githubapp"
 	"github.com/clagentic/clagentic-gatekeeper/internal/mint"
 	"github.com/clagentic/clagentic-gatekeeper/internal/roles"
 )
+
+// testIdentity is the attested identity used by tests that need a resolver
+// but are not themselves exercising the entitlement gate.
+const testIdentity = "test-attested-caller"
+
+// testResolver returns a Resolver that always resolves to testIdentity.
+func testResolver() *attestation.Resolver {
+	return attestation.NewResolver(fixedIdentityProvider{})
+}
+
+// fixedIdentityProvider is a stub attestation.Provider used to satisfy
+// Service.AttestationResolver in tests without depending on the real
+// OS/env/sidecar providers.
+type fixedIdentityProvider struct{}
+
+func (fixedIdentityProvider) Resolve(_ context.Context) (attestation.Identity, error) {
+	return attestation.Identity{Subject: testIdentity, Source: "test"}, nil
+}
 
 // fakeBroker implements broker.Broker for tests. It returns values from a
 // map or a fixed error when err is non-nil.
@@ -35,18 +54,24 @@ const (
 	testAppIDPath      = "secret/app/id"
 	testInstallIDPath  = "secret/app/install_id"
 	testPrivateKeyPath = "secret/app/private_key"
+	testAppSlugPath    = "secret/app/slug"
 
 	testAppID     = "12345"
 	testInstallID = "67890"
 	testFakeKey   = "fake-pem-value"
+	testAppSlug   = "clagentic-builder"
 )
 
-// builderBinding returns a RoleBinding pointing to the test broker paths.
+// builderBinding returns a RoleBinding pointing to the test broker paths,
+// entitled to testIdentity, and bound to testAppSlug.
 func builderBinding() mint.RoleBinding {
 	return mint.RoleBinding{
 		AppIDPath:          testAppIDPath,
 		InstallationIDPath: testInstallIDPath,
 		PrivateKeyPath:     testPrivateKeyPath,
+		EntitledIdentities: []string{testIdentity},
+		AppSlug:            testAppSlug,
+		AppSlugPath:        testAppSlugPath,
 	}
 }
 
@@ -64,14 +89,16 @@ func TestMintSuccess(t *testing.T) {
 		testAppIDPath:      testAppID,
 		testInstallIDPath:  testInstallID,
 		testPrivateKeyPath: testFakeKey,
+		testAppSlugPath:    testAppSlug,
 	}}
 
 	var capturedReq githubapp.MintRequest
 	svc := &mint.Service{
-		APIBase: "https://api.github.com",
-		TTL:     5 * time.Minute,
-		Roles:   roles.NewRegistry(),
-		Broker:  broker,
+		APIBase:             "https://api.github.com",
+		TTL:                 5 * time.Minute,
+		Roles:               roles.NewRegistry(),
+		Broker:              broker,
+		AttestationResolver: testResolver(),
 		Bindings: map[string]mint.RoleBinding{
 			"builder": builderBinding(),
 		},
@@ -175,13 +202,15 @@ func TestMintBrokerError(t *testing.T) {
 		vals: map[string]string{
 			testAppIDPath:     sensitiveAppID,
 			testInstallIDPath: testInstallID,
+			testAppSlugPath:   testAppSlug,
 		},
 		failKey: testPrivateKeyPath,
 	}
 
 	svc := &mint.Service{
-		Roles:  roles.NewRegistry(),
-		Broker: broker,
+		Roles:               roles.NewRegistry(),
+		Broker:              broker,
+		AttestationResolver: testResolver(),
 		Bindings: map[string]mint.RoleBinding{
 			"builder": builderBinding(),
 		},
@@ -213,14 +242,16 @@ func TestMintCustomRoleExactPermissions(t *testing.T) {
 		testAppIDPath:      testAppID,
 		testInstallIDPath:  testInstallID,
 		testPrivateKeyPath: testFakeKey,
+		testAppSlugPath:    testAppSlug,
 	}}
 
 	var capturedPerms map[string]string
 	svc := &mint.Service{
-		APIBase: "https://api.github.com",
-		TTL:     5 * time.Minute,
-		Roles:   reg,
-		Broker:  broker,
+		APIBase:             "https://api.github.com",
+		TTL:                 5 * time.Minute,
+		Roles:               reg,
+		Broker:              broker,
+		AttestationResolver: testResolver(),
 		Bindings: map[string]mint.RoleBinding{
 			"releaser": builderBinding(),
 		},
@@ -262,14 +293,16 @@ func TestMintRendererFieldOverridesDefault(t *testing.T) {
 		testAppIDPath:      testAppID,
 		testInstallIDPath:  testInstallID,
 		testPrivateKeyPath: testFakeKey,
+		testAppSlugPath:    testAppSlug,
 	}}
 
 	var capturedPerms map[string]string
 	svc := &mint.Service{
-		APIBase: "https://api.github.com",
-		TTL:     5 * time.Minute,
-		Roles:   roles.NewRegistry(),
-		Broker:  broker,
+		APIBase:             "https://api.github.com",
+		TTL:                 5 * time.Minute,
+		Roles:               roles.NewRegistry(),
+		Broker:              broker,
+		AttestationResolver: testResolver(),
 		Bindings: map[string]mint.RoleBinding{
 			"builder": builderBinding(),
 		},
@@ -312,16 +345,18 @@ func TestMintReposPassedThrough(t *testing.T) {
 		testAppIDPath:      testAppID,
 		testInstallIDPath:  testInstallID,
 		testPrivateKeyPath: testFakeKey,
+		testAppSlugPath:    testAppSlug,
 	}}
 
 	wantRepos := []string{"clagentic/clagentic-gatekeeper", "clagentic/lore"}
 
 	var capturedRepos []string
 	svc := &mint.Service{
-		APIBase: "https://api.github.com",
-		TTL:     5 * time.Minute,
-		Roles:   roles.NewRegistry(),
-		Broker:  broker,
+		APIBase:             "https://api.github.com",
+		TTL:                 5 * time.Minute,
+		Roles:               roles.NewRegistry(),
+		Broker:              broker,
+		AttestationResolver: testResolver(),
 		Bindings: map[string]mint.RoleBinding{
 			"builder": builderBinding(),
 		},

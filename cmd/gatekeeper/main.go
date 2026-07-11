@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/clagentic/clagentic-gatekeeper/internal/attestation"
 	"github.com/clagentic/clagentic-gatekeeper/internal/broker"
 	"github.com/clagentic/clagentic-gatekeeper/internal/config"
 	"github.com/clagentic/clagentic-gatekeeper/internal/mint"
@@ -87,6 +88,9 @@ func runMint(args []string) error {
 			AppIDPath:          rc.AppIDPath,
 			InstallationIDPath: rc.InstallationIDPath,
 			PrivateKeyPath:     rc.PrivateKeyPath,
+			EntitledIdentities: rc.EntitledIdentities,
+			AppSlug:            rc.AppSlug,
+			AppSlugPath:        rc.AppSlugPath,
 		}
 	}
 
@@ -111,12 +115,34 @@ func runMint(args []string) error {
 		os.Exit(2)
 	}
 
+	// Attestation chain resolves the ATTESTED invoking identity for the
+	// mint-time entitlement check (tome #700, layer (2)->(3)). A bare install
+	// with no attestation config still gets a resolver — the built-in
+	// fallback (layer c) is always appended — so entitlement is never
+	// silently skipped for lack of configuration.
+	resolver, err := attestation.NewChain(attestation.ChainConfig{
+		Configured: attestation.ConfiguredConfig{
+			Type:   attestation.ConfiguredType(cfg.Attestation.Configured.Type),
+			Source: cfg.Attestation.Configured.Source,
+		},
+		Sidecar: attestation.SidecarConfig{
+			Dir:          cfg.Attestation.Sidecar.Dir,
+			FilePrefix:   cfg.Attestation.Sidecar.FilePrefix,
+			SessionIDEnv: cfg.Attestation.Sidecar.SessionIDEnv,
+		},
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "attestation: %v\n", err)
+		os.Exit(2)
+	}
+
 	svc := mint.Service{
-		APIBase:  cfg.GitHub.APIBase,
-		TTL:      time.Duration(cfg.Token.TTLMinutes) * time.Minute,
-		Roles:    registry,
-		Broker:   br,
-		Bindings: bindings,
+		APIBase:             cfg.GitHub.APIBase,
+		TTL:                 time.Duration(cfg.Token.TTLMinutes) * time.Minute,
+		Roles:               registry,
+		Broker:              br,
+		Bindings:            bindings,
+		AttestationResolver: resolver,
 	}
 
 	var repos []string
