@@ -42,6 +42,15 @@ roles:
     permissions:
       contents: write
       issues: read
+
+attestation:
+  configured:
+    type: env
+    source: GATEKEEPER_ATTESTED_IDENTITY
+  sidecar:
+    dir: /tmp
+    file_prefix: lore-agent-name-
+    session_id_env: LORE_SESSION_ID
 `)
 
 	cfg, err := Load(path)
@@ -92,6 +101,22 @@ roles:
 	if custom.Permissions["issues"] != "read" {
 		t.Errorf("custom.Permissions[issues] = %q, want %q", custom.Permissions["issues"], "read")
 	}
+
+	if cfg.Attestation.Configured.Type != "env" {
+		t.Errorf("Attestation.Configured.Type = %q, want %q", cfg.Attestation.Configured.Type, "env")
+	}
+	if cfg.Attestation.Configured.Source != "GATEKEEPER_ATTESTED_IDENTITY" {
+		t.Errorf("Attestation.Configured.Source = %q, want %q", cfg.Attestation.Configured.Source, "GATEKEEPER_ATTESTED_IDENTITY")
+	}
+	if cfg.Attestation.Sidecar.Dir != "/tmp" {
+		t.Errorf("Attestation.Sidecar.Dir = %q, want %q", cfg.Attestation.Sidecar.Dir, "/tmp")
+	}
+	if cfg.Attestation.Sidecar.FilePrefix != "lore-agent-name-" {
+		t.Errorf("Attestation.Sidecar.FilePrefix = %q, want %q", cfg.Attestation.Sidecar.FilePrefix, "lore-agent-name-")
+	}
+	if cfg.Attestation.Sidecar.SessionIDEnv != "LORE_SESSION_ID" {
+		t.Errorf("Attestation.Sidecar.SessionIDEnv = %q, want %q", cfg.Attestation.Sidecar.SessionIDEnv, "LORE_SESSION_ID")
+	}
 }
 
 func TestLoad_Defaults(t *testing.T) {
@@ -115,6 +140,16 @@ roles: {}
 	if cfg.GitHub.APIBase != defaultAPIBase {
 		t.Errorf("GitHub.APIBase = %q, want %q (default)", cfg.GitHub.APIBase, defaultAPIBase)
 	}
+	// attestation omitted entirely → zero-value config, meaning both
+	// configurable layers are disabled and a bare install relies solely on
+	// the attestation package's built-in fallback (see internal/attestation).
+	if cfg.Attestation.Configured.Type != "" {
+		t.Errorf("Attestation.Configured.Type = %q, want %q (default, disabled)", cfg.Attestation.Configured.Type, "")
+	}
+	if cfg.Attestation.Sidecar.Dir != "" {
+		t.Errorf("Attestation.Sidecar.Dir = %q, want %q (default, disabled)", cfg.Attestation.Sidecar.Dir, "")
+	}
+
 	if cfg.Token.TTLMinutes != defaultTTLMinutes {
 		t.Errorf("Token.TTLMinutes = %d, want %d (default)", cfg.Token.TTLMinutes, defaultTTLMinutes)
 	}

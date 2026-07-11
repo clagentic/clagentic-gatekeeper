@@ -17,10 +17,11 @@ const (
 
 // Config is the top-level configuration structure for gatekeeper.
 type Config struct {
-	GitHub GitHubConfig          `yaml:"github"`
-	Broker BrokerConfig          `yaml:"broker"`
-	Token  TokenConfig           `yaml:"token"`
-	Roles  map[string]RoleConfig `yaml:"roles"`
+	GitHub      GitHubConfig          `yaml:"github"`
+	Broker      BrokerConfig          `yaml:"broker"`
+	Token       TokenConfig           `yaml:"token"`
+	Roles       map[string]RoleConfig `yaml:"roles"`
+	Attestation AttestationConfig     `yaml:"attestation"`
 }
 
 // GitHubConfig holds GitHub connectivity settings.
@@ -46,6 +47,45 @@ type BrokerConfig struct {
 type TokenConfig struct {
 	// TTLMinutes is the requested installation token lifetime. GitHub caps at 60.
 	TTLMinutes int `yaml:"ttl_minutes"`
+}
+
+// AttestationConfig selects and configures the attestation-provider chain
+// (internal/attestation) that resolves the ATTESTED invoking identity. All
+// three layers are optional in config: an unconfigured layer is omitted
+// from the chain rather than assumed, and the built-in fallback (layer c)
+// requires no config at all — see internal/attestation for the resolution
+// order and rationale.
+type AttestationConfig struct {
+	// Configured selects layer (a): a deployment's own identity source.
+	Configured AttestationConfiguredConfig `yaml:"configured"`
+	// Sidecar configures layer (b): the crew-sidecar adapter, used only
+	// when fully configured and only when its file is present at resolve
+	// time. Never assumed to exist.
+	Sidecar AttestationSidecarConfig `yaml:"sidecar"`
+}
+
+// AttestationConfiguredConfig configures layer (a) of the attestation
+// chain. Type is "env" or "file"; empty disables this layer.
+type AttestationConfiguredConfig struct {
+	// Type selects the provider implementation: "env" | "file". Empty
+	// disables the configured provider.
+	Type string `yaml:"type"`
+	// Source is the env var name (Type: env) or file path (Type: file)
+	// to read the attested identity from.
+	Source string `yaml:"source"`
+}
+
+// AttestationSidecarConfig configures layer (b) of the attestation chain,
+// the crew-sidecar adapter. All three fields are required together; a
+// partially configured sidecar is treated as disabled.
+type AttestationSidecarConfig struct {
+	// Dir is the directory the sidecar writes its identity file into.
+	Dir string `yaml:"dir"`
+	// FilePrefix is the filename prefix before the session ID.
+	FilePrefix string `yaml:"file_prefix"`
+	// SessionIDEnv names the environment variable holding the current
+	// session ID, used to build the sidecar filename.
+	SessionIDEnv string `yaml:"session_id_env"`
 }
 
 // RoleConfig binds a role name to broker paths for its GitHub App credentials.
