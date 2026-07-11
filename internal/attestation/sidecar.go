@@ -61,13 +61,40 @@ func (p *sidecarProvider) Resolve(_ context.Context) (Identity, error) {
 		// harness is not active here — decline, do not error.
 		return Identity{}, ErrNoIdentity
 	}
+	if !isSafePathSegment(sessionID) {
+		// A session ID is an opaque token from the environment, never a path.
+		// Refuse anything that could redirect the read (separators, "..",
+		// absolute paths) rather than trying to sanitize it — decline, do
+		// not read.
+		return Identity{}, ErrNoIdentity
+	}
 
 	path := filepath.Join(p.cfg.Dir, p.cfg.FilePrefix+sessionID)
-	data, err := os.ReadFile(path)
+	if err := requireContained(p.cfg.Dir, path); err != nil {
+		return Identity{}, fmt.Errorf("attestation: sidecar identity path escapes configured dir: %w", err)
+	}
+
+	// Lstat (not Stat) so a symlink is detected as itself, not resolved
+	// through to its target. A planted symlink in cfg.Dir (e.g. the
+	// world-writable /tmp) must not be able to redirect the read to an
+	// arbitrary file.
+	info, err := os.Lstat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			// The sidecar file is absent for this session — used only when
 			// present, per the interface contract. Decline, do not error.
+			return Identity{}, ErrNoIdentity
+		}
+		return Identity{}, fmt.Errorf("attestation: stat sidecar identity file %q: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		// Symlink, device, socket, etc. — refuse rather than follow.
+		return Identity{}, fmt.Errorf("attestation: sidecar identity path %q is not a regular file", path)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
 			return Identity{}, ErrNoIdentity
 		}
 		return Identity{}, fmt.Errorf("attestation: read sidecar identity file %q: %w", path, err)
@@ -78,4 +105,46 @@ func (p *sidecarProvider) Resolve(_ context.Context) (Identity, error) {
 		return Identity{}, ErrNoIdentity
 	}
 	return Identity{Subject: v, Source: "sidecar"}, nil
+}
+
+// isSafePathSegment reports whether s is safe to use as a single path
+// component: non-empty, no path separators (either OS form), and not the
+// "." or ".." special names. A session ID is an opaque identifier, never a
+// path — this rejects anything that could traverse out of cfg.Dir.
+func isSafePathSegment(s string) bool {
+	if s == "" || s == "." || s == ".." {
+		return false
+	}
+	if strings.ContainsRune(s, '/') || strings.ContainsRune(s, '\\') {
+		return false
+	}
+	// filepath.Clean does not change a genuine single segment; if it does,
+	// the input encoded something path-like our explicit checks missed.
+	if filepath.Clean(s) != s {
+		return false
+	}
+	return true
+}
+
+// requireContained verifies that target, once resolved, is a direct child
+// of dir — not a path that escapes dir via "..", a symlinked ancestor
+// component, or an absolute path substitution. Both paths are cleaned
+// before comparison.
+func requireContained(dir, target string) error {
+	cleanDir := filepath.Clean(dir)
+	cleanTarget := filepath.Clean(target)
+
+	rel, err := filepath.Rel(cleanDir, cleanTarget)
+	if err != nil {
+		return fmt.Errorf("compute relative path: %w", err)
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return fmt.Errorf("path %q escapes directory %q", cleanTarget, cleanDir)
+	}
+	// The sidecar filename must be a single path component directly under
+	// dir — reject anything that resolved to a nested path.
+	if strings.ContainsRune(rel, filepath.Separator) {
+		return fmt.Errorf("path %q is not a direct child of %q", cleanTarget, cleanDir)
+	}
+	return nil
 }
