@@ -97,12 +97,14 @@ source will use `configured`, not `sidecar` (the sidecar path exists for the
 specific crew-manifest plugin convention).
 
 **Config location:** this is Gatekeeper's own `config.yaml` (copied from
-`config.example.yaml` per the main [README](../README.md#configuration)) —
-there is no `.clagentic/loadout/` path in Gatekeeper itself. If you are also
-running `clagentic-loadout`, its consumer-attestation configuration is a
-separate setting in *that* repo's own config (`.clagentic/loadout/config.yaml`)
-and is documented there — this doc covers only what Gatekeeper itself
-consumes.
+`config.example.yaml` per the main [README](../README.md#configuration)).
+Gatekeeper itself does not read a `.clagentic/loadout/` path — that path is
+the *per-repo* loadout config consumed by `clagentic-loadout` (operator-
+ratified, tome #701), and is a separate setting in that consumer repo's own
+`.clagentic/loadout/config.yaml`, documented there. If you are also running
+`clagentic-loadout`, do not confuse its per-repo loadout config with
+Gatekeeper's own `config.yaml` described here — this doc covers only what
+Gatekeeper itself consumes.
 
 ## The built-in fallback — and the risk of doing nothing
 
