@@ -123,7 +123,7 @@ agent runs as the same user, the built-in fallback cannot distinguish one
 caller from another.
 
 **The risk this doc exists to head off:** a consumer who does not set
-`attestation.configured` (or `attestation.sidecar`) is running the built-in
+`attestation.configured` (or `attestation.sidecars`) is running the built-in
 fallback, not real attestation — even though nothing errors and mint appears
 to work normally. If your entitlement model (`roles.<name>.entitled_identities`
 in [`docs/ROLES.md`](ROLES.md)) depends on distinguishing individual agents or
@@ -236,7 +236,7 @@ missing is disabled, not partially applied.
 
 | Layer | What it answers | Config | Fails closed? |
 |-------|------------------|--------|----------------|
-| 1. Attested identity | Who is asking | `attestation.configured` / `attestation.sidecar` in `config.yaml` | Yes — a broken configured/sidecar provider is a hard error, not a silent fallthrough |
+| 1. Attested identity | Who is asking | `attestation.configured` / `attestation.sidecars` in `config.yaml` | Yes — a broken configured/sidecar provider is a hard error, not a silent fallthrough |
 | 2. Role entitlement | What that identity may mint | `roles.<name>.entitled_identities` in `config.yaml` | Yes — empty/absent list refuses to mint (see [`docs/ROLES.md`](ROLES.md)) |
 | 3. Credential grantor | What credentials the role gets | Secret broker (`broker.*` in `config.yaml`) | N/A — reached only after 1 and 2 pass |
 
