@@ -20,7 +20,7 @@ layer 1 only:
 1. **Attested invoking identity** — who is actually asking, per whatever your
    deployment's identity source vouches for. This is `internal/attestation`,
    covered below. It is *resolved*, never self-declared by the caller.
-2. **Crew role / `--caller`** — which role the attested identity is entitled
+2. **Caller role / `--caller`** — which role the attested identity is entitled
    to mint (`roles.<name>.entitled_identities` in `config.yaml`; see
    [`docs/ROLES.md`](ROLES.md) for the full entitlement + App-slug
    verification gate).
