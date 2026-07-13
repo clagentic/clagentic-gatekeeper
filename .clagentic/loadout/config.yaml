@@ -1,0 +1,45 @@
+# .clagentic/loadout/config.yaml — clagentic-gatekeeper repo-local loadout
+# config (lr-3fa652).
+#
+# Schema: clagentic_loadout.merge.post_merge_config — the `merge:` top-level
+# section, `post_merge_steps` key (a list of step mappings; see
+# clagentic_loadout.merge.post_merge.run_post_merge_steps for the step
+# shape: cmd, description, on_failure).
+#
+# WHY THIS FILE EXISTS: NAOMI merges this repo's PRs via loadout-merge on
+# GitHub (the sole reachable GitHub merge entrypoint, lr-d9729d).
+# loadout-merge reads ITS OWN post_merge_steps from this repo-local file —
+# it does NOT read .crew/naomi.yaml's post_merge_steps (that block is
+# crew_merge.py's own Forgejo-path config, read by a different merge tool
+# entirely). Before this file existed, a GitHub merge via loadout-merge ran
+# no post-merge step at all, leaving the deployed /usr/local/bin/gatekeeper
+# binary stale relative to origin/main (root cause of a reader mint
+# resolving against an old single-sidecar binary that predated the
+# attestation.sidecars list).
+#
+# This step is migrated verbatim (same cmd, same on_failure) from
+# .crew/naomi.yaml's post_merge_steps (see that file's own extensive
+# lr-c05c / lr-6e96 / lr-f193 history on why the step is a single command
+# with no shell operators) — .crew/naomi.yaml is left UNCHANGED; it remains
+# the config crew_merge.py's own Forgejo fallback path reads.
+#
+# loadout-merge already syncs the working tree to the merged SHA (git fetch
+# + git checkout --detach <merged_sha>) immediately before running
+# post_merge_steps, so this step builds from merged main automatically — no
+# checkout/sync step is added here.
+#
+# GOPATH/GOMODCACHE/GOCACHE are supplied inline on the cmd, matching
+# .crew/naomi.yaml's existing step exactly: these are machine-specific
+# values, and the loadout post_merge_env deployment-owned override seam
+# (lr-52d7, clagentic_loadout.merge.post_merge_config.resolve_env_overrides)
+# is deliberately USER-LEVEL config only (~/.config/clagentic/loadout/
+# config.yaml, outside any repo checkout) — it is not a field this
+# repo-local, committed file can populate itself. Baking the same
+# our-env-only values inline here mirrors the already-working .crew step
+# rather than inventing a partial/inconsistent split between the two merge
+# paths.
+merge:
+  post_merge_steps:
+    - cmd: "GOPATH=/root/go GOMODCACHE=/root/go/pkg/mod GOCACHE=/root/.cache/go make install PREFIX=/usr/local"
+      description: "Rebuild and install the role-scoped mint binary via the shared parameterized `make install` target so reference-role changes (e.g. builder workflows:write, lr-8681; multi-sidecar attestation.sidecars, lr-86779f) take effect on this host without a manual redeploy. GOPATH/GOMODCACHE/GOCACHE/PREFIX are supplied inline here, our-env-only, off the shipped Makefile's own defaults. Runs against the merged origin/main loadout-merge already syncs the working tree to before invoking post_merge_steps."
+      on_failure: fail
