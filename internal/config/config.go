@@ -51,17 +51,40 @@ type TokenConfig struct {
 
 // AttestationConfig selects and configures the attestation-provider chain
 // (internal/attestation) that resolves the ATTESTED invoking identity. All
-// three layers are optional in config: an unconfigured layer is omitted
-// from the chain rather than assumed, and the built-in fallback (layer c)
-// requires no config at all — see internal/attestation for the resolution
-// order and rationale.
+// layers are optional in config: an unconfigured layer is omitted from the
+// chain rather than assumed, and the built-in fallback (layer c) requires
+// no config at all — see internal/attestation for the resolution order and
+// rationale.
 type AttestationConfig struct {
 	// Configured selects layer (a): a deployment's own identity source.
 	Configured AttestationConfiguredConfig `yaml:"configured"`
-	// Sidecar configures layer (b): the crew-sidecar adapter, used only
-	// when fully configured and only when its file is present at resolve
-	// time. Never assumed to exist.
+	// Sidecar configures a single layer (b) crew-sidecar adapter. Retained
+	// for back-compat with single-sidecar deployments; a deployment with
+	// exactly one sidecar namespace may use this block instead of Sidecars.
+	// If both Sidecar and Sidecars are set, Sidecar is tried first (see
+	// Resolve). Used only when fully configured and only when its file is
+	// present at resolve time — never assumed to exist.
 	Sidecar AttestationSidecarConfig `yaml:"sidecar"`
+	// Sidecars configures an ordered list of layer (b) crew-sidecar
+	// adapters, for deployments that resolve identity from more than one
+	// independent sidecar namespace (e.g. a per-session namespace for a
+	// lead process and a per-spawn namespace for its subagents). Resolved
+	// in list order; the first entry whose file is present wins.
+	Sidecars []AttestationSidecarConfig `yaml:"sidecars"`
+}
+
+// ResolveSidecars returns the effective ordered list of sidecar layer (b)
+// configs: the legacy single Sidecar block (when set) followed by the
+// Sidecars list. This is the one place the Sidecar/Sidecars back-compat
+// merge happens, so callers (cmd/gatekeeper) never need to know about the
+// legacy field.
+func (a AttestationConfig) ResolveSidecars() []AttestationSidecarConfig {
+	var out []AttestationSidecarConfig
+	if a.Sidecar.enabled() {
+		out = append(out, a.Sidecar)
+	}
+	out = append(out, a.Sidecars...)
+	return out
 }
 
 // AttestationConfiguredConfig configures layer (a) of the attestation
@@ -86,6 +109,14 @@ type AttestationSidecarConfig struct {
 	// SessionIDEnv names the environment variable holding the current
 	// session ID, used to build the sidecar filename.
 	SessionIDEnv string `yaml:"session_id_env"`
+}
+
+// enabled reports whether cfg has enough information to be a usable sidecar
+// entry. All three fields are required together; a partially configured
+// entry is treated as disabled rather than guessed at — mirrors
+// internal/attestation.SidecarConfig.enabled().
+func (cfg AttestationSidecarConfig) enabled() bool {
+	return cfg.Dir != "" && cfg.FilePrefix != "" && cfg.SessionIDEnv != ""
 }
 
 // RoleConfig binds a role name to broker paths for its GitHub App credentials.

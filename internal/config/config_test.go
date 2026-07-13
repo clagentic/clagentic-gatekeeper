@@ -185,6 +185,95 @@ roles: {}
 	}
 }
 
+func TestLoad_SidecarsList(t *testing.T) {
+	path := writeTemp(t, `
+github:
+  owner: myorg
+
+broker:
+  type: env
+
+roles: {}
+
+attestation:
+  sidecars:
+    - dir: /tmp
+      file_prefix: lore-agent-name-
+      session_id_env: CLAUDE_CODE_SESSION_ID
+    - dir: /tmp
+      file_prefix: crew-agent-spawn-
+      session_id_env: CREW_SPAWN_AGENT_ID
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+
+	if len(cfg.Attestation.Sidecars) != 2 {
+		t.Fatalf("Attestation.Sidecars = %+v, want 2 entries", cfg.Attestation.Sidecars)
+	}
+	if cfg.Attestation.Sidecars[0].FilePrefix != "lore-agent-name-" {
+		t.Errorf("Sidecars[0].FilePrefix = %q, want %q", cfg.Attestation.Sidecars[0].FilePrefix, "lore-agent-name-")
+	}
+	if cfg.Attestation.Sidecars[1].FilePrefix != "crew-agent-spawn-" {
+		t.Errorf("Sidecars[1].FilePrefix = %q, want %q", cfg.Attestation.Sidecars[1].FilePrefix, "crew-agent-spawn-")
+	}
+
+	resolved := cfg.Attestation.ResolveSidecars()
+	if len(resolved) != 2 {
+		t.Fatalf("ResolveSidecars() = %+v, want 2 entries (no legacy sidecar block set)", resolved)
+	}
+	if resolved[0].SessionIDEnv != "CLAUDE_CODE_SESSION_ID" {
+		t.Errorf("ResolveSidecars()[0].SessionIDEnv = %q, want %q", resolved[0].SessionIDEnv, "CLAUDE_CODE_SESSION_ID")
+	}
+}
+
+// TestAttestationConfig_ResolveSidecars_BackCompat verifies the back-compat
+// merge: a deployment still using the legacy singular `sidecar:` block gets
+// it as the first entry, ahead of any entries in the `sidecars:` list.
+func TestAttestationConfig_ResolveSidecars_BackCompat(t *testing.T) {
+	cfg := AttestationConfig{
+		Sidecar: AttestationSidecarConfig{
+			Dir:          "/tmp",
+			FilePrefix:   "legacy-",
+			SessionIDEnv: "LEGACY_SESSION_ID",
+		},
+		Sidecars: []AttestationSidecarConfig{
+			{Dir: "/tmp", FilePrefix: "new-", SessionIDEnv: "NEW_SESSION_ID"},
+		},
+	}
+
+	resolved := cfg.ResolveSidecars()
+	if len(resolved) != 2 {
+		t.Fatalf("ResolveSidecars() = %+v, want 2 entries", resolved)
+	}
+	if resolved[0].FilePrefix != "legacy-" {
+		t.Errorf("ResolveSidecars()[0].FilePrefix = %q, want %q (legacy block first)", resolved[0].FilePrefix, "legacy-")
+	}
+	if resolved[1].FilePrefix != "new-" {
+		t.Errorf("ResolveSidecars()[1].FilePrefix = %q, want %q", resolved[1].FilePrefix, "new-")
+	}
+}
+
+// TestAttestationConfig_ResolveSidecars_PartialLegacyBlockOmitted verifies
+// that a partially configured legacy `sidecar:` block (not all three fields
+// set) is treated as disabled and omitted from the merged list, matching
+// the existing single-sidecar "all or nothing" semantics.
+func TestAttestationConfig_ResolveSidecars_PartialLegacyBlockOmitted(t *testing.T) {
+	cfg := AttestationConfig{
+		Sidecar: AttestationSidecarConfig{
+			Dir: "/tmp",
+			// FilePrefix and SessionIDEnv left empty.
+		},
+	}
+
+	resolved := cfg.ResolveSidecars()
+	if len(resolved) != 0 {
+		t.Errorf("ResolveSidecars() = %+v, want empty (partial legacy block must be omitted)", resolved)
+	}
+}
+
 func TestLoad_MissingFile(t *testing.T) {
 	_, err := Load("/nonexistent/path/config.yaml")
 	if err == nil {

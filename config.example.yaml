@@ -29,8 +29,8 @@ token:
   ttl_minutes: 60
 
 # Attestation-provider chain: resolves the ATTESTED invoking identity, in
-# order (a) configured -> (b) sidecar -> (c) built-in fallback (always on,
-# no config needed). All fields below are optional; a bare install with
+# order (a) configured -> (b) sidecar(s) -> (c) built-in fallback (always
+# on, no config needed). All fields below are optional; a bare install with
 # nothing set here still resolves via the built-in fallback. See
 # internal/attestation for resolution order and the full design rationale.
 attestation:
@@ -39,16 +39,33 @@ attestation:
   configured:
     type: ""
     source: ""
-  # Layer (b): the crew-sidecar adapter. This is ONE adapter behind the
-  # attestation interface, never assumed to exist — all three fields are
-  # required together to enable it; a partial setting is treated as
-  # disabled. Example values match the crew-manifest plugin's
-  # /tmp/lore-agent-name-<session_id> convention, but nothing here
-  # hardcodes that plugin as a dependency.
-  sidecar:
-    dir: ""
-    file_prefix: ""
-    session_id_env: ""
+  # Layer (b): the crew-sidecar adapter(s). Each entry is ONE adapter
+  # behind the attestation interface, never assumed to exist — all three
+  # fields (dir, file_prefix, session_id_env) are required together to
+  # enable an entry; a partial entry is treated as disabled. Entries are
+  # tried in the order listed; the first whose identity file is present
+  # for the current invocation wins.
+  #
+  # A single deployment commonly needs more than one sidecar namespace:
+  # one attesting the lead/session process, a different one attesting its
+  # spawned subagents. The example below shows both — a session-scoped
+  # namespace (crew-manifest's write-agent-sidecar.sh,
+  # /tmp/lore-agent-name-<session_id>, keyed on CLAUDE_CODE_SESSION_ID)
+  # and a per-spawn namespace (/tmp/crew-agent-spawn-<spawn_id>, keyed on
+  # CREW_SPAWN_AGENT_ID) — but nothing here hardcodes either plugin as a
+  # dependency; leave the list empty to disable this layer entirely.
+  sidecars:
+    - dir: /tmp
+      file_prefix: lore-agent-name-
+      session_id_env: CLAUDE_CODE_SESSION_ID
+    - dir: /tmp
+      file_prefix: crew-agent-spawn-
+      session_id_env: CREW_SPAWN_AGENT_ID
+  # Deprecated: the legacy singular `sidecar:` block (dir/file_prefix/
+  # session_id_env) is still accepted for back-compat and, when fully
+  # configured, is tried before the `sidecars:` list above. New
+  # deployments should use `sidecars:` instead — it is the only way to
+  # configure more than one sidecar namespace.
 
 # Role definitions. Each role binds to one GitHub App and one permission set.
 #
