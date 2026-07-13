@@ -30,10 +30,12 @@ func TestNewChain_ConfiguredTakesPrecedence(t *testing.T) {
 			Type:   attestation.ConfiguredEnv,
 			Source: configuredVar,
 		},
-		Sidecar: attestation.SidecarConfig{
-			Dir:          dir,
-			FilePrefix:   "sidecar-",
-			SessionIDEnv: sessionEnv,
+		Sidecars: []attestation.SidecarConfig{
+			{
+				Dir:          dir,
+				FilePrefix:   "sidecar-",
+				SessionIDEnv: sessionEnv,
+			},
 		},
 	})
 	if err != nil {
@@ -63,10 +65,12 @@ func TestNewChain_SidecarWinsWhenConfiguredAbsent(t *testing.T) {
 
 	resolver, err := attestation.NewChain(attestation.ChainConfig{
 		// Configured left at zero value: layer (a) disabled entirely.
-		Sidecar: attestation.SidecarConfig{
-			Dir:          dir,
-			FilePrefix:   "sidecar-",
-			SessionIDEnv: sessionEnv,
+		Sidecars: []attestation.SidecarConfig{
+			{
+				Dir:          dir,
+				FilePrefix:   "sidecar-",
+				SessionIDEnv: sessionEnv,
+			},
 		},
 	})
 	if err != nil {
@@ -79,6 +83,142 @@ func TestNewChain_SidecarWinsWhenConfiguredAbsent(t *testing.T) {
 	}
 	if id.Subject != "from-sidecar" || id.Source != "sidecar" {
 		t.Errorf("Resolve() = %+v, want Subject=from-sidecar Source=sidecar", id)
+	}
+}
+
+// TestNewChain_MultipleSidecars_FirstMatchWins verifies the headline
+// behavior for this chain: two independent sidecar namespaces are tried in
+// the configured order, and the first one whose file resolves wins even
+// though a later entry in the list would also resolve.
+func TestNewChain_MultipleSidecars_FirstMatchWins(t *testing.T) {
+	sessionDir := t.TempDir()
+	spawnDir := t.TempDir()
+
+	const sessionEnv = "ATTESTATION_TEST_CHAIN_MULTI_SESSION_LR86779F"
+	const spawnEnv = "ATTESTATION_TEST_CHAIN_MULTI_SPAWN_LR86779F"
+	t.Setenv(sessionEnv, "session-9")
+	t.Setenv(spawnEnv, "spawn-9")
+
+	sessionPath := filepath.Join(sessionDir, "lore-agent-name-session-9")
+	if err := os.WriteFile(sessionPath, []byte("holden"), 0o600); err != nil {
+		t.Fatalf("setup: write session sidecar file: %v", err)
+	}
+	spawnPath := filepath.Join(spawnDir, "crew-agent-spawn-spawn-9")
+	if err := os.WriteFile(spawnPath, []byte("peaches"), 0o600); err != nil {
+		t.Fatalf("setup: write spawn sidecar file: %v", err)
+	}
+
+	resolver, err := attestation.NewChain(attestation.ChainConfig{
+		Sidecars: []attestation.SidecarConfig{
+			{
+				Dir:          sessionDir,
+				FilePrefix:   "lore-agent-name-",
+				SessionIDEnv: sessionEnv,
+			},
+			{
+				Dir:          spawnDir,
+				FilePrefix:   "crew-agent-spawn-",
+				SessionIDEnv: spawnEnv,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewChain: unexpected error: %v", err)
+	}
+
+	id, err := resolver.Resolve(context.Background())
+	if err != nil {
+		t.Fatalf("Resolve(): unexpected error: %v", err)
+	}
+	if id.Subject != "holden" || id.Source != "sidecar" {
+		t.Errorf("Resolve() = %+v, want Subject=holden Source=sidecar (first configured sidecar wins)", id)
+	}
+}
+
+// TestNewChain_MultipleSidecars_FirstDeclinesSecondResolves verifies that
+// when the first sidecar entry has no identity file for the current
+// invocation (its harness is not active), the chain falls through to the
+// next sidecar entry rather than stopping at the first declined layer.
+func TestNewChain_MultipleSidecars_FirstDeclinesSecondResolves(t *testing.T) {
+	sessionDir := t.TempDir()
+	spawnDir := t.TempDir()
+
+	const sessionEnv = "ATTESTATION_TEST_CHAIN_MULTI_SESSION_LR86779F_2"
+	const spawnEnv = "ATTESTATION_TEST_CHAIN_MULTI_SPAWN_LR86779F_2"
+	// sessionEnv intentionally left unset: the session sidecar's harness is
+	// not active in this invocation.
+	os.Unsetenv(sessionEnv)
+	t.Setenv(spawnEnv, "spawn-10")
+
+	spawnPath := filepath.Join(spawnDir, "crew-agent-spawn-spawn-10")
+	if err := os.WriteFile(spawnPath, []byte("bobbie"), 0o600); err != nil {
+		t.Fatalf("setup: write spawn sidecar file: %v", err)
+	}
+
+	resolver, err := attestation.NewChain(attestation.ChainConfig{
+		Sidecars: []attestation.SidecarConfig{
+			{
+				Dir:          sessionDir,
+				FilePrefix:   "lore-agent-name-",
+				SessionIDEnv: sessionEnv,
+			},
+			{
+				Dir:          spawnDir,
+				FilePrefix:   "crew-agent-spawn-",
+				SessionIDEnv: spawnEnv,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewChain: unexpected error: %v", err)
+	}
+
+	id, err := resolver.Resolve(context.Background())
+	if err != nil {
+		t.Fatalf("Resolve(): unexpected error: %v", err)
+	}
+	if id.Subject != "bobbie" || id.Source != "sidecar" {
+		t.Errorf("Resolve() = %+v, want Subject=bobbie Source=sidecar (fall through to second sidecar)", id)
+	}
+}
+
+// TestNewChain_MultipleSidecars_BothAbsent_BuiltinFallback verifies that
+// when neither configured sidecar namespace resolves for this invocation,
+// the chain still falls through to the built-in fallback rather than
+// failing open or erroring.
+func TestNewChain_MultipleSidecars_BothAbsent_BuiltinFallback(t *testing.T) {
+	sessionDir := t.TempDir()
+	spawnDir := t.TempDir()
+
+	const sessionEnv = "ATTESTATION_TEST_CHAIN_MULTI_SESSION_LR86779F_3"
+	const spawnEnv = "ATTESTATION_TEST_CHAIN_MULTI_SPAWN_LR86779F_3"
+	os.Unsetenv(sessionEnv)
+	os.Unsetenv(spawnEnv)
+
+	resolver, err := attestation.NewChain(attestation.ChainConfig{
+		Sidecars: []attestation.SidecarConfig{
+			{
+				Dir:          sessionDir,
+				FilePrefix:   "lore-agent-name-",
+				SessionIDEnv: sessionEnv,
+			},
+			{
+				Dir:          spawnDir,
+				FilePrefix:   "crew-agent-spawn-",
+				SessionIDEnv: spawnEnv,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewChain: unexpected error: %v", err)
+	}
+
+	id, err := resolver.Resolve(context.Background())
+	if err != nil {
+		t.Fatalf("Resolve(): unexpected error on both sidecars absent: %v", err)
+	}
+	if id.Source != "builtin" {
+		t.Errorf("Source = %q, want %q (both sidecars declined must fall back to builtin)", id.Source, "builtin")
 	}
 }
 

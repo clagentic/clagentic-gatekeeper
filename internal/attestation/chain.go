@@ -3,19 +3,25 @@ package attestation
 import "fmt"
 
 // ChainConfig carries the deployment-specific settings for the full
-// attestation chain: layer (a) configured provider, layer (b) sidecar
-// adapter. Layer (c), the built-in fallback, requires no configuration and
-// is always appended last.
+// attestation chain: layer (a) configured provider, layer (b) one or more
+// sidecar adapters. Layer (c), the built-in fallback, requires no
+// configuration and is always appended last.
 type ChainConfig struct {
 	Configured ConfiguredConfig
-	Sidecar    SidecarConfig
+	// Sidecars is an ordered list of layer (b) sidecar adapters. A
+	// deployment with multiple independent sidecar namespaces (e.g. a
+	// per-session namespace for a lead process and a per-spawn namespace
+	// for its subagents) configures one entry per namespace; the resolver
+	// tries each in the given order and uses the first that resolves. A
+	// single-entry list is the common case.
+	Sidecars []SidecarConfig
 }
 
 // NewChain builds the fixed-order Resolver: configured provider (a), then
-// sidecar adapter (b) when configured, then the built-in fallback (c). Each
-// of (a) and (b) is omitted from the chain — not stubbed, not assumed —
-// when its config is absent, so a bare install still resolves via (c)
-// rather than failing open.
+// each configured sidecar adapter (b) in order, then the built-in fallback
+// (c). Layer (a) and any individual sidecar entry are omitted from the
+// chain — not stubbed, not assumed — when its config is absent, so a bare
+// install still resolves via (c) rather than failing open.
 func NewChain(cfg ChainConfig) (*Resolver, error) {
 	var providers []Provider
 
@@ -27,12 +33,14 @@ func NewChain(cfg ChainConfig) (*Resolver, error) {
 		providers = append(providers, configured)
 	}
 
-	sidecar, err := NewSidecarProvider(cfg.Sidecar)
-	if err != nil {
-		return nil, fmt.Errorf("attestation: build sidecar provider: %w", err)
-	}
-	if sidecar != nil {
-		providers = append(providers, sidecar)
+	for i, sidecarCfg := range cfg.Sidecars {
+		sidecar, err := NewSidecarProvider(sidecarCfg)
+		if err != nil {
+			return nil, fmt.Errorf("attestation: build sidecar provider [%d]: %w", i, err)
+		}
+		if sidecar != nil {
+			providers = append(providers, sidecar)
+		}
 	}
 
 	providers = append(providers, NewBuiltinProvider())
