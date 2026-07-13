@@ -103,6 +103,7 @@ The private key is read server-side only, used to sign the App JWT, and never re
 
 ## Docs
 
+- [`docs/SETUP.md`](docs/SETUP.md) — attested identity, the fail-closed trust model, and configuring your own attestation source
 - [`docs/ROLES.md`](docs/ROLES.md) — per-role GitHub App permission tables
 - [`docs/GOVERNANCE.md`](docs/GOVERNANCE.md) — branch ruleset and CODEOWNERS reference
 - [`docs/DESIGN.md`](docs/DESIGN.md) — module architecture and security invariants
