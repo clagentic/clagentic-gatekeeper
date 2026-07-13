@@ -308,6 +308,66 @@ roles:
 	}
 }
 
+// TestRunMint_MultipleSidecarsConfig_SecondResolves verifies the config ->
+// attestation wiring end to end (lr-86779f): a config.yaml with a
+// `attestation.sidecars` list of two independent sidecar namespaces builds
+// a resolver where the second entry can resolve an identity even though the
+// first entry's session env is unset for this process — i.e. runMint does
+// not truncate the chain to a single sidecar provider.
+func TestRunMint_MultipleSidecarsConfig_SecondResolves(t *testing.T) {
+	sessionDir := t.TempDir()
+	spawnDir := t.TempDir()
+
+	const spawnEnv = "GATEKEEPER_TEST_MAIN_SPAWN_LR86779F"
+	t.Setenv(spawnEnv, "spawn-main-1")
+	spawnPath := filepath.Join(spawnDir, "crew-agent-spawn-spawn-main-1")
+	if err := os.WriteFile(spawnPath, []byte("peaches"), 0o600); err != nil {
+		t.Fatalf("setup: write spawn sidecar file: %v", err)
+	}
+
+	path := writeTempConfig(t, `
+github:
+  owner: testorg
+
+broker:
+  type: env
+
+roles:
+  reader:
+    app_id_path: secret/gk/reader/app-id
+    installation_id_path: secret/gk/reader/install-id
+    private_key_path: secret/gk/reader/key
+    entitled_identities:
+      - peaches
+
+attestation:
+  sidecars:
+    - dir: `+sessionDir+`
+      file_prefix: lore-agent-name-
+      session_id_env: GATEKEEPER_TEST_MAIN_SESSION_LR86779F_UNSET
+    - dir: `+spawnDir+`
+      file_prefix: crew-agent-spawn-
+      session_id_env: `+spawnEnv+`
+`)
+
+	// The first sidecar's session env is deliberately never set: its
+	// harness is not active in this test process. If runMint only wired a
+	// single sidecar provider, this would fall through to the builtin
+	// provider ("root"-equivalent) and fail entitlement for "peaches".
+	// Reaching the reader role's broker call (not a config-validation or
+	// entitlement error) proves the second sidecar entry resolved.
+	err := runMint([]string{"--role", "reader", "--config", path})
+	if err != nil && strings.Contains(err.Error(), "config error") {
+		t.Fatalf("runMint returned config-validation error: %v", err)
+	}
+	if err != nil && strings.Contains(err.Error(), "not entitled") {
+		t.Fatalf("runMint returned entitlement error; second sidecar entry did not resolve: %v", err)
+	}
+	// Any remaining error is expected (env broker returns empty paths,
+	// causing a downstream App-id parse failure) — we only assert
+	// attestation/entitlement was not the failure mode.
+}
+
 // TestMintWithoutRepoSendsEmptyRepos verifies that omitting --repo results in
 // an empty repositories[] field (GitHub interprets absence as all repos).
 func TestMintWithoutRepoSendsEmptyRepos(t *testing.T) {

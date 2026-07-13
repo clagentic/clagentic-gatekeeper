@@ -120,16 +120,28 @@ func runMint(args []string) error {
 	// with no attestation config still gets a resolver — the built-in
 	// fallback (layer c) is always appended — so entitlement is never
 	// silently skipped for lack of configuration.
+	//
+	// ResolveSidecars merges the legacy single `attestation.sidecar` block
+	// (back-compat) ahead of the `attestation.sidecars` list, so a
+	// deployment can carry more than one independent sidecar namespace
+	// (e.g. a per-session namespace for a lead process and a per-spawn
+	// namespace for its subagents) in a single resolver chain.
+	sidecarCfgs := cfg.Attestation.ResolveSidecars()
+	chainSidecars := make([]attestation.SidecarConfig, len(sidecarCfgs))
+	for i, sc := range sidecarCfgs {
+		chainSidecars[i] = attestation.SidecarConfig{
+			Dir:          sc.Dir,
+			FilePrefix:   sc.FilePrefix,
+			SessionIDEnv: sc.SessionIDEnv,
+		}
+	}
+
 	resolver, err := attestation.NewChain(attestation.ChainConfig{
 		Configured: attestation.ConfiguredConfig{
 			Type:   attestation.ConfiguredType(cfg.Attestation.Configured.Type),
 			Source: cfg.Attestation.Configured.Source,
 		},
-		Sidecar: attestation.SidecarConfig{
-			Dir:          cfg.Attestation.Sidecar.Dir,
-			FilePrefix:   cfg.Attestation.Sidecar.FilePrefix,
-			SessionIDEnv: cfg.Attestation.Sidecar.SessionIDEnv,
-		},
+		Sidecars: chainSidecars,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "attestation: %v\n", err)
