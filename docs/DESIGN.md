@@ -35,7 +35,13 @@ internal/githubapp/    GitHub App JWT signing + installation-token exchange.
 internal/attestation/  Resolves the ATTESTED invoking identity via a fixed-order
                        provider chain (configured -> sidecar -> built-in
                        fallback). Pure resolution, no policy — mint decides
-                       what an identity is allowed to do.
+                       what an identity is allowed to do. The sidecar layer's
+                       read contract (spawn-scoped vs. session-scoped
+                       classes, resolution order, fail-closed miss handling,
+                       symlink hard-fail) is specified generically in
+                       docs/SIDECAR-READ-CONTRACT.md, with this package's own
+                       config and implementation cited there as the worked
+                       example.
 
 internal/mint/         Orchestration. Ties attestation + roles + broker +
                        githubapp together:

@@ -98,6 +98,15 @@ not `sidecars` (the sidecar path exists for a harness that writes a
 per-spawn identity file external to Gatekeeper — see "Wiring your agents"
 below if you are building that harness yourself).
 
+The generalized read contract this layer implements — spawn-scoped vs.
+session-scoped sidecar classes, spawn-first resolution order, fail-closed
+handling of a miss, and symlink-safe reads — is specified independently of
+Gatekeeper's own naming in
+[`docs/SIDECAR-READ-CONTRACT.md`](SIDECAR-READ-CONTRACT.md). That doc treats
+Gatekeeper's deployed `attestation.sidecars` config and
+`internal/attestation/sidecar.go` as one worked example, not as required
+naming for any other consumer implementing the same contract.
+
 **Config location:** this is Gatekeeper's own `config.yaml` (copied from
 `config.example.yaml` per the main [README](../README.md#configuration)).
 Gatekeeper itself does not read a `.clagentic/loadout/` path — that path is
