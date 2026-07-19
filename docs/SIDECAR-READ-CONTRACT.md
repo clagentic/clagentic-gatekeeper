@@ -177,33 +177,40 @@ implementation are cited here as one concrete instance of the shapes above.
 Nothing in this section is a required name, path, or environment variable
 for any other consumer.
 
-**Deployed config** (`config.example.yaml`, `attestation.sidecars`):
+**Config shape** (same fields as `config.example.yaml`'s
+`attestation.sidecars`, reordered here to lead with spawn-first per
+section 2 — see the note below on Gatekeeper's currently deployed order):
 
 ```yaml
 attestation:
   sidecars:
-    # Session-scoped namespace — a lead/interactive process. Owned by LORE;
-    # prefix is not renamed (see section 7 above).
-    - dir: /tmp
-      file_prefix: lore-agent-name-
-      session_id_env: CLAUDE_CODE_SESSION_ID
-    # Spawn-scoped namespace — short-lived subagent invocations, one file
-    # per concurrent spawn.
+    # Spawn-scoped namespace — checked first, per section 2's spawn-first
+    # resolution order. Short-lived subagent invocations, one file per
+    # concurrent spawn.
     - dir: /tmp
       file_prefix: crew-agent-spawn-
       session_id_env: CREW_SPAWN_AGENT_ID
+    # Session-scoped namespace — checked second. A lead/interactive
+    # process. Owned by LORE; prefix is not renamed (see section 7 above).
+    - dir: /tmp
+      file_prefix: lore-agent-name-
+      session_id_env: CLAUDE_CODE_SESSION_ID
 ```
 
 Both `dir`, `file_prefix`, and the id-env-var name are ordinary config
 values (section 6) — nothing about `/tmp`, `lore-agent-name-`, or
 `CLAUDE_CODE_SESSION_ID` is hardcoded in Gatekeeper's Go source.
 
-Gatekeeper's currently deployed list happens to order the session-scoped
-entry before the spawn-scoped one; per section 2, a reader implementing
-this contract with both classes configured should order **spawn before
-session**. Where an existing deployed list differs, that is a config
-ordering value to reconcile locally against section 2 — it does not change
-the contract itself.
+The order above follows section 2's spawn-first resolution
+recommendation. A local deployment MAY choose a different order as its own
+config decision — the list order is read straight from `config.yaml` and
+Gatekeeper's chain does not enforce spawn-before-session itself (see
+"Reference read implementation" below). Gatekeeper's own currently
+deployed `config.example.yaml` lists the session-scoped entry first; that
+is a config ordering value to reconcile locally against section 2 (a
+separate, non-doc change), and does not change the contract itself. This
+worked example leads with spawn-first so it illustrates the contract's own
+recommendation rather than appearing to contradict it.
 
 **Reference read implementation**
 ([`internal/attestation/sidecar.go`](../internal/attestation/sidecar.go)):
