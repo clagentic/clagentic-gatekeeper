@@ -103,7 +103,7 @@ func TestNewChain_MultipleSidecars_FirstMatchWins(t *testing.T) {
 	if err := os.WriteFile(sessionPath, []byte("holden"), 0o600); err != nil {
 		t.Fatalf("setup: write session sidecar file: %v", err)
 	}
-	spawnPath := filepath.Join(spawnDir, "crew-agent-spawn-spawn-9")
+	spawnPath := filepath.Join(spawnDir, "spawn-spawn-9")
 	if err := os.WriteFile(spawnPath, []byte("peaches"), 0o600); err != nil {
 		t.Fatalf("setup: write spawn sidecar file: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestNewChain_MultipleSidecars_FirstMatchWins(t *testing.T) {
 			},
 			{
 				Dir:          spawnDir,
-				FilePrefix:   "crew-agent-spawn-",
+				FilePrefix:   "spawn-",
 				SessionIDEnv: spawnEnv,
 			},
 		},
@@ -150,7 +150,7 @@ func TestNewChain_MultipleSidecars_FirstDeclinesSecondResolves(t *testing.T) {
 	os.Unsetenv(sessionEnv)
 	t.Setenv(spawnEnv, "spawn-10")
 
-	spawnPath := filepath.Join(spawnDir, "crew-agent-spawn-spawn-10")
+	spawnPath := filepath.Join(spawnDir, "spawn-spawn-10")
 	if err := os.WriteFile(spawnPath, []byte("bobbie"), 0o600); err != nil {
 		t.Fatalf("setup: write spawn sidecar file: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestNewChain_MultipleSidecars_FirstDeclinesSecondResolves(t *testing.T) {
 			},
 			{
 				Dir:          spawnDir,
-				FilePrefix:   "crew-agent-spawn-",
+				FilePrefix:   "spawn-",
 				SessionIDEnv: spawnEnv,
 			},
 		},
@@ -204,7 +204,7 @@ func TestNewChain_MultipleSidecars_BothAbsent_BuiltinFallback(t *testing.T) {
 			},
 			{
 				Dir:          spawnDir,
-				FilePrefix:   "crew-agent-spawn-",
+				FilePrefix:   "spawn-",
 				SessionIDEnv: spawnEnv,
 			},
 		},

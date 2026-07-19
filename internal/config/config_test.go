@@ -201,8 +201,8 @@ attestation:
       file_prefix: lore-agent-name-
       session_id_env: CLAUDE_CODE_SESSION_ID
     - dir: /tmp
-      file_prefix: crew-agent-spawn-
-      session_id_env: CREW_SPAWN_AGENT_ID
+      file_prefix: spawn-
+      session_id_env: MY_HARNESS_SPAWN_ID
 `)
 
 	cfg, err := Load(path)
@@ -216,8 +216,8 @@ attestation:
 	if cfg.Attestation.Sidecars[0].FilePrefix != "lore-agent-name-" {
 		t.Errorf("Sidecars[0].FilePrefix = %q, want %q", cfg.Attestation.Sidecars[0].FilePrefix, "lore-agent-name-")
 	}
-	if cfg.Attestation.Sidecars[1].FilePrefix != "crew-agent-spawn-" {
-		t.Errorf("Sidecars[1].FilePrefix = %q, want %q", cfg.Attestation.Sidecars[1].FilePrefix, "crew-agent-spawn-")
+	if cfg.Attestation.Sidecars[1].FilePrefix != "spawn-" {
+		t.Errorf("Sidecars[1].FilePrefix = %q, want %q", cfg.Attestation.Sidecars[1].FilePrefix, "spawn-")
 	}
 
 	resolved := cfg.Attestation.ResolveSidecars()

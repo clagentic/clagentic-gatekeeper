@@ -51,16 +51,18 @@ attestation:
   # spawned subagents. The example below shows both — a session-scoped
   # namespace (crew-manifest's write-agent-sidecar.sh,
   # /tmp/lore-agent-name-<session_id>, keyed on CLAUDE_CODE_SESSION_ID)
-  # and a per-spawn namespace (/tmp/crew-agent-spawn-<spawn_id>, keyed on
-  # CREW_SPAWN_AGENT_ID) — but nothing here hardcodes either plugin as a
-  # dependency; leave the list empty to disable this layer entirely.
+  # and a per-spawn namespace (/tmp/spawn-<spawn_id>, keyed on
+  # MY_HARNESS_SPAWN_ID — a fictional example var; substitute your own
+  # harness's per-spawn env var name) — but nothing here hardcodes either
+  # plugin as a dependency; leave the list empty to disable this layer
+  # entirely.
   sidecars:
     - dir: /tmp
       file_prefix: lore-agent-name-
       session_id_env: CLAUDE_CODE_SESSION_ID
     - dir: /tmp
-      file_prefix: crew-agent-spawn-
-      session_id_env: CREW_SPAWN_AGENT_ID
+      file_prefix: spawn-
+      session_id_env: MY_HARNESS_SPAWN_ID
   # Deprecated: the legacy singular `sidecar:` block (dir/file_prefix/
   # session_id_env) is still accepted for back-compat and, when fully
   # configured, is tried before the `sidecars:` list above. New
