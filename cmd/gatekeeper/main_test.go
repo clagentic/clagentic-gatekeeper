@@ -320,7 +320,7 @@ func TestRunMint_MultipleSidecarsConfig_SecondResolves(t *testing.T) {
 
 	const spawnEnv = "GATEKEEPER_TEST_MAIN_SPAWN_LR86779F"
 	t.Setenv(spawnEnv, "spawn-main-1")
-	spawnPath := filepath.Join(spawnDir, "crew-agent-spawn-spawn-main-1")
+	spawnPath := filepath.Join(spawnDir, "spawn-spawn-main-1")
 	if err := os.WriteFile(spawnPath, []byte("peaches"), 0o600); err != nil {
 		t.Fatalf("setup: write spawn sidecar file: %v", err)
 	}
@@ -346,7 +346,7 @@ attestation:
       file_prefix: lore-agent-name-
       session_id_env: GATEKEEPER_TEST_MAIN_SESSION_LR86779F_UNSET
     - dir: `+spawnDir+`
-      file_prefix: crew-agent-spawn-
+      file_prefix: spawn-
       session_id_env: `+spawnEnv+`
 `)
 
