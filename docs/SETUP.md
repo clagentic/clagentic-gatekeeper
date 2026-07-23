@@ -314,33 +314,16 @@ wired into `gatekeeper mint` today.
 
 ## The A2A caller-attestation contract (required fields)
 
-This is the normative, PUBLISHED contract for what a structured sidecar
-record must carry so gatekeeper can resolve an A2A caller's attestation
-with no crew-specific knowledge in gatekeeper source. A producer (e.g. the
-crew-manifest harness that writes the sidecar file for an A2A-caller
-spawn) implements this contract by writing a file that satisfies it; this
-repository never needs code that knows the producer's identity.
-
-| Field | Required | Meaning |
-|-------|----------|---------|
-| The field named by `identity_field` | Yes | The attested caller identity — becomes `Identity.Subject`. Must be a non-empty string. |
-| `parent_session_id` | No (attribution) | The id of the session/process that spawned this caller — carried onto `Identity.ParentSessionID` for cross-attribution/audit. |
-| `spawn_id` | No (attribution) | The id of this specific spawn/invocation — carried onto `Identity.SpawnID`. |
-| `agent_type` | No (attribution) | A generic, roster-agnostic classification of the caller (e.g. "builder") — carried onto `Identity.AgentType`. Never a proper agent name; that belongs in the `identity_field` value. |
-| `spawned_at` | No (attribution) | A timestamp string for when the spawn started — carried onto `Identity.SpawnedAt`, passed through verbatim (not parsed/validated here). |
-
-"Role source" (referenced by the A2A epic's AC) is `Identity.Source`,
-already returned by every provider (`"sidecar"` for this path) — no
-additional field is needed for it.
-
-A sidecar record missing the `identity_field`-named field is a hard,
-fail-closed error naming that field (see "Structured sidecar records"
-above) — this is what satisfies AC#5 of lr-a850d0 ("a sidecar missing a
-required contract field" refuses with a structured error).
-
-This contract is deliberately minimal: gatekeeper does not require or
-understand any other field a producer's record might carry. Extra fields
-in the parsed JSON/YAML object are ignored, not rejected.
+The normative, standalone required-fields contract — what a structured
+sidecar record must carry so gatekeeper can resolve an A2A caller's
+attestation with no crew-specific knowledge in gatekeeper source, which
+sidecar source is authoritative for that domain, and how a missing required
+field is refused — is published in
+[`docs/A2A-ATTESTATION-CONTRACT.md`](A2A-ATTESTATION-CONTRACT.md) (lr-a850d0).
+A producer (e.g. the crew-manifest harness that writes the sidecar file for
+an A2A-caller spawn) implements that doc's contract by writing a file that
+satisfies it; this repository never needs code that knows the producer's
+identity.
 
 ## Summary
 

@@ -335,6 +335,9 @@ walkthrough.
   (attested identity -> role entitlement -> credential grantor), the
   built-in fallback, and the harness-wiring contract for writing sidecar
   files in the first place.
+- [`docs/A2A-ATTESTATION-CONTRACT.md`](A2A-ATTESTATION-CONTRACT.md) — the
+  standalone, normative required-fields contract for the A2A/remote-facing
+  caller-attestation use case introduced in section 8/9 above (lr-a850d0).
 - [`internal/attestation/sidecar.go`](../internal/attestation/sidecar.go),
   [`internal/attestation/chain.go`](../internal/attestation/chain.go) —
   the reference read implementation cited above.

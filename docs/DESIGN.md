@@ -78,6 +78,20 @@ internal/attestation/  Resolves the ATTESTED invoking identity via a fixed-order
                                                 no A2A mint caller invokes it
                                                 yet.
 
+                         contract.go            RequiredIdentityContractFields
+                                                (lr-a850d0): the single
+                                                canonical Go-level list of the
+                                                OPTIONAL attribution field
+                                                names published by
+                                                docs/A2A-ATTESTATION-CONTRACT.md,
+                                                mirroring the constants
+                                                structured_sidecar.go's parser
+                                                already uses. No new parsing
+                                                behavior — a published,
+                                                mechanically-checkable
+                                                reference for that contract's
+                                                consumers.
+
 internal/mint/         Orchestration. Ties attestation + roles + broker +
                        githubapp together:
                          1. attestation.Resolve(ctx) -> attested identity
