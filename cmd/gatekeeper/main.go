@@ -130,9 +130,10 @@ func runMint(args []string) error {
 	chainSidecars := make([]attestation.SidecarConfig, len(sidecarCfgs))
 	for i, sc := range sidecarCfgs {
 		chainSidecars[i] = attestation.SidecarConfig{
-			Dir:          sc.Dir,
-			FilePrefix:   sc.FilePrefix,
-			SessionIDEnv: sc.SessionIDEnv,
+			Dir:           sc.Dir,
+			FilePrefix:    sc.FilePrefix,
+			SessionIDEnv:  sc.SessionIDEnv,
+			IdentityField: sc.IdentityField,
 		}
 	}
 

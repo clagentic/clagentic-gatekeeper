@@ -274,6 +274,47 @@ func TestAttestationConfig_ResolveSidecars_PartialLegacyBlockOmitted(t *testing.
 	}
 }
 
+// TestLoad_SidecarsList_IdentityField verifies identity_field parses as an
+// OPTIONAL, PER-ENTRY setting (lr-f1bfe8): one entry sets it, the other
+// omits it, and both are preserved independently through ResolveSidecars.
+func TestLoad_SidecarsList_IdentityField(t *testing.T) {
+	path := writeTemp(t, `
+github:
+  owner: myorg
+
+broker:
+  type: env
+
+roles: {}
+
+attestation:
+  sidecars:
+    - dir: /tmp
+      file_prefix: spawn-
+      session_id_env: MY_HARNESS_SPAWN_ID
+      identity_field: attested_name
+    - dir: /tmp
+      file_prefix: lore-agent-name-
+      session_id_env: CLAUDE_CODE_SESSION_ID
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+
+	resolved := cfg.Attestation.ResolveSidecars()
+	if len(resolved) != 2 {
+		t.Fatalf("ResolveSidecars() = %+v, want 2 entries", resolved)
+	}
+	if resolved[0].IdentityField != "attested_name" {
+		t.Errorf("ResolveSidecars()[0].IdentityField = %q, want %q", resolved[0].IdentityField, "attested_name")
+	}
+	if resolved[1].IdentityField != "" {
+		t.Errorf("ResolveSidecars()[1].IdentityField = %q, want empty (per-entry, not set for this entry)", resolved[1].IdentityField)
+	}
+}
+
 func TestLoad_MissingFile(t *testing.T) {
 	_, err := Load("/nonexistent/path/config.yaml")
 	if err == nil {

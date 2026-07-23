@@ -109,6 +109,14 @@ type AttestationSidecarConfig struct {
 	// SessionIDEnv names the environment variable holding the current
 	// session ID, used to build the sidecar filename.
 	SessionIDEnv string `yaml:"session_id_env"`
+	// IdentityField is OPTIONAL and PER-ENTRY (lr-f1bfe8). When unset, this
+	// entry preserves the original whole-file-as-subject behavior exactly.
+	// When set, the sidecar file for this entry is parsed as a structured
+	// (JSON or YAML) object and the named field is read as Identity.Subject;
+	// the remaining recognized attribution fields (parent_session_id,
+	// spawn_id, agent_type, spawned_at) are captured for audit onto the
+	// resolved Identity. See internal/attestation/structured_sidecar.go.
+	IdentityField string `yaml:"identity_field,omitempty"`
 }
 
 // enabled reports whether cfg has enough information to be a usable sidecar
