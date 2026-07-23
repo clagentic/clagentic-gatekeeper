@@ -341,6 +341,81 @@ func TestLoad_ExampleConfigParses(t *testing.T) {
 	if resolved[1].IdentityField != "attested_name" {
 		t.Errorf("ResolveSidecars()[1].IdentityField = %q, want %q (structured example entry)", resolved[1].IdentityField, "attested_name")
 	}
+
+	// lr-0ae541: the shipped example's a2a_mapping stanza is commented out —
+	// the reference config must load with A2AMapping empty, proving the
+	// stanza is genuinely additive/off-by-default rather than merely
+	// documented as such.
+	if len(cfg.A2AMapping) != 0 {
+		t.Errorf("A2AMapping = %v, want empty (example stanza is commented out)", cfg.A2AMapping)
+	}
+}
+
+// TestLoad_A2AMapping verifies the OPTIONAL a2a_mapping stanza (lr-0ae541)
+// parses identity -> {role, audiences} entries.
+func TestLoad_A2AMapping(t *testing.T) {
+	path := writeTemp(t, `
+github:
+  owner: myorg
+
+broker:
+  type: env
+
+roles: {}
+
+a2a_mapping:
+  peer-agent-alpha:
+    role: peer-builder
+    audiences:
+      - peer-project-x
+      - peer-project-y
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+
+	ent, ok := cfg.A2AMapping["peer-agent-alpha"]
+	if !ok {
+		t.Fatal("A2AMapping[peer-agent-alpha] not found")
+	}
+	if ent.Role != "peer-builder" {
+		t.Errorf("A2AMapping[peer-agent-alpha].Role = %q, want %q", ent.Role, "peer-builder")
+	}
+	wantAudiences := []string{"peer-project-x", "peer-project-y"}
+	if len(ent.Audiences) != len(wantAudiences) {
+		t.Fatalf("A2AMapping[peer-agent-alpha].Audiences = %v, want %v", ent.Audiences, wantAudiences)
+	}
+	for i, want := range wantAudiences {
+		if ent.Audiences[i] != want {
+			t.Errorf("A2AMapping[peer-agent-alpha].Audiences[%d] = %q, want %q", i, ent.Audiences[i], want)
+		}
+	}
+}
+
+// TestLoad_A2AMappingAbsent verifies AC 4's config-shape half: a config with
+// no a2a_mapping stanza at all loads with a nil/empty A2AMapping, matching
+// the fail-closed default a2apolicy.NewPolicy expects for "no A2A mapping
+// configured."
+func TestLoad_A2AMappingAbsent(t *testing.T) {
+	path := writeTemp(t, `
+github:
+  owner: myorg
+
+broker:
+  type: env
+
+roles: {}
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if len(cfg.A2AMapping) != 0 {
+		t.Errorf("A2AMapping = %v, want empty (stanza not configured)", cfg.A2AMapping)
+	}
 }
 
 func TestLoad_MissingFile(t *testing.T) {
