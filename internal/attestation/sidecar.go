@@ -26,6 +26,17 @@ type SidecarConfig struct {
 	// (Dir/FilePrefix<value of SessionIDEnv>). Empty disables the sidecar
 	// adapter.
 	SessionIDEnv string
+	// IdentityField is OPTIONAL and per-entry (lr-f1bfe8). When unset
+	// (""), Resolve preserves the original behavior exactly: the whole
+	// sidecar file, TrimSpace'd, is Identity.Subject. When set, Resolve
+	// instead parses the file as a structured (JSON or YAML) object — see
+	// structured_sidecar.go — and reads the named field as Identity.Subject;
+	// the remaining recognized attribution fields (parent_session_id,
+	// spawn_id, agent_type, spawned_at) are captured onto the resolved
+	// Identity when present. A structured parse failure, or IdentityField
+	// missing/empty in the parsed object, is a hard failure distinct from
+	// an absent file (which stays ErrNoIdentity) — see parseStructuredSidecar.
+	IdentityField string
 }
 
 // enabled reports whether cfg has enough information to build a sidecar
@@ -98,6 +109,15 @@ func (p *sidecarProvider) Resolve(_ context.Context) (Identity, error) {
 			return Identity{}, ErrNoIdentity
 		}
 		return Identity{}, fmt.Errorf("attestation: read sidecar identity file %q: %w", path, err)
+	}
+
+	if p.cfg.IdentityField != "" {
+		// Structured-record path (lr-f1bfe8): parse the file and read the
+		// named field, rather than treating the whole file as the subject.
+		// A malformed/incomplete structured record is a hard failure, not
+		// ErrNoIdentity — the file IS present, it just does not satisfy the
+		// structured-sidecar contract this entry opted into.
+		return parseStructuredSidecar(path, p.cfg.IdentityField, data)
 	}
 
 	v := strings.TrimSpace(string(data))
