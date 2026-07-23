@@ -243,6 +243,90 @@ Gatekeeper's chain does not enforce spawn-before-session itself (see
 - `dir`, `file_prefix`, and `session_id_env` are all fields of
   `SidecarConfig`, populated only from `config.yaml` — see section 6.
 
+## 8. Structured sidecar records — an optional, per-namespace read mode
+
+Section 6 above describes the sidecar file's directory/prefix/env-var
+naming as always config-driven. This section extends the **contents** side
+of the contract: a reader MAY, per configured namespace, support reading
+the sidecar file as a structured record (JSON or YAML object) instead of
+treating the whole file as the bare identity string, and selecting a
+configured field from that record as the identity.
+
+This is opt-in per namespace, not a replacement for the whole-file mode —
+a reader with no such option, or a namespace that leaves it unset, keeps
+the whole-file behavior described in the rest of this doc unchanged.
+
+When a namespace opts into structured reading:
+
+- The named identity field's value becomes the identity, subject to the
+  same "no hit = fail closed for identity-bearing decisions" framing as
+  section 3 — except a structured record's own internal shape is a
+  DIFFERENT case: **a sidecar file that is present but fails to satisfy
+  the structured contract (not parseable, named field absent, named field
+  present but empty or non-string type) is a hard, fail-closed failure of
+  that provider — never a soft "no identity" decline.** This mirrors
+  section 5's treatment of a present-but-wrong-type file: presence with a
+  broken shape is more suspicious than simple absence, and must not be
+  softened into the ordinary miss case.
+- A structured record MAY carry additional ATTRIBUTION fields alongside
+  the identity field — generic, roster-agnostic names describing which
+  parent process spawned this caller and when (e.g. a parent-session id,
+  a spawn id, a caller-type classification, a spawn timestamp). These are
+  OPTIONAL: their absence never fails the read, unlike the identity field
+  itself. A reader supporting this mode should make these fields
+  available to whatever consumes the resolved identity, for
+  cross-attribution/audit — but the shape of that carry-through
+  (e.g. an extended identity type) is an implementation detail, not part
+  of this contract's normative surface.
+- Directory, prefix, and env-var-name config-sourcing (section 6) is
+  unaffected; the structured-vs-whole-file choice is an additional,
+  independently config-sourced per-namespace setting, never hardcoded.
+
+**Reference implementation:** Gatekeeper's `identity_field` setting
+(`internal/attestation/sidecar.go`'s `SidecarConfig.IdentityField`,
+documented in `config.example.yaml`) implements this section.
+`internal/attestation/structured_sidecar.go` does the parsing/field-
+selection; see `docs/SETUP.md` ("Structured sidecar records") for the
+consumer-facing config walkthrough and the published required-fields
+contract for the A2A caller-attestation use case.
+
+## 9. Fail-closed MISS semantics can be trust-boundary-dependent
+
+Section 3 states the baseline: a miss (no file present) is normal absence,
+and a reader must never substitute an OS-user fallback for a specific
+named-identity decision. This section names a further refinement some
+consumers need: **which fallback is acceptable on a miss can depend on the
+trust boundary the resolved identity is used for**, even when the
+provider-order shape (section 2, spawn-first-then-session) is unchanged.
+
+Concretely: falling through from an absent spawn-scoped sidecar to a
+present session-scoped sidecar (i.e. attesting a spawn as its parent
+session) may be an acceptable, even necessary, design choice for a
+LOCAL-facing credential — a long-lived lead/session process legitimately
+has no per-spawn sidecar of its own. The same fallthrough is unacceptable
+for a REMOTE-facing credential that crosses a trust boundary to a peer:
+the peer authorizes by the identity in the credential, has no way to
+detect a parent/spawn substitution, and the parent is systematically
+higher-trust, so the fallback direction is always privilege-escalating in
+that domain.
+
+This is a property of **how the resolved identity will be used**, not of
+the sidecar read mechanics themselves — this contract does not mandate a
+specific mechanism for expressing it (a domain-scoped resolver wrapper is
+one way; see the reference implementation below). What it does require:
+a consumer that serves more than one trust-boundary domain from the same
+sidecar configuration must not silently apply the local-safe fallback
+policy to the remote-facing case.
+
+**Reference implementation:** `internal/attestation.DomainResolver`
+(`internal/attestation/domain_policy.go`) implements this as a policy
+layered on top of the shared, unmodified provider chain — `DomainLocal`
+is a pass-through to today's chain behavior; `DomainA2A` requires a
+per-spawn-scoped resolver to succeed and refuses
+(`ErrPerSpawnRequired`) rather than falling through on a miss. See
+`docs/SETUP.md` ("Domain-aware fail-closed MISS") for the consumer-facing
+walkthrough.
+
 ## See also
 
 - [`docs/DESIGN.md`](DESIGN.md) — where `internal/attestation` sits in

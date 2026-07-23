@@ -241,6 +241,107 @@ Every field in every entry is still required together per entry (see
 "Configuring your own attestation source" above); an entry with any field
 missing is disabled, not partially applied.
 
+### 4. Structured sidecar records (`identity_field`) — lr-f1bfe8
+
+Each `attestation.sidecars` entry may optionally set `identity_field`
+instead of writing a bare identity string to the sidecar file:
+
+```yaml
+attestation:
+  sidecars:
+    - dir: <dir>
+      file_prefix: <file_prefix>
+      session_id_env: <IDENTITY_ENV>
+      identity_field: attested_name   # optional, per-entry
+```
+
+- **Unset** (the default): unchanged whole-file behavior — the file's
+  entire contents, trimmed of whitespace, are `Identity.Subject`.
+- **Set**: the sidecar file is parsed as a structured object (JSON or
+  YAML) and the named field's value becomes `Identity.Subject`. The
+  remaining recognized fields — `parent_session_id`, `spawn_id`,
+  `agent_type`, `spawned_at` — are captured onto the resolved `Identity`
+  whenever present, for cross-attribution/audit (which parent session
+  spawned which unit of work). None of the four attribution fields is
+  required; their absence never fails the read. Only `identity_field`
+  itself is required once you opt in.
+
+This lets a harness write ONE sidecar file per spawn instead of splitting a
+bare identity file and a separate structured metadata file.
+
+**Fail-closed on a malformed structured record.** If the file is present
+but does not satisfy the structured-sidecar contract — not parseable as
+JSON or YAML, `identity_field` absent from the parsed object, or the named
+field present but empty or not a string — resolution returns a hard,
+named-field error. This is deliberately distinct from the file simply not
+existing (which stays the normal `ErrNoIdentity` miss, per section 3 of
+`docs/SIDECAR-READ-CONTRACT.md`): a structured sidecar that IS present but
+broken is a configuration or harness bug, not an absent attester, and must
+never be silently treated as "this layer declines."
+
+### 5. Domain-aware fail-closed MISS — lr-2ca216
+
+This section documents a **resolution-policy** distinction, not a config
+setting: which MISS behavior applies depends on the trust boundary the
+resolved identity is used for, not on anything in `config.yaml`.
+
+- **Local mint domain** (GitHub App installation tokens, today's only mint
+  path): unchanged. A per-spawn sidecar MISS falls through to the next
+  configured provider — typically the session sidecar — exactly as
+  described in "Multiple sidecar namespaces" above. This is intentional: a
+  long-lived lead/interactive session legitimately has no per-spawn sidecar
+  of its own and must resolve via its session sidecar (lr-86779f).
+
+- **A2A / remote-facing mint domain**: a per-spawn sidecar MISS must
+  **never** fall through to the session sidecar. The token in this domain
+  crosses a trust boundary to a remote peer; a wrong-identity mint here is
+  a confused-deputy privilege-attribution failure, not a local
+  over-grant — the peer would authorize the parent lead's (higher-trust)
+  role for a spawn that never earned it, with nothing at the boundary able
+  to detect the substitution.
+
+`internal/attestation.DomainResolver` (`domain_policy.go`) implements this
+as a policy layered on top of the same shared provider chain every mint
+domain uses — it does not reorder or duplicate that chain. `DomainA2A`
+requires a per-spawn-scoped resolver to succeed; a MISS there is a
+definite refusal (`ErrPerSpawnRequired`), never a softened fallback.
+
+**Status in this repository:** this PR ships the attestation substrate
+only. No A2A mint command exists yet in `cmd/gatekeeper` — `DomainResolver`
+is available for the A2A mint path (lr-a850d0, gated on a separate
+substrate-ratification decision) to consume once it lands; it is not
+wired into `gatekeeper mint` today.
+
+## The A2A caller-attestation contract (required fields)
+
+This is the normative, PUBLISHED contract for what a structured sidecar
+record must carry so gatekeeper can resolve an A2A caller's attestation
+with no crew-specific knowledge in gatekeeper source. A producer (e.g. the
+crew-manifest harness that writes the sidecar file for an A2A-caller
+spawn) implements this contract by writing a file that satisfies it; this
+repository never needs code that knows the producer's identity.
+
+| Field | Required | Meaning |
+|-------|----------|---------|
+| The field named by `identity_field` | Yes | The attested caller identity — becomes `Identity.Subject`. Must be a non-empty string. |
+| `parent_session_id` | No (attribution) | The id of the session/process that spawned this caller — carried onto `Identity.ParentSessionID` for cross-attribution/audit. |
+| `spawn_id` | No (attribution) | The id of this specific spawn/invocation — carried onto `Identity.SpawnID`. |
+| `agent_type` | No (attribution) | A generic, roster-agnostic classification of the caller (e.g. "builder") — carried onto `Identity.AgentType`. Never a proper agent name; that belongs in the `identity_field` value. |
+| `spawned_at` | No (attribution) | A timestamp string for when the spawn started — carried onto `Identity.SpawnedAt`, passed through verbatim (not parsed/validated here). |
+
+"Role source" (referenced by the A2A epic's AC) is `Identity.Source`,
+already returned by every provider (`"sidecar"` for this path) — no
+additional field is needed for it.
+
+A sidecar record missing the `identity_field`-named field is a hard,
+fail-closed error naming that field (see "Structured sidecar records"
+above) — this is what satisfies AC#5 of lr-a850d0 ("a sidecar missing a
+required contract field" refuses with a structured error).
+
+This contract is deliberately minimal: gatekeeper does not require or
+understand any other field a producer's record might carry. Extra fields
+in the parsed JSON/YAML object are ignored, not rejected.
+
 ## Summary
 
 | Layer | What it answers | Config | Fails closed? |
