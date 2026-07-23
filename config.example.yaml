@@ -93,8 +93,10 @@ attestation:
     # `attested_name` (substitute your own field name) becomes
     # Identity.Subject; the other four fields are captured for attribution
     # when present. This is the substrate the A2A caller-attestation
-    # contract (docs/SIDECAR-READ-CONTRACT.md) consumes for a remote-facing
-    # credential's required-fields contract.
+    # contract (docs/A2A-ATTESTATION-CONTRACT.md — the normative,
+    # standalone required-fields contract; docs/SIDECAR-READ-CONTRACT.md
+    # section 8/9 for the generalized read-mode mechanics) consumes for a
+    # remote-facing credential's required-fields contract.
     - dir: /tmp
       file_prefix: spawn-
       session_id_env: MY_HARNESS_SPAWN_ID
