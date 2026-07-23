@@ -163,3 +163,16 @@ Note: a role binding (`app_id_path` / `installation_id_path` / `private_key_path
 with no resolvable permission set (neither a `permissions:` block nor a matching
 reference role) is a misconfiguration. Startup validation for this case is tracked
 in lr-1b65.
+
+## A2A caller entitlement mapping — a separate mapping (lr-0ae541)
+
+Everything above governs the existing GitHub-domain mint: attested identity
+-> `roles.<name>.entitled_identities` -> App-slug-verified GitHub App
+credential (`internal/mint`). The A2A (agent-to-agent, remote-facing) mint
+domain uses a **separate** config stanza, `a2a_mapping`, that maps attested
+identity -> A2A caller role -> permitted peer audience(s)/scope(s) instead
+of identity -> GitHub role. It is additive and off by default: an absent
+`a2a_mapping` stanza has no effect on anything documented above. See
+[`docs/SETUP.md`](SETUP.md#a2a-caller-entitlement-mapping-a2a_mapping--lr-0ae541)
+for the full config shape and fail-closed semantics, and
+`internal/a2apolicy` for the implementation.

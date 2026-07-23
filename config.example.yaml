@@ -208,3 +208,45 @@ roles:
   #     - your-releaser-agent-identity
   #   app_slug: your-releaser-app-slug
   #   app_slug_path: secret/gatekeeper/releaser/app-slug
+
+# A2A caller entitlement mapping (lr-0ae541) — OPTIONAL and OFF BY DEFAULT.
+#
+# This is a SEPARATE mapping from `roles:` above. `roles:` (internal/mint)
+# governs the existing GitHub-domain mint: attested identity -> GitHub App
+# role -> App-slug-verified credential. `a2a_mapping:` (internal/a2apolicy)
+# governs a different, later mint domain: attested identity -> A2A caller
+# role -> permitted peer audience(s)/scope(s), for a mint whose token crosses
+# a trust boundary to a remote peer (see docs/A2A-ATTESTATION-CONTRACT.md and
+# internal/attestation/domain_policy.go's DomainA2A).
+#
+# Omitting this stanza entirely means the A2A mapping is fully closed — no
+# identity is entitled to any A2A role or audience — and has ZERO effect on
+# `roles:`/internal/mint: every existing GitHub-domain mint behaves exactly
+# as it did before this stanza existed (AC 4). This section maps ONLY the
+# policy decision (which identity may request which audience, and which
+# role to pass to issuance); it does not mint or issue a credential itself —
+# that is the downstream token-provider (lr-890fae).
+#
+# Each key is an attested caller identity (internal/attestation
+# Identity.Subject value, the same kind of string used as a roles.<name>
+# .entitled_identities entry above — just in a different map). Its value
+# names the A2A caller role that identity is entitled to, and the peer
+# audience(s)/scope(s) that role may request a mint for. An identity absent
+# from this map, or requesting an audience its role does not cover, is
+# refused fail-closed (internal/a2apolicy.DeniedError) naming the resolved
+# identity/role/audience — never a stale or guessed value.
+#
+# ROSTER-AGNOSTIC EXAMPLE — invented names, generic role vocabulary; no
+# agent names appear here or in gatekeeper source. Substitute your own
+# deployment's real attested identities, role names, and peer audience
+# identifiers.
+# a2a_mapping:
+#   peer-agent-alpha:
+#     role: peer-builder
+#     audiences:
+#       - peer-project-x
+#       - peer-project-y
+#   peer-agent-beta:
+#     role: peer-reviewer
+#     audiences:
+#       - peer-project-x
