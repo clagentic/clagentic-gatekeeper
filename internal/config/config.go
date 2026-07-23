@@ -17,11 +17,20 @@ const (
 
 // Config is the top-level configuration structure for gatekeeper.
 type Config struct {
-	GitHub      GitHubConfig          `yaml:"github"`
-	Broker      BrokerConfig          `yaml:"broker"`
-	Token       TokenConfig           `yaml:"token"`
-	Roles       map[string]RoleConfig `yaml:"roles"`
-	Attestation AttestationConfig     `yaml:"attestation"`
+	// SchemaVersion is an informational marker of the config.yaml shape a
+	// deployment was authored against (see config.example.yaml). Gatekeeper
+	// does not currently reject an unset or mismatched value — every field
+	// added to the schema so far (including identity_field, lr-f1bfe8) is
+	// additive and optional, so an old config.yaml keeps loading and
+	// behaving exactly as before. This field exists so that stops being
+	// true for a future breaking change: Load has one place to add a
+	// version check.
+	SchemaVersion int                   `yaml:"config_schema_version,omitempty"`
+	GitHub        GitHubConfig          `yaml:"github"`
+	Broker        BrokerConfig          `yaml:"broker"`
+	Token         TokenConfig           `yaml:"token"`
+	Roles         map[string]RoleConfig `yaml:"roles"`
+	Attestation   AttestationConfig     `yaml:"attestation"`
 }
 
 // GitHubConfig holds GitHub connectivity settings.
