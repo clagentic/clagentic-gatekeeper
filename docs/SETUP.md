@@ -325,6 +325,68 @@ an A2A-caller spawn) implements that doc's contract by writing a file that
 satisfies it; this repository never needs code that knows the producer's
 identity.
 
+## A2A caller entitlement mapping (`a2a_mapping`) — lr-0ae541
+
+Once an A2A caller's identity is attested (the sections above), a separate
+policy decision governs what that identity may actually *do*: which A2A
+caller role it holds, and which peer audience(s)/scope(s) that role may
+request a mint for. This is `internal/a2apolicy` — config-driven, and a
+distinct mapping from `roles.<name>.entitled_identities`
+([`docs/ROLES.md`](ROLES.md)), which governs the existing GitHub-domain
+mint (`internal/mint`, role -> App-slug). `a2a_mapping` maps identity ->
+A2A role -> permitted peer audiences instead of identity -> GitHub role.
+
+This mapping runs strictly **after** attestation and **before** issuance:
+it consumes the already-attested identity string plus a requested audience,
+and either returns the role to pass to issuance or refuses. It does not
+itself mint or issue any credential — the token-provider that consumes an
+approved role/audience is a separate, downstream piece of work (lr-890fae).
+
+### Config shape
+
+```yaml
+a2a_mapping:
+  peer-agent-alpha:      # attested identity (Identity.Subject value)
+    role: peer-builder   # A2A caller role name, generic vocabulary
+    audiences:           # peer audience(s)/scope(s) this role may mint for
+      - peer-project-x
+      - peer-project-y
+```
+
+See `config.example.yaml` for the full annotated (and, by default,
+commented-out) reference stanza.
+
+### Fail-closed semantics
+
+- **No `a2a_mapping` stanza configured at all**: `internal/a2apolicy.Policy`
+  is fully closed — every identity/audience request is refused. This has
+  **zero effect** on the existing GitHub-domain mint gate
+  (`roles.<name>.entitled_identities`) — the two mappings are independent,
+  and an absent `a2a_mapping` stanza cannot widen or narrow anything
+  `internal/mint` already governs. Existing deployments upgrading to a
+  gatekeeper version with this mapping see byte-identical GitHub-domain
+  mint behavior.
+- **Attested identity absent from the mapping**: refused with a structured
+  `*a2apolicy.DeniedError` naming the *resolved* identity and the requested
+  audience — never a stale or guessed value. The error's `Role` field is
+  empty in this case, since no role was ever resolved for an unmapped
+  identity.
+- **Identity present, but its role does not cover the requested audience**:
+  refused with a `*a2apolicy.DeniedError` naming the resolved role and the
+  denied audience.
+- **Identity present, requested audience covered**: the mapped role is
+  returned for issuance to consume.
+
+### Roster-agnostic by design
+
+Both the identity keys and the `role`/`audiences` values in `a2a_mapping`
+are ordinary deployment-supplied strings — gatekeeper source contains no
+agent names, org names, or other deployment-specific identities anywhere in
+`internal/a2apolicy` or this mapping's config schema. The example above
+(`peer-agent-alpha`, `peer-builder`, `peer-project-x`) uses invented names
+precisely so a released clone of this repository never ships anyone's real
+crew roster.
+
 ## Summary
 
 | Layer | What it answers | Config | Fails closed? |
@@ -332,6 +394,7 @@ identity.
 | 1. Attested identity | Who is asking | `attestation.configured` / `attestation.sidecars` in `config.yaml` | Yes — a broken configured/sidecar provider is a hard error, not a silent fallthrough |
 | 2. Role entitlement | What that identity may mint | `roles.<name>.entitled_identities` in `config.yaml` | Yes — empty/absent list refuses to mint (see [`docs/ROLES.md`](ROLES.md)) |
 | 3. Credential grantor | What credentials the role gets | Secret broker (`broker.*` in `config.yaml`) | N/A — reached only after 1 and 2 pass |
+| 2a. A2A caller entitlement (`a2a_mapping`, lr-0ae541) | Which A2A role and peer audience(s) an A2A caller identity may request | `a2a_mapping` in `config.yaml` (`internal/a2apolicy`) | Yes — absent/empty mapping refuses every request; additive, off by default, no effect on layer 2 above |
 
 If you set up nothing beyond the defaults, you get layer 1 via the built-in
 OS-user fallback and layer 2 fully closed (no role has default entitlements).

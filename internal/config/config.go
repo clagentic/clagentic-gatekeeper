@@ -31,6 +31,13 @@ type Config struct {
 	Token         TokenConfig           `yaml:"token"`
 	Roles         map[string]RoleConfig `yaml:"roles"`
 	Attestation   AttestationConfig     `yaml:"attestation"`
+	// A2AMapping is the OPTIONAL A2A caller entitlement mapping
+	// (attested identity -> caller role -> permitted peer audiences,
+	// lr-0ae541). Absent/empty means no A2A mapping is configured at all:
+	// the A2A mint path (built on internal/a2apolicy) refuses every
+	// request, and every existing GitHub-domain mint (internal/mint) is
+	// entirely unaffected — this stanza is additive and off by default.
+	A2AMapping map[string]A2AEntitlementConfig `yaml:"a2a_mapping,omitempty"`
 }
 
 // GitHubConfig holds GitHub connectivity settings.
@@ -135,6 +142,34 @@ type AttestationSidecarConfig struct {
 func (cfg AttestationSidecarConfig) enabled() bool {
 	return cfg.Dir != "" && cfg.FilePrefix != "" && cfg.SessionIDEnv != ""
 }
+
+// A2AEntitlementConfig binds one attested A2A caller identity (the map key
+// under a2a_mapping in config.yaml) to a caller role and the peer
+// audience(s)/scope(s) that role may request a mint for
+// (internal/a2apolicy.Entitlement is built directly from this). This is a
+// separate, additive mapping from roles.<name> (internal/mint's GitHub-domain
+// role -> App-slug gate, lr-116b57): the A2A domain maps identity -> role ->
+// audience, not role -> App.
+type A2AEntitlementConfig struct {
+	// Role is the A2A caller role name passed to issuance once a request is
+	// permitted. Generic, deployment-defined vocabulary — never a specific
+	// agent's proper name.
+	Role string `yaml:"role"`
+	// Audiences is the set of peer audience/scope identifiers this identity's
+	// Role may request a mint for. No default: an absent or empty list means
+	// this identity is entitled to no audience, mirroring RoleConfig's
+	// EntitledIdentities fail-closed default.
+	Audiences []string `yaml:"audiences,omitempty"`
+}
+
+// EntitlementRole satisfies internal/a2apolicy.EntitlementSource, so
+// A2AEntitlementConfig can be passed directly to
+// a2apolicy.NewPolicyFromEntries without config importing a2apolicy or vice
+// versa (structural interface satisfaction, no cross-layer import).
+func (c A2AEntitlementConfig) EntitlementRole() string { return c.Role }
+
+// EntitlementAudiences satisfies internal/a2apolicy.EntitlementSource.
+func (c A2AEntitlementConfig) EntitlementAudiences() []string { return c.Audiences }
 
 // RoleConfig binds a role name to broker paths for its GitHub App credentials.
 // Permissions is optional; when set it overrides the reference permission set
