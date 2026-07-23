@@ -38,6 +38,32 @@ type Identity struct {
 	// "sidecar", "builtin"), for audit/debugging. It is not itself part of
 	// the trust decision.
 	Source string
+
+	// The fields below carry structured-sidecar ATTRIBUTION context
+	// (lr-f1bfe8) for audit/observability — which parent session spawned
+	// which unit of work. They are populated only by a provider that reads
+	// a structured sidecar record (see SidecarConfig.IdentityField); every
+	// other provider leaves them empty. None of them are part of the trust
+	// decision (Subject/Source remain the only fields mint's entitlement
+	// check consults) — they exist purely so a resolved Identity can carry
+	// cross-attribution context through to whatever logs or audits the
+	// mint decision, without gatekeeper needing any crew-specific
+	// knowledge of what these values mean.
+
+	// ParentSessionID is the id of the session/process that spawned the
+	// caller this Identity attests, when the sidecar record carries one.
+	ParentSessionID string
+	// SpawnID is the id of this specific spawn/invocation, when the
+	// sidecar record carries one.
+	SpawnID string
+	// AgentType is a generic, roster-agnostic classification of the caller
+	// (e.g. "builder", "reviewer"), when the sidecar record carries one.
+	// Never an agent's proper name — that lives in Subject.
+	AgentType string
+	// SpawnedAt is the sidecar record's own timestamp string for when the
+	// spawn started, when the record carries one. Passed through verbatim;
+	// this package does not parse or validate its format.
+	SpawnedAt string
 }
 
 // Provider resolves the attested invoking identity from one identity

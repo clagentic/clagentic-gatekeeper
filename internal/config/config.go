@@ -17,11 +17,20 @@ const (
 
 // Config is the top-level configuration structure for gatekeeper.
 type Config struct {
-	GitHub      GitHubConfig          `yaml:"github"`
-	Broker      BrokerConfig          `yaml:"broker"`
-	Token       TokenConfig           `yaml:"token"`
-	Roles       map[string]RoleConfig `yaml:"roles"`
-	Attestation AttestationConfig     `yaml:"attestation"`
+	// SchemaVersion is an informational marker of the config.yaml shape a
+	// deployment was authored against (see config.example.yaml). Gatekeeper
+	// does not currently reject an unset or mismatched value — every field
+	// added to the schema so far (including identity_field, lr-f1bfe8) is
+	// additive and optional, so an old config.yaml keeps loading and
+	// behaving exactly as before. This field exists so that stops being
+	// true for a future breaking change: Load has one place to add a
+	// version check.
+	SchemaVersion int                   `yaml:"config_schema_version,omitempty"`
+	GitHub        GitHubConfig          `yaml:"github"`
+	Broker        BrokerConfig          `yaml:"broker"`
+	Token         TokenConfig           `yaml:"token"`
+	Roles         map[string]RoleConfig `yaml:"roles"`
+	Attestation   AttestationConfig     `yaml:"attestation"`
 }
 
 // GitHubConfig holds GitHub connectivity settings.
@@ -109,6 +118,14 @@ type AttestationSidecarConfig struct {
 	// SessionIDEnv names the environment variable holding the current
 	// session ID, used to build the sidecar filename.
 	SessionIDEnv string `yaml:"session_id_env"`
+	// IdentityField is OPTIONAL and PER-ENTRY (lr-f1bfe8). When unset, this
+	// entry preserves the original whole-file-as-subject behavior exactly.
+	// When set, the sidecar file for this entry is parsed as a structured
+	// (JSON or YAML) object and the named field is read as Identity.Subject;
+	// the remaining recognized attribution fields (parent_session_id,
+	// spawn_id, agent_type, spawned_at) are captured for audit onto the
+	// resolved Identity. See internal/attestation/structured_sidecar.go.
+	IdentityField string `yaml:"identity_field,omitempty"`
 }
 
 // enabled reports whether cfg has enough information to be a usable sidecar

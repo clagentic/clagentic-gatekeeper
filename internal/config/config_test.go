@@ -274,6 +274,75 @@ func TestAttestationConfig_ResolveSidecars_PartialLegacyBlockOmitted(t *testing.
 	}
 }
 
+// TestLoad_SidecarsList_IdentityField verifies identity_field parses as an
+// OPTIONAL, PER-ENTRY setting (lr-f1bfe8): one entry sets it, the other
+// omits it, and both are preserved independently through ResolveSidecars.
+func TestLoad_SidecarsList_IdentityField(t *testing.T) {
+	path := writeTemp(t, `
+github:
+  owner: myorg
+
+broker:
+  type: env
+
+roles: {}
+
+attestation:
+  sidecars:
+    - dir: /tmp
+      file_prefix: spawn-
+      session_id_env: MY_HARNESS_SPAWN_ID
+      identity_field: attested_name
+    - dir: /tmp
+      file_prefix: lore-agent-name-
+      session_id_env: CLAUDE_CODE_SESSION_ID
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+
+	resolved := cfg.Attestation.ResolveSidecars()
+	if len(resolved) != 2 {
+		t.Fatalf("ResolveSidecars() = %+v, want 2 entries", resolved)
+	}
+	if resolved[0].IdentityField != "attested_name" {
+		t.Errorf("ResolveSidecars()[0].IdentityField = %q, want %q", resolved[0].IdentityField, "attested_name")
+	}
+	if resolved[1].IdentityField != "" {
+		t.Errorf("ResolveSidecars()[1].IdentityField = %q, want empty (per-entry, not set for this entry)", resolved[1].IdentityField)
+	}
+}
+
+// TestLoad_ExampleConfigParses guards against config.example.yaml drifting
+// out of sync with the schema (e.g. a future field rename breaking the
+// shipped reference file silently, since Load does not reject unknown
+// keys). Also asserts the lr-f1bfe8/lr-2ca216 schema-version bump and the
+// structured-sidecar example this PR adds are both present and load
+// correctly.
+func TestLoad_ExampleConfigParses(t *testing.T) {
+	path := filepath.Join("..", "..", "config.example.yaml")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load(%q) returned error: %v", path, err)
+	}
+	if cfg.SchemaVersion != 2 {
+		t.Errorf("SchemaVersion = %d, want 2", cfg.SchemaVersion)
+	}
+
+	resolved := cfg.Attestation.ResolveSidecars()
+	if len(resolved) != 2 {
+		t.Fatalf("ResolveSidecars() = %+v, want 2 entries", resolved)
+	}
+	if resolved[0].IdentityField != "" {
+		t.Errorf("ResolveSidecars()[0].IdentityField = %q, want empty (whole-file example entry)", resolved[0].IdentityField)
+	}
+	if resolved[1].IdentityField != "attested_name" {
+		t.Errorf("ResolveSidecars()[1].IdentityField = %q, want %q (structured example entry)", resolved[1].IdentityField, "attested_name")
+	}
+}
+
 func TestLoad_MissingFile(t *testing.T) {
 	_, err := Load("/nonexistent/path/config.yaml")
 	if err == nil {

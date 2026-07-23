@@ -42,6 +42,46 @@ The App private keys never touch the agent. Gatekeeper reads them from a pluggab
 - It is **not** coupled to any specific set of agents. Agent→role mapping lives in the consumer, not here.
 - It does **not** store long-lived secrets. The broker does.
 
+## Attestation substrate for agent-to-agent (A2A) callers
+
+Gatekeeper's attestation layer (`internal/attestation`) resolves *who is
+asking* before anything is minted (see [`docs/SETUP.md`](docs/SETUP.md)).
+Two additions extend that substrate for a remote-facing, agent-to-agent
+caller — a caller whose minted credential crosses a trust boundary to a
+peer, rather than being used purely locally:
+
+- **Structured sidecar records** (`attestation.sidecars[].identity_field`):
+  a sidecar entry can opt into parsing its file as a structured (JSON or
+  YAML) record and reading a named field as the attested identity, instead
+  of treating the whole file as the identity string. The rest of the
+  record — a parent-session id, a spawn id, a generic caller-type
+  classification, a spawn timestamp — is captured for cross-attribution
+  and audit whenever present. A structured record that is present but
+  malformed (unparseable, or missing/empty/non-string in the named field)
+  is a hard, fail-closed error naming the field — never treated as "no
+  identity."
+- **Domain-aware fail-closed MISS**: for a remote-facing (A2A) mint
+  request, a per-spawn attestation miss now refuses outright rather than
+  falling through to a session-scoped identity — closing a
+  confused-deputy path where a spawn with no attestation of its own would
+  otherwise mint a peer-facing credential under its parent's (higher-trust)
+  identity. Local GitHub/reader mints are unaffected: a per-spawn miss
+  still falls through to the session sidecar exactly as before, since a
+  long-lived lead session legitimately has no per-spawn sidecar of its
+  own.
+
+**What this repository ships today:** the attestation substrate above —
+structured-record parsing, the attribution fields it carries, and the
+domain-aware resolution policy (`internal/attestation.DomainResolver`).
+**What it does NOT yet ship:** an actual A2A token-minting command in
+`gatekeeper` itself. That mint path is a separate, gated epic; this
+substrate is what it will consume once it lands. See
+[`docs/SETUP.md`](docs/SETUP.md#the-a2a-caller-attestation-contract-required-fields)
+for the published required-fields contract a sidecar producer implements,
+and [`docs/SIDECAR-READ-CONTRACT.md`](docs/SIDECAR-READ-CONTRACT.md) for
+the generalized, tool-agnostic read-contract sections this substrate
+follows.
+
 ## Usage
 
 ```bash

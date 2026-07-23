@@ -43,6 +43,41 @@ internal/attestation/  Resolves the ATTESTED invoking identity via a fixed-order
                        config and implementation cited there as the worked
                        example.
 
+                       Two lr-f1bfe8/lr-2ca216 additions live in their own
+                       files, kept separate from the sidecar read path and
+                       the shared chain per this package's one-concern-per-
+                       file rule:
+
+                         structured_sidecar.go  Parses a structured (JSON or
+                                                YAML) sidecar record and
+                                                selects a named field
+                                                (SidecarConfig.IdentityField)
+                                                as Identity.Subject, carrying
+                                                the rest of the recognized
+                                                record (parent_session_id,
+                                                spawn_id, agent_type,
+                                                spawned_at) onto Identity for
+                                                attribution/audit. Unset
+                                                IdentityField is unchanged
+                                                whole-file behavior.
+
+                         domain_policy.go       DomainResolver: a per-MINT-
+                                                DOMAIN MISS policy layered on
+                                                top of the shared Resolver,
+                                                not a change to it. DomainLocal
+                                                is today's behavior unmodified
+                                                (a per-spawn miss falls
+                                                through to the session
+                                                sidecar, lr-86779f). DomainA2A
+                                                requires a per-spawn-scoped
+                                                Resolver to resolve and fails
+                                                closed (ErrPerSpawnRequired)
+                                                rather than falling through —
+                                                this is attestation substrate
+                                                for the A2A epic (lr-a850d0);
+                                                no A2A mint caller invokes it
+                                                yet.
+
 internal/mint/         Orchestration. Ties attestation + roles + broker +
                        githubapp together:
                          1. attestation.Resolve(ctx) -> attested identity

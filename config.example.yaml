@@ -3,6 +3,14 @@
 # Copy to config.yaml and fill in your own values. config.yaml is gitignored.
 # Every value here is deployment-specific. The code contains NO hardcoded
 # org names, hostnames, secret paths, or identities — they all come from here.
+#
+# config_schema_version: 2 — bumped by lr-f1bfe8/lr-2ca216, which add the
+# per-entry `identity_field` setting under attestation.sidecars (schema
+# addition, back-compat: omitting it preserves version-1 behavior exactly)
+# and the domain-aware fail-closed MISS semantics for an A2A-domain mint
+# request (a resolution-policy change, not a config-shape change — see
+# docs/SETUP.md and docs/SIDECAR-READ-CONTRACT.md).
+config_schema_version: 2
 
 # GitHub org/account the Apps are installed on.
 github:
@@ -56,18 +64,47 @@ attestation:
   # harness's per-spawn env var name) — but nothing here hardcodes either
   # plugin as a dependency; leave the list empty to disable this layer
   # entirely.
+  #
+  # identity_field (lr-f1bfe8) is OPTIONAL and PER-ENTRY. Leave it unset (as
+  # in the first entry below) to keep the original whole-file behavior: the
+  # sidecar file's entire contents, trimmed of whitespace, become
+  # Identity.Subject. Set it (as in the second entry below) to instead
+  # treat the sidecar file as a STRUCTURED record (JSON or YAML) and read
+  # the named field as Identity.Subject. The remaining recognized
+  # attribution fields in a structured record — parent_session_id,
+  # spawn_id, agent_type, spawned_at — are captured onto the resolved
+  # Identity for cross-attribution/audit whenever present; none of them are
+  # required, and their absence never fails the read. A structured sidecar
+  # file that IS present but fails the contract (not parseable as JSON or
+  # YAML, or identity_field itself absent/empty/non-string) is a hard,
+  # fail-closed error naming the field — distinct from the file simply not
+  # existing, which stays the normal "this layer declines" miss.
   sidecars:
+    # Whole-file namespace (identity_field unset): the file's entire
+    # contents are the attested Subject, exactly as before lr-f1bfe8.
     - dir: /tmp
       file_prefix: lore-agent-name-
       session_id_env: CLAUDE_CODE_SESSION_ID
+    # Structured-record namespace (identity_field set): the sidecar file is
+    # a JSON or YAML object, e.g.
+    #   {"attested_name": "builder-agent", "parent_session_id": "session-1",
+    #    "spawn_id": "spawn-42", "agent_type": "builder",
+    #    "spawned_at": "2026-07-23T00:00:00Z"}
+    # `attested_name` (substitute your own field name) becomes
+    # Identity.Subject; the other four fields are captured for attribution
+    # when present. This is the substrate the A2A caller-attestation
+    # contract (docs/SIDECAR-READ-CONTRACT.md) consumes for a remote-facing
+    # credential's required-fields contract.
     - dir: /tmp
       file_prefix: spawn-
       session_id_env: MY_HARNESS_SPAWN_ID
+      identity_field: attested_name
   # Deprecated: the legacy singular `sidecar:` block (dir/file_prefix/
   # session_id_env) is still accepted for back-compat and, when fully
   # configured, is tried before the `sidecars:` list above. New
   # deployments should use `sidecars:` instead — it is the only way to
-  # configure more than one sidecar namespace.
+  # configure more than one sidecar namespace. The legacy block does not
+  # support identity_field; use `sidecars:` for a structured-record entry.
 
 # Role definitions. Each role binds to one GitHub App and one permission set.
 #
