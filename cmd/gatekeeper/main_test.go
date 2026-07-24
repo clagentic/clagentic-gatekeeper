@@ -368,6 +368,133 @@ attestation:
 	// attestation/entitlement was not the failure mode.
 }
 
+// ---------------------------------------------------------------------------
+// lr-2a8653: runMint's domain-aware per-spawn MISS wiring. The deployed
+// config shape (subagent-/CLAGENTIC_SUBAGENT_ID as sidecars[0], then
+// lore-agent-name-/CLAUDE_CODE_SESSION_ID as sidecars[1]) is exactly the
+// shape that let a subagent's per-spawn MISS silently fall through to the
+// session sidecar and mint the PARENT lead's identity — the confused-deputy
+// hole this task closes. Both directions are exercised through runMint
+// itself, not just the lower internal/attestation and internal/mint layers,
+// so the CLI's env-var-driven domain selection is covered end to end.
+// ---------------------------------------------------------------------------
+
+// writeSpawnFirstConfig writes a config.yaml with the deployed two-sidecar
+// shape (spawn-scoped entry first, session-scoped entry second) plus a
+// single role entitled only to "subagent-self" — never the session/parent
+// identity "holden" — so a wrongly-resolved parent identity fails
+// entitlement (belt) in addition to whatever attestation-layer refusal is
+// under test (suspenders).
+func writeSpawnFirstConfig(t *testing.T, spawnDir, sessionDir, spawnEnv, sessionEnv string) string {
+	t.Helper()
+	return writeTempConfig(t, `
+github:
+  owner: testorg
+
+broker:
+  type: env
+
+roles:
+  builder:
+    app_id_path: secret/gk/builder/app-id
+    installation_id_path: secret/gk/builder/install-id
+    private_key_path: secret/gk/builder/key
+    entitled_identities:
+      - subagent-self
+
+attestation:
+  sidecars:
+    - dir: `+spawnDir+`
+      file_prefix: subagent-
+      session_id_env: `+spawnEnv+`
+    - dir: `+sessionDir+`
+      file_prefix: lore-agent-name-
+      session_id_env: `+sessionEnv+`
+`)
+}
+
+// TestRunMint_SubagentPerSpawnMiss_RefusesNeverParentIdentity is direction
+// (T+): CLAGENTIC_SUBAGENT_ID (the per-spawn env) IS set for this process —
+// signaling a per-spawn harness is active and this invocation is a subagent
+// — but its sidecar file is absent (the MISS). The session sidecar file IS
+// present and holds the PARENT identity "holden". runMint must refuse
+// fail-closed and must NEVER reach the broker/mint path as "holden".
+func TestRunMint_SubagentPerSpawnMiss_RefusesNeverParentIdentity(t *testing.T) {
+	spawnDir := t.TempDir()
+	sessionDir := t.TempDir()
+
+	const spawnEnv = "GATEKEEPER_TEST_MAIN_LR2A8653_SUBAGENT_SPAWN"
+	const sessionEnv = "GATEKEEPER_TEST_MAIN_LR2A8653_SUBAGENT_SESSION"
+
+	// Per-spawn env IS set (this is a subagent invocation) but its sidecar
+	// file is never written — the MISS.
+	t.Setenv(spawnEnv, "spawn-lr2a8653-1")
+
+	// Session sidecar IS present and resolves to the parent lead identity —
+	// exactly what a subagent process inherits from its parent's
+	// environment (CLAUDE_CODE_SESSION_ID stays the parent's session id
+	// inside a subagent).
+	t.Setenv(sessionEnv, "session-lead-lr2a8653-1")
+	sessionPath := filepath.Join(sessionDir, "lore-agent-name-session-lead-lr2a8653-1")
+	if err := os.WriteFile(sessionPath, []byte("holden"), 0o600); err != nil {
+		t.Fatalf("setup: write session sidecar file: %v", err)
+	}
+
+	path := writeSpawnFirstConfig(t, spawnDir, sessionDir, spawnEnv, sessionEnv)
+
+	err := runMint([]string{"--role", "builder", "--config", path})
+	if err == nil {
+		t.Fatal("runMint: expected a fail-closed refusal for a subagent per-spawn MISS, got nil")
+	}
+	if strings.Contains(err.Error(), "not entitled") {
+		t.Fatalf("runMint refused via entitlement (%q) rather than the attestation-layer fail-closed refusal — the subagent must never even resolve to the parent identity to reach the entitlement gate", err.Error())
+	}
+	if strings.Contains(err.Error(), "config error") {
+		t.Fatalf("runMint returned a config-validation error, not the expected attestation refusal: %v", err)
+	}
+}
+
+// TestRunMint_LeadSession_PerSpawnMiss_StillResolvesViaSession is direction
+// (T-): the per-spawn env var is UNSET (no per-spawn harness active — this
+// is a lead/director session invocation with no per-spawn sidecar of its own
+// by design). The session sidecar IS present. runMint must still resolve via
+// the session sidecar exactly as before lr-2a8653 (lr-86779f) — reaching the
+// broker/mint path as the session identity, not refusing.
+func TestRunMint_LeadSession_PerSpawnMiss_StillResolvesViaSession(t *testing.T) {
+	spawnDir := t.TempDir()
+	sessionDir := t.TempDir()
+
+	const spawnEnv = "GATEKEEPER_TEST_MAIN_LR2A8653_LEAD_SPAWN_UNSET"
+	const sessionEnv = "GATEKEEPER_TEST_MAIN_LR2A8653_LEAD_SESSION"
+
+	// Per-spawn env is deliberately never set: no per-spawn harness is
+	// active for this invocation.
+	os.Unsetenv(spawnEnv)
+
+	t.Setenv(sessionEnv, "session-lead-lr2a8653-2")
+	sessionPath := filepath.Join(sessionDir, "lore-agent-name-session-lead-lr2a8653-2")
+	if err := os.WriteFile(sessionPath, []byte("subagent-self"), 0o600); err != nil {
+		t.Fatalf("setup: write session sidecar file: %v", err)
+	}
+
+	path := writeSpawnFirstConfig(t, spawnDir, sessionDir, spawnEnv, sessionEnv)
+
+	err := runMint([]string{"--role", "builder", "--config", path})
+	// The env broker returns "" for unknown paths, which causes a downstream
+	// error reading app-id — expected and fine. We only assert the failure
+	// mode is NOT an attestation/entitlement refusal, proving resolution
+	// reached the broker read using the session-resolved identity.
+	if err != nil && strings.Contains(err.Error(), "not entitled") {
+		t.Fatalf("runMint returned an entitlement refusal; session-sidecar fallback did not resolve (lr-86779f regression): %v", err)
+	}
+	if err != nil && strings.Contains(err.Error(), "resolve attested identity") {
+		t.Fatalf("runMint returned an attestation refusal for a lead-session invocation with no per-spawn source by design: %v", err)
+	}
+	if err != nil && strings.Contains(err.Error(), "config error") {
+		t.Fatalf("runMint returned a config-validation error: %v", err)
+	}
+}
+
 // TestMintWithoutRepoSendsEmptyRepos verifies that omitting --repo results in
 // an empty repositories[] field (GitHub interprets absence as all repos).
 func TestMintWithoutRepoSendsEmptyRepos(t *testing.T) {

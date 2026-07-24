@@ -149,13 +149,55 @@ func runMint(args []string) error {
 		os.Exit(2)
 	}
 
+	// Domain-aware MISS policy (lr-2a8653): the deployment's documented
+	// convention (docs/SIDECAR-READ-CONTRACT.md section 2,
+	// docs/SETUP.md#3-multiple-sidecar-namespaces-in-one-deployment) is
+	// spawn-first — the FIRST entry of attestation.sidecars is the
+	// per-spawn namespace, checked before any session namespace. That first
+	// entry is scoped into its own Resolver as DomainResolver.PerSpawn, so a
+	// per-spawn attestation MISS can be required to fail closed rather than
+	// falling through to a later (e.g. session) entry in chainSidecars,
+	// without reordering or duplicating the shared chain itself.
+	domainResolver := &attestation.DomainResolver{Chain: resolver}
+	if len(chainSidecars) > 0 {
+		perSpawnProvider, err := attestation.NewSidecarProvider(chainSidecars[0])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "attestation: build per-spawn resolver: %v\n", err)
+			os.Exit(2)
+		}
+		if perSpawnProvider != nil {
+			domainResolver.PerSpawn = attestation.NewResolver(perSpawnProvider)
+		}
+	}
+
+	// mintDomain names which MISS policy applies to THIS invocation
+	// (lr-2a8653): if the per-spawn namespace's own session-id env var is
+	// set in this process's environment, a per-spawn harness is active and
+	// this invocation is expected to have its own per-spawn sidecar file —
+	// so a MISS there must fail closed (DomainLocalSubagent) rather than
+	// silently resolving to whatever a lower-priority provider (e.g. the
+	// session sidecar) attests, which — inside a spawned subagent process —
+	// is the PARENT session's identity, not the subagent's own. When the
+	// per-spawn env var is unset, no per-spawn harness is active for this
+	// invocation (the common case for a lead/director session, which has no
+	// per-spawn sidecar of its own by design, lr-86779f) and DomainLocal
+	// preserves today's session-sidecar fallback behavior unchanged. This
+	// reads the same env var sidecarProvider.Resolve itself checks for its
+	// own MISS — no new config, no new CLI flag, no new source of truth.
+	mintDomain := attestation.DomainLocal
+	if len(chainSidecars) > 0 && chainSidecars[0].SessionIDEnv != "" {
+		if os.Getenv(chainSidecars[0].SessionIDEnv) != "" {
+			mintDomain = attestation.DomainLocalSubagent
+		}
+	}
+
 	svc := mint.Service{
-		APIBase:             cfg.GitHub.APIBase,
-		TTL:                 time.Duration(cfg.Token.TTLMinutes) * time.Minute,
-		Roles:               registry,
-		Broker:              br,
-		Bindings:            bindings,
-		AttestationResolver: resolver,
+		APIBase:        cfg.GitHub.APIBase,
+		TTL:            time.Duration(cfg.Token.TTLMinutes) * time.Minute,
+		Roles:          registry,
+		Broker:         br,
+		Bindings:       bindings,
+		DomainResolver: domainResolver,
 	}
 
 	var repos []string
@@ -167,7 +209,7 @@ func runMint(args []string) error {
 		repos = []string{bare}
 	}
 
-	token, err := svc.Mint(context.Background(), *roleName, repos)
+	token, err := svc.MintForDomain(context.Background(), mintDomain, *roleName, repos)
 	if err != nil {
 		return fmt.Errorf("mint: %w", err)
 	}
