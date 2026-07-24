@@ -306,11 +306,23 @@ domain uses — it does not reorder or duplicate that chain. `DomainA2A`
 requires a per-spawn-scoped resolver to succeed; a MISS there is a
 definite refusal (`ErrPerSpawnRequired`), never a softened fallback.
 
-**Status in this repository:** this PR ships the attestation substrate
-only. No A2A mint command exists yet in `cmd/gatekeeper` — `DomainResolver`
-is available for the A2A mint path (lr-a850d0, gated on a separate
-substrate-ratification decision) to consume once it lands; it is not
-wired into `gatekeeper mint` today.
+A third domain, `DomainLocalSubagent` (lr-2a8653), applies the identical
+PerSpawn-required policy to the *local* GitHub-domain mint (the one
+`gatekeeper mint` performs today) when the invocation is itself a spawned
+subagent expecting its own per-spawn sidecar — closing the confused-deputy
+gap where a subagent's per-spawn MISS silently fell through to the session
+sidecar and minted its PARENT session's identity. `DomainLocal` remains the
+default for an invocation with no per-spawn source by design (a
+lead/director session, lr-86779f); it is unaffected.
+
+**Status in this repository:** `gatekeeper mint` (`cmd/gatekeeper/main.go`)
+now constructs a `DomainResolver` for every invocation. It selects
+`DomainLocalSubagent` when the configured per-spawn sidecar namespace's own
+`session_id_env` is set in the process environment (a per-spawn harness is
+active for this invocation) and `DomainLocal` otherwise. No A2A mint command
+exists yet in `cmd/gatekeeper` — `DomainA2A` is available for the A2A mint
+path (lr-a850d0, gated on a separate substrate-ratification decision) to
+consume once it lands, and remains otherwise unused today.
 
 ## The A2A caller-attestation contract (required fields)
 

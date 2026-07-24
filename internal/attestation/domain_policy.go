@@ -16,13 +16,19 @@ import (
 //
 // WHY THIS IS NOT A GLOBAL CHAIN CHANGE (MILLER lr-2ca216 comment #2, conf
 // 0.9): a per-spawn attestation MISS falling through to the session
-// sidecar is CORRECT for local GitHub/reader mints (lr-86779f) — a director
-// session legitimately has no per-spawn sidecar and must resolve via its
-// own session sidecar. The same fallthrough is a confused-deputy hole for
-// a REMOTE-facing (A2A) mint: the minted token crosses a trust boundary,
-// so a wrong-identity mint silently over-grants the parent lead's role to a
-// peer that never earned it. The discriminator is the MINT DOMAIN, not the
-// provider order — so the fix is a domain-scoped wrapper, not a reorder.
+// sidecar is CORRECT for local GitHub/reader mints made by an invocation
+// that legitimately has no per-spawn sidecar of its own (lr-86779f) — e.g. a
+// director/lead session. The same fallthrough is a confused-deputy hole
+// both for a REMOTE-facing (A2A) mint, where the minted token crosses a
+// trust boundary to a peer with no way to detect a parent/spawn
+// substitution, AND for a LOCAL mint requested by an invocation that DOES
+// expect its own per-spawn source — a spawned subagent whose per-spawn
+// sidecar read misses and, absent this policy, falls through to the
+// session-keyed sidecar and silently mints its PARENT's role instead
+// (lr-2a8653). The discriminator is the MINT DOMAIN — specifically, whether
+// THIS invocation was expected to have a per-spawn source — not the
+// provider order, so the fix is a domain-scoped wrapper (DomainA2A,
+// DomainLocalSubagent), not a chain reorder.
 
 // Domain identifies which mint-request context a Resolve call is being made
 // for, so the correct MISS policy can be applied. Domain is roster-agnostic
@@ -31,11 +37,30 @@ import (
 type Domain string
 
 const (
-	// DomainLocal is the default mint domain: local GitHub/reader-style
-	// mints. A per-spawn attestation MISS falls through to the next
-	// provider in the shared chain exactly as today (lr-86779f) — this
-	// domain applies NO additional constraint.
+	// DomainLocal is the default mint domain: a local GitHub/reader-style
+	// mint requested by an invocation that has no per-spawn attestation
+	// source by design — a long-lived lead/director session, which
+	// legitimately has no per-spawn sidecar of its own (lr-86779f). A
+	// per-spawn attestation MISS falls through to the next provider in the
+	// shared chain exactly as today — this domain applies NO additional
+	// constraint.
 	DomainLocal Domain = "local"
+
+	// DomainLocalSubagent is a local GitHub/reader-style mint requested by
+	// an invocation that DOES expect a per-spawn attestation source — a
+	// spawned subagent whose harness is supposed to have written its own
+	// per-spawn sidecar file. Unlike DomainLocal, a per-spawn MISS in this
+	// domain must fail closed rather than fall through to a lower-priority
+	// provider such as the session sidecar: that fallthrough is exactly the
+	// confused-deputy mechanism (lr-2a8653) where a subagent's per-spawn
+	// read MISS resolves to its PARENT session's identity via the
+	// session-keyed sidecar, silently minting the parent's role for the
+	// subagent's request. The trust boundary here is narrower than DomainA2A
+	// (a local over-grant, not a credential crossing to a remote peer), but
+	// the read-miss mechanism and the required fix are identical, so this
+	// domain reuses the same PerSpawn-required policy DomainA2A already
+	// established (lr-2ca216).
+	DomainLocalSubagent Domain = "local-subagent"
 
 	// DomainA2A is the remote-facing, agent-to-agent mint domain. A
 	// per-spawn attestation MISS in this domain must fail closed and must
@@ -46,6 +71,14 @@ const (
 	DomainA2A Domain = "a2a"
 )
 
+// requiresPerSpawn reports whether d's MISS policy requires the PerSpawn
+// resolver to succeed rather than allowing DomainResolver.Resolve to fall
+// through to d.Chain's remaining (lower-priority) providers. DomainLocal (and
+// any unrecognized/empty Domain) is the only pass-through case.
+func (d Domain) requiresPerSpawn() bool {
+	return d == DomainA2A || d == DomainLocalSubagent
+}
+
 // ErrPerSpawnRequired is returned by DomainResolver.Resolve when domain
 // requires a per-spawn (subagent-namespace) provider to resolve the
 // identity, and no such provider is configured, or none of the configured
@@ -55,10 +88,10 @@ const (
 var ErrPerSpawnRequired = fmt.Errorf("attestation: mint domain requires per-spawn attestation; refusing rather than falling through to a lower-priority provider")
 
 // RequiredSourceConstraint names the Provider.Resolve-time Source value
-// that must be present for a given mint Domain. Only DomainA2A currently
-// carries a constraint; DomainLocal (and any unrecognized/empty Domain)
-// carries none, so it is a pass-through to the shared chain's ordinary
-// first-match-wins behavior.
+// that must be present for a given mint Domain. DomainA2A and
+// DomainLocalSubagent carry a constraint (Domain.requiresPerSpawn());
+// DomainLocal (and any unrecognized/empty Domain) carries none, so it is a
+// pass-through to the shared chain's ordinary first-match-wins behavior.
 //
 // today the only per-spawn-namespace provider is the sidecar adapter
 // (Source == "sidecar"), and there is currently no way to distinguish a
@@ -78,7 +111,8 @@ type RequiredSourceConstraint struct {
 
 // DomainResolver applies a per-mint-domain MISS policy on top of a shared
 // attestation.Resolver. It never reorders or duplicates the shared chain —
-// Chain is the same *Resolver every mint domain uses. For DomainA2A, it
+// Chain is the same *Resolver every mint domain uses. For a domain where
+// Domain.requiresPerSpawn() is true (DomainA2A, DomainLocalSubagent), it
 // additionally requires that PerSpawn (a Resolver built from ONLY the
 // per-spawn-namespace provider(s), a subset of Chain's own providers) find
 // an identity; if PerSpawn declines, DomainResolver refuses fail-closed
@@ -99,17 +133,21 @@ type DomainResolver struct {
 
 // Resolve applies domain's MISS policy and returns the attested identity.
 //
-//   - DomainLocal (or any Domain other than DomainA2A): delegates straight
-//     to d.Chain.Resolve — no change from today's behavior (lr-86779f's
-//     session-sidecar fallback for a per-spawn miss keeps working).
-//   - DomainA2A: requires d.PerSpawn.Resolve to succeed. If PerSpawn
-//     declines (ErrNoIdentity) or is nil, Resolve returns
-//     ErrPerSpawnRequired — a definite refusal, never a fallthrough to
-//     d.Chain's remaining (lower-priority) providers such as the session
-//     sidecar. Any hard error from PerSpawn is returned as-is (fail closed,
-//     consistent with Resolver.Resolve's own hard-error semantics).
+//   - DomainLocal (or any Domain whose requiresPerSpawn() is false):
+//     delegates straight to d.Chain.Resolve — no change from today's
+//     behavior (lr-86779f's session-sidecar fallback for a per-spawn miss
+//     keeps working, for an invocation that legitimately has no per-spawn
+//     source by design, e.g. a lead/director session).
+//   - DomainA2A / DomainLocalSubagent (domain.requiresPerSpawn()): requires
+//     d.PerSpawn.Resolve to succeed. If PerSpawn declines (ErrNoIdentity) or
+//     is nil, Resolve returns ErrPerSpawnRequired — a definite refusal,
+//     never a fallthrough to d.Chain's remaining (lower-priority) providers
+//     such as the session sidecar (lr-2a8653's confused-deputy fix reuses
+//     this exact policy for the local-subagent case). Any hard error from
+//     PerSpawn is returned as-is (fail closed, consistent with
+//     Resolver.Resolve's own hard-error semantics).
 func (d *DomainResolver) Resolve(ctx context.Context, domain Domain) (Identity, error) {
-	if domain != DomainA2A {
+	if !domain.requiresPerSpawn() {
 		return d.Chain.Resolve(ctx)
 	}
 

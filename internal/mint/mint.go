@@ -79,10 +79,32 @@ type Service struct {
 	Bindings map[string]RoleBinding // role name -> broker paths + verification config
 
 	// AttestationResolver resolves the ATTESTED invoking identity
-	// (internal/attestation) for the entitlement check. Required: Mint fails
-	// closed with no broker reads and no token minted if this is nil, since
-	// a nil resolver means no identity can ever be attested.
+	// (internal/attestation) for the entitlement check, for an invocation
+	// whose Domain applies no additional MISS constraint (attestation.
+	// DomainLocal semantics). Required: Mint fails closed with no broker
+	// reads and no token minted if both this and DomainResolver are nil,
+	// since no resolver at all means no identity can ever be attested.
+	//
+	// Deprecated in favor of DomainResolver + Domain for any caller that can
+	// distinguish a per-spawn-expected invocation (attestation.
+	// DomainLocalSubagent) from a lead/director session with none by design
+	// (attestation.DomainLocal) — see lr-2a8653. Retained so an existing
+	// caller that only ever sets AttestationResolver keeps compiling and
+	// behaving exactly as before: when DomainResolver is nil, Mint wraps
+	// AttestationResolver in a DomainResolver whose Chain is
+	// AttestationResolver itself, which is behaviorally identical to calling
+	// AttestationResolver.Resolve directly for DomainLocal.
 	AttestationResolver *attestation.Resolver
+
+	// DomainResolver resolves the ATTESTED invoking identity via the
+	// domain-aware MISS policy (internal/attestation.DomainResolver,
+	// lr-2ca216/lr-2a8653): a per-spawn attestation MISS on an invocation
+	// whose Domain is DomainA2A or DomainLocalSubagent fails closed rather
+	// than falling through to a lower-priority provider such as the session
+	// sidecar, while DomainLocal preserves today's session-sidecar fallback
+	// for a lead/director session with no per-spawn source by design
+	// (lr-86779f). When set, this takes precedence over AttestationResolver.
+	DomainResolver *attestation.DomainResolver
 
 	// Renderer translates a role's permission set into the provider's expected
 	// format. When nil, roles.DefaultGitHubRenderer is used, which preserves
@@ -98,16 +120,34 @@ type Service struct {
 	MintFunc func(context.Context, githubapp.MintRequest) (githubapp.Token, error)
 }
 
-// Mint resolves the attested invoking identity, verifies it is entitled to
-// mint roleName, reads the role's App credentials from the broker, verifies
-// the resolved App's slug matches the role's configured binding, and returns
-// a short-lived installation token narrowed to the role's permissions and the
-// requested repositories. The App private key never leaves this call.
+// Mint is MintForDomain scoped to attestation.DomainLocal — the default mint
+// domain for an invocation with no per-spawn attestation expectation of its
+// own (e.g. a lead/director session, lr-86779f). Existing callers that only
+// need today's behavior (a per-spawn MISS falls through to the session
+// sidecar exactly as before) keep using this method unchanged.
+func (s *Service) Mint(ctx context.Context, roleName string, repos []string) (githubapp.Token, error) {
+	return s.MintForDomain(ctx, attestation.DomainLocal, roleName, repos)
+}
+
+// MintForDomain resolves the attested invoking identity under domain's MISS
+// policy, verifies it is entitled to mint roleName, reads the role's App
+// credentials from the broker, verifies the resolved App's slug matches the
+// role's configured binding, and returns a short-lived installation token
+// narrowed to the role's permissions and the requested repositories. The App
+// private key never leaves this call.
+//
+// domain selects the attestation.DomainResolver MISS policy applied to this
+// invocation (lr-2a8653): pass attestation.DomainLocalSubagent for a spawned
+// subagent invocation that expects its own per-spawn attestation source, so
+// a per-spawn MISS fails closed rather than silently resolving to the
+// PARENT session's identity via the session sidecar — the confused-deputy
+// class this method exists to close. Pass attestation.DomainLocal (or use
+// Mint) for an invocation with no per-spawn source by design.
 //
 // Every failure mode here is fail-closed: an unresolvable identity, an
 // identity not entitled to the role, or a missing/mismatched App-slug
 // binding all return an error with no token minted.
-func (s *Service) Mint(ctx context.Context, roleName string, repos []string) (githubapp.Token, error) {
+func (s *Service) MintForDomain(ctx context.Context, domain attestation.Domain, roleName string, repos []string) (githubapp.Token, error) {
 	role, err := s.Roles.Resolve(roleName)
 	if err != nil {
 		return githubapp.Token{}, err
@@ -120,10 +160,23 @@ func (s *Service) Mint(ctx context.Context, roleName string, repos []string) (gi
 
 	// Gap 1: entitlement — attested identity -> role. Resolved and checked
 	// before any broker read, so an unentitled caller never touches secrets.
-	if s.AttestationResolver == nil {
-		return githubapp.Token{}, fmt.Errorf("mint role %q: no attestation resolver configured; cannot verify entitlement", roleName)
+	//
+	// DomainResolver takes precedence when set (lr-2a8653): it applies
+	// domain's MISS policy, which for DomainLocalSubagent/DomainA2A refuses
+	// rather than falling through to a lower-priority provider such as the
+	// session sidecar on a per-spawn MISS. A caller that only ever sets the
+	// legacy AttestationResolver keeps its exact prior behavior — resolved
+	// via the shared chain with no domain constraint, regardless of domain —
+	// since it never gets a DomainLocalSubagent-capable resolver in the
+	// first place.
+	domainResolver := s.DomainResolver
+	if domainResolver == nil {
+		if s.AttestationResolver == nil {
+			return githubapp.Token{}, fmt.Errorf("mint role %q: no attestation resolver configured; cannot verify entitlement", roleName)
+		}
+		domainResolver = &attestation.DomainResolver{Chain: s.AttestationResolver}
 	}
-	identity, err := s.AttestationResolver.Resolve(ctx)
+	identity, err := domainResolver.Resolve(ctx, domain)
 	if err != nil {
 		return githubapp.Token{}, fmt.Errorf("mint role %q: resolve attested identity: %w", roleName, err)
 	}

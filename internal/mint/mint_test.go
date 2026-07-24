@@ -650,6 +650,120 @@ func TestMintAppSlugBindingGate(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// lr-2a8653: domain-aware per-spawn MISS policy at the mint boundary. A
+// subagent invocation whose per-spawn attestation source misses must never
+// resolve to its parent session's identity via a lower-priority provider in
+// the shared chain (the confused-deputy class); a lead/director session with
+// no per-spawn source by design must keep resolving via the session sidecar
+// exactly as before (lr-86779f) — DomainResolver + Domain is the mechanism,
+// reused unmodified from lr-2ca216's DomainA2A substrate.
+// ---------------------------------------------------------------------------
+
+// spawnThenSessionIdentityProvider is a stub attestation.Provider standing in
+// for the per-spawn sidecar entry: it resolves when spawnHit is true, and
+// declines (ErrNoIdentity) otherwise — modeling a per-spawn sidecar file
+// that is present (hit) or absent (miss) for the current invocation.
+type spawnThenSessionIdentityProvider struct {
+	hit      bool
+	identity string
+}
+
+func (p spawnThenSessionIdentityProvider) Resolve(_ context.Context) (attestation.Identity, error) {
+	if !p.hit {
+		return attestation.Identity{}, attestation.ErrNoIdentity
+	}
+	return attestation.Identity{Subject: p.identity, Source: "sidecar"}, nil
+}
+
+// buildDomainMintService returns a mint.Service wired the way cmd/gatekeeper
+// wires it (lr-2a8653): DomainResolver.Chain is the full ordered chain
+// [per-spawn provider, session provider], and DomainResolver.PerSpawn is
+// scoped to ONLY the per-spawn provider — mirroring main.go's
+// chainSidecars[0]-scoped PerSpawn resolver.
+func buildDomainMintService(t *testing.T, spawnHit bool, sessionIdentity string) *mint.Service {
+	t.Helper()
+
+	spawnProvider := spawnThenSessionIdentityProvider{hit: spawnHit, identity: "subagent-self"}
+	sessionProvider := spawnThenSessionIdentityProvider{hit: true, identity: sessionIdentity}
+
+	chain := attestation.NewResolver(spawnProvider, sessionProvider)
+	domainResolver := &attestation.DomainResolver{
+		Chain:    chain,
+		PerSpawn: attestation.NewResolver(spawnProvider),
+	}
+
+	broker := &fakeBroker{vals: fullBrokerVals()}
+	binding := builderBinding()
+	binding.EntitledIdentities = []string{sessionIdentity, "subagent-self"}
+
+	return &mint.Service{
+		APIBase:        "https://api.github.com",
+		TTL:            5 * time.Minute,
+		Roles:          roles.NewRegistry(),
+		Broker:         broker,
+		DomainResolver: domainResolver,
+		Bindings: map[string]mint.RoleBinding{
+			"builder": binding,
+		},
+		MintFunc: func(_ context.Context, _ githubapp.MintRequest) (githubapp.Token, error) {
+			return fakeToken, nil
+		},
+	}
+}
+
+// TestMintForDomain_Subagent_PerSpawnMiss_RefusesNeverParentIdentity is
+// direction (T+) of the mandatory lr-2a8653 regression test: a subagent
+// invocation (DomainLocalSubagent) whose per-spawn attestation source MISSES,
+// with the session sidecar present and holding the PARENT identity, must
+// refuse fail-closed — MintFunc must never be called, and the mint must never
+// succeed as the parent's identity.
+func TestMintForDomain_Subagent_PerSpawnMiss_RefusesNeverParentIdentity(t *testing.T) {
+	const parentIdentity = "holden"
+	svc := buildDomainMintService(t, false /* spawnHit */, parentIdentity)
+
+	mintCalled := false
+	svc.MintFunc = func(_ context.Context, _ githubapp.MintRequest) (githubapp.Token, error) {
+		mintCalled = true
+		return fakeToken, nil
+	}
+
+	_, err := svc.MintForDomain(context.Background(), attestation.DomainLocalSubagent, "builder", nil)
+	if err == nil {
+		t.Fatal("MintForDomain(DomainLocalSubagent) succeeded on a per-spawn MISS; want a fail-closed refusal")
+	}
+	if !errors.Is(err, attestation.ErrPerSpawnRequired) {
+		t.Errorf("MintForDomain(DomainLocalSubagent) error = %v, want it to wrap attestation.ErrPerSpawnRequired", err)
+	}
+	if mintCalled {
+		t.Error("MintFunc was called on a subagent per-spawn MISS — the confused-deputy regression lr-2a8653 exists to close")
+	}
+}
+
+// TestMintForDomain_Lead_PerSpawnMiss_StillResolvesViaSession is direction
+// (T-) of the mandatory lr-2a8653 regression test: the SAME per-spawn MISS,
+// for a lead/director invocation (DomainLocal, no per-spawn source by
+// design), must still resolve via the session sidecar and mint successfully
+// — no regression of lr-86779f.
+func TestMintForDomain_Lead_PerSpawnMiss_StillResolvesViaSession(t *testing.T) {
+	const leadIdentity = "holden"
+	svc := buildDomainMintService(t, false /* spawnHit */, leadIdentity)
+
+	mintCalled := false
+	svc.MintFunc = func(_ context.Context, _ githubapp.MintRequest) (githubapp.Token, error) {
+		mintCalled = true
+		return fakeToken, nil
+	}
+
+	_, err := svc.MintForDomain(context.Background(), attestation.DomainLocal, "builder", nil)
+	if err != nil {
+		t.Fatalf("MintForDomain(DomainLocal) unexpected error: %v", err)
+	}
+	if !mintCalled {
+		t.Error("MintFunc was not called on the lead-session DomainLocal path; session-sidecar fallback must still work (lr-86779f)")
+	}
+}
+
 // TestMintBareInstallFailsClosed asserts the combined bare-install case: a
 // Service constructed with zero-value RoleBinding verification fields (no
 // EntitledIdentities, no AppSlug/AppSlugPath) — the state a config with no
