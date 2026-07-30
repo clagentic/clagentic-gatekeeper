@@ -132,6 +132,48 @@ whether its broker paths and permissions are otherwise valid. This is
 intentional: a bare install (nothing configured beyond broker paths) must
 fail closed rather than mint an unverified token for an unverified caller.
 
+### Returned identity: the verified App slug travels with the token
+
+The App-slug binding above is not only a gate — its result is also handed
+back to the caller. A successful mint returns the *broker-verified* App
+slug (the value gate 2 already read from `app_slug_path` and proved equal
+to `app_slug`) alongside the token, so a consumer can adopt it as the
+authoritative identity for the role rather than separately declaring the
+same fact (e.g. for commit-author attribution, review/verdict identity, or
+any other place a consumer needs "which App/bot identity does this role
+map to").
+
+Two surfaces carry this value:
+
+- **Go API**: `githubapp.Token.AppSlug` — set by `internal/mint.Service.Mint`
+  to the broker-read value, never to the configured expectation directly.
+  It is populated only on a successful mint; a mismatched or
+  half-configured binding returns a zero-value `Token` (see gate 2 above)
+  and `AppSlug` is never populated for it.
+- **CLI**: `gatekeeper mint --role <role> --json` emits
+  `{"token": "...", "expires_at": "...", "app_slug": "..."}` instead of the
+  bare token string. `app_slug` is omitted from the JSON object when the
+  role has no App-slug binding configured (gate 2 is off for that role).
+
+**Backward compatible in both directions.** The default `gatekeeper mint`
+invocation (no `--json`) is unchanged: a bare token string on stdout, same
+as before this field existed. A Go caller reading only `Token.Value` is
+equally unaffected. `--json` and `AppSlug` are additive — nothing about
+existing behavior changes for a consumer that does not opt in.
+
+**Not built here:** a numeric App/bot user id alongside the slug (the value
+that would unlock a GitHub commit-author bot-badge binding,
+`<id>+<slug>[bot]@users.noreply.github.com`) is intentionally out of scope
+for this contract. That id is already declared and guarded elsewhere for
+some roles; whether the mint response should become an additional source
+of it, and how that would reconcile with the existing declaration, is an
+open design question tracked separately and must be resolved explicitly
+before it is added here — not folded in silently alongside the slug.
+
+**Forgejo needs nothing from this.** On Forgejo, the role name IS the
+login (native accounts, no App/bot projection), so there is no equivalent
+slug to verify or return. This contract is GitHub-domain only.
+
 **Permission keys** are GitHub App permission resource names (e.g. `contents`,
 `pull_requests`, `issues`, `deployments`, `checks`, `statuses`). See the
 [GitHub Apps permissions documentation](https://docs.github.com/en/rest/apps/apps)

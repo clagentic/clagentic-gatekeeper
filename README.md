@@ -93,6 +93,29 @@ gatekeeper mint --role builder --repo owner/name
 
 A consumer (e.g. an agent dispatcher) calls `gatekeeper mint --role <role>` with the role mapped to its agent, then uses the returned token for the git/API operations that role permits.
 
+### Structured output: inheriting the verified App slug
+
+When a role has the App-slug verification gate configured (`app_slug` +
+`app_slug_path`, see [`docs/ROLES.md`](docs/ROLES.md#adding-a-custom-role)),
+Gatekeeper already reads the App's *actual* slug from the broker and checks
+it against the configured expectation before minting. `--json` surfaces
+that verified value instead of discarding it:
+
+```bash
+gatekeeper mint --role builder --json
+# {"token":"ghs_...","expires_at":"2026-01-01T00:00:00Z","app_slug":"your-builder-app-slug"}
+```
+
+`app_slug` is the broker-**verified** identity, not a copy of the configured
+expectation — a consumer that needs to know which App/bot identity a role
+maps to (for example, to attribute a commit or a review to the right bot
+login) can inherit this value instead of separately declaring it in its own
+configuration. Optional, additive, backward compatible: the default
+`gatekeeper mint` invocation (no `--json`) is unchanged, and a role with no
+App-slug binding configured simply omits `app_slug` from the JSON object.
+Gatekeeper does not require any particular consumer to exist — this is a
+plain, documented CLI output shape any tool can read, or ignore.
+
 ## Configuration
 
 Copy `config.example.yaml` to `config.yaml` and fill in your values. All deployment-specific values — org name, broker endpoint, broker secret paths, role→app bindings — live there. No hardcoded org names, hostnames, paths, or identities exist in the code.
