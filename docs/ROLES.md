@@ -161,6 +161,13 @@ as before this field existed. A Go caller reading only `Token.Value` is
 equally unaffected. `--json` and `AppSlug` are additive — nothing about
 existing behavior changes for a consumer that does not opt in.
 
+**Reference consumer:** [clagentic: loadout](https://github.com/clagentic/clagentic-loadout)
+is the reference consumer of this mechanism via its `TokenProvider` seam —
+Gatekeeper is one interchangeable provider among several it supports, never
+a required one. See the root [README's "Composes with"](../README.md#composes-with)
+section for the optionality statement in both directions; this document
+states the mechanism only, and that statement is not repeated here.
+
 **Not built here:** a numeric App/bot user id alongside the slug (the value
 that would unlock a GitHub commit-author bot-badge binding,
 `<id>+<slug>[bot]@users.noreply.github.com`) is intentionally out of scope

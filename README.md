@@ -42,6 +42,32 @@ The App private keys never touch the agent. Gatekeeper reads them from a pluggab
 - It is **not** coupled to any specific set of agents. Agent→role mapping lives in the consumer, not here.
 - It does **not** store long-lived secrets. The broker does.
 
+## Composes with
+
+Gatekeeper serves **any** consumer that can call its mint path — nothing here
+imports or assumes a particular caller. [clagentic: loadout](https://github.com/clagentic/clagentic-loadout)
+is the reference **consumer**: its `TokenProvider` seam treats Gatekeeper as
+one interchangeable minting provider among several (a static token, a
+bring-your-own minting command, or no provider at all each work equally well
+there). Neither project imports the other.
+
+Concretely, the seam works like this: Gatekeeper mints a scoped, short-lived
+GitHub App installation token for a role (see "Usage" below); a consumer
+calls `gatekeeper mint --role <role>` and uses the returned token for the
+git/API operations that role permits. `--json` mode additionally returns the
+broker-verified App slug alongside the token (see "Structured output" below
+and [`docs/ROLES.md`](docs/ROLES.md#returned-identity-the-verified-app-slug-travels-with-the-token))
+so a consumer that needs to know which App/bot identity a role maps to can
+adopt that value instead of separately declaring it.
+
+This is optional in both directions. A Gatekeeper user who never touches
+loadout loses nothing — Gatekeeper's entire contract is the CLI/JSON output
+documented in this README, usable by any caller that can shell out or read
+JSON. A loadout user who never touches Gatekeeper loses nothing either — the
+Forgejo path works fully standalone with a static token, and GitHub's
+App-token path accepts any `TokenProvider` implementation, not only
+Gatekeeper's.
+
 ## Attestation substrate for agent-to-agent (A2A) callers
 
 Gatekeeper's attestation layer (`internal/attestation`) resolves *who is
