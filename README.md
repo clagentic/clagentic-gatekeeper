@@ -48,7 +48,7 @@ Gatekeeper serves **any** consumer that can call its mint path — nothing here
 imports or assumes a particular caller. [clagentic: loadout](https://github.com/clagentic/clagentic-loadout)
 is the reference **consumer**: its `TokenProvider` seam treats Gatekeeper as
 one interchangeable minting provider among several (a static token, a
-bring-your-own minting command, or no provider at all all work equally well
+bring-your-own minting command, or no provider at all each work equally well
 there). Neither project imports the other.
 
 Concretely, the seam works like this: Gatekeeper mints a scoped, short-lived
