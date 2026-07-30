@@ -43,3 +43,54 @@ merge:
     - cmd: "GOPATH=/root/go GOMODCACHE=/root/go/pkg/mod GOCACHE=/root/.cache/go make install PREFIX=/usr/local"
       description: "Rebuild and install the role-scoped mint binary via the shared parameterized `make install` target so reference-role changes (e.g. builder workflows:write, lr-8681; multi-sidecar attestation.sidecars, lr-86779f) take effect on this host without a manual redeploy. GOPATH/GOMODCACHE/GOCACHE/PREFIX are supplied inline here, our-env-only, off the shipped Makefile's own defaults. Runs against the merged origin/main loadout-merge already syncs the working tree to before invoking post_merge_steps."
       on_failure: fail
+
+  # required_reviewer_roles (lr-9c7f47): WHY THIS GATE EXISTS HERE, SPECIFICALLY
+  # -- the post_merge_steps step above does not just land code on main, it
+  # rebuilds and reinstalls (`make install PREFIX=/usr/local`) the
+  # role-scoped MINT BINARY the rest of the fleet depends on for token
+  # issuance. Before this key was declared, this repo's merge: section
+  # (authorized_roles is not declared here either, which is safely
+  # fail-CLOSED per loadout's own absence semantics -- see
+  # clagentic_loadout.merge.gate_config's module docstring) gated only WHO
+  # may merge, never WHETHER anyone reviewed the change --
+  # loadout's absence semantics make required_reviewer_roles fail-OPEN on
+  # omission, so a merge: section with no post_merge_steps risk would already
+  # be worth closing, and one whose post_merge_steps redeploys fleet-wide
+  # credential-minting infrastructure makes an unreviewed merge here the
+  # highest-stakes instance of that gap in the fleet (lr-9c7f47 comment #1).
+  # Do not "simplify" this away back to an absent key or an empty list --
+  # that is the exact silent fail-open this task exists to close.
+  required_reviewer_roles: [reviewer, security]
+
+# roles (lr-9c7f47): this repo declares its OWN role -> verb-set taxonomy
+# rather than relying on provisioning.roles.DEFAULT_ROLE_VERBS, so that the
+# `security` role named in merge.required_reviewer_roles above is not merely
+# accepted with a WARN (the fallback-taxonomy shape) but is a real,
+# provisioned role this repo's own config vouches for. Declaring this
+# section means doctor's cross-check is now load-bearing: every gate role
+# in merge.required_reviewer_roles / merge.authorized_roles MUST have a key
+# here or doctor hard-fails (an unsatisfiable gate is worse than an absent
+# one, because it reads as protection -- clagentic_loadout.doctor.checks).
+# Verb sets below mirror provisioning.roles.DEFAULT_ROLE_VERBS for the roles
+# this repo shares with the reference taxonomy (builder, reviewer, merger,
+# lead), extended with a security role using the same reviewer-class verb
+# set (git-host-api, review-post, stage-body) that a security-audit gate
+# needs to read a PR diff and post its own verdict.
+roles:
+  builder:
+    - push
+  reviewer:
+    - git-host-api
+    - review-post
+    - stage-body
+  security:
+    - git-host-api
+    - review-post
+    - stage-body
+  merger:
+    - merge
+    - push
+    - release-dispatch
+    - release-detect
+  lead:
+    - git-host-api
