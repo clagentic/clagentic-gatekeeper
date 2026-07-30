@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -558,5 +559,125 @@ func TestMintWithoutRepoSendsEmptyRepos(t *testing.T) {
 
 	if len(capturedRepos) != 0 {
 		t.Errorf("repositories[] = %v, want empty (GitHub all-repos)", capturedRepos)
+	}
+}
+
+// captureStdout redirects os.Stdout for the duration of fn and returns
+// everything written to it. Used to assert on runMint's actual CLI output,
+// since runMint writes directly to os.Stdout rather than returning a value.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("captureStdout: create pipe: %v", err)
+	}
+	orig := os.Stdout
+	os.Stdout = w
+	defer func() { os.Stdout = orig }()
+
+	fn()
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("captureStdout: close pipe writer: %v", err)
+	}
+	var buf strings.Builder
+	if _, err := io.Copy(&buf, r); err != nil {
+		t.Fatalf("captureStdout: read pipe: %v", err)
+	}
+	return buf.String()
+}
+
+// TestRunMintJSON_IncludesBrokerVerifiedAppSlug is the end-to-end (lr-dbe5d4)
+// regression test for the CLI surface: with --json, gatekeeper mint must
+// print a JSON object whose app_slug field is the broker-verified value
+// (fakeAppSlug, read from the env broker at fakeAppSlugPath), and the
+// default (no --json) output must remain the bare token string —
+// unaffected by AppSlug's existence, proving backward compatibility for a
+// consumer that never opts in.
+func TestRunMintJSON_IncludesBrokerVerifiedAppSlug(t *testing.T) {
+	const (
+		fakeAppIDPath      = "GATEKEEPER_TEST_JSON_APPID"
+		fakeInstallIDPath  = "GATEKEEPER_TEST_JSON_INSTALLID"
+		fakePrivateKeyPath = "GATEKEEPER_TEST_JSON_PRIVATEKEY"
+		fakeAppSlugPath    = "GATEKEEPER_TEST_JSON_APPSLUG"
+		fakeAppSlug        = "clagentic-builder-json-test"
+		fakeIdentityEnv    = "GATEKEEPER_TEST_JSON_IDENTITY"
+		fakeIdentity       = "json-test-caller"
+	)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{ //nolint:errcheck
+			"token":      "ghs_json_test_token",
+			"expires_at": "2099-01-01T00:00:00Z",
+		})
+	}))
+	defer srv.Close()
+
+	t.Setenv(fakeAppIDPath, "12345")
+	t.Setenv(fakeInstallIDPath, "67890")
+	t.Setenv(fakePrivateKeyPath, generateTestPEM(t))
+	t.Setenv(fakeAppSlugPath, fakeAppSlug)
+	t.Setenv(fakeIdentityEnv, fakeIdentity)
+
+	path := writeTempConfig(t, `
+github:
+  owner: testorg
+  api_base: `+srv.URL+`
+
+broker:
+  type: env
+
+attestation:
+  configured:
+    type: env
+    source: `+fakeIdentityEnv+`
+
+roles:
+  builder:
+    app_id_path: `+fakeAppIDPath+`
+    installation_id_path: `+fakeInstallIDPath+`
+    private_key_path: `+fakePrivateKeyPath+`
+    entitled_identities:
+      - `+fakeIdentity+`
+    app_slug: `+fakeAppSlug+`
+    app_slug_path: `+fakeAppSlugPath+`
+`)
+
+	// --json: output must be a JSON object carrying the broker-verified slug.
+	jsonOut := captureStdout(t, func() {
+		if err := runMint([]string{"--role", "builder", "--config", path, "--json"}); err != nil {
+			t.Fatalf("runMint --json unexpected error: %v", err)
+		}
+	})
+
+	var got struct {
+		Token     string `json:"token"`
+		ExpiresAt string `json:"expires_at"`
+		AppSlug   string `json:"app_slug"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(jsonOut)), &got); err != nil {
+		t.Fatalf("runMint --json output is not valid JSON: %v\noutput: %q", err, jsonOut)
+	}
+	if got.Token != "ghs_json_test_token" {
+		t.Errorf("json output token = %q, want %q", got.Token, "ghs_json_test_token")
+	}
+	if got.AppSlug != fakeAppSlug {
+		t.Errorf("json output app_slug = %q, want the broker-verified value %q", got.AppSlug, fakeAppSlug)
+	}
+
+	// Default (no --json): output must be exactly the bare token string,
+	// unchanged from before AppSlug existed — the backward-compat contract.
+	plainOut := captureStdout(t, func() {
+		if err := runMint([]string{"--role", "builder", "--config", path}); err != nil {
+			t.Fatalf("runMint (default) unexpected error: %v", err)
+		}
+	})
+	if strings.TrimSpace(plainOut) != "ghs_json_test_token" {
+		t.Errorf("runMint default output = %q, want bare token %q", strings.TrimSpace(plainOut), "ghs_json_test_token")
+	}
+	if strings.Contains(plainOut, fakeAppSlug) {
+		t.Errorf("runMint default output unexpectedly contains the App slug %q; default output must stay token-only", fakeAppSlug)
 	}
 }

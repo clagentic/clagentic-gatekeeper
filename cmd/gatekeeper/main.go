@@ -1,6 +1,6 @@
 // Command gatekeeper mints role-scoped GitHub App installation tokens.
 //
-//	gatekeeper mint --role builder [--repo owner/name] [--config path]
+//	gatekeeper mint --role builder [--repo owner/name] [--config path] [--json]
 //
 // All deployment-specific values come from config.yaml (see config.example.yaml).
 // No org names, hostnames, paths, or identities are hardcoded here.
@@ -8,6 +8,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -44,8 +45,22 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "usage: gatekeeper <command> [flags]")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "commands:")
-	fmt.Fprintln(os.Stderr, "  mint --role <role> [--repo <owner/name>] [--config <path>]")
+	fmt.Fprintln(os.Stderr, "  mint --role <role> [--repo <owner/name>] [--config <path>] [--json]")
 	fmt.Fprintln(os.Stderr, "  version")
+}
+
+// mintResult is the OPTIONAL structured mint output emitted with --json
+// (lr-dbe5d4). It is strictly additive: the default (no --json) output is
+// unchanged — a bare token string on stdout — so an existing consumer that
+// only ever reads that line never observes this type at all. AppSlug is the
+// broker-VERIFIED App slug internal/mint's App-slug gate already checked
+// against the role's configured expectation before minting; it is never the
+// configured expectation itself, and it is empty when the role has no
+// App-slug binding configured (verification gate off for that role).
+type mintResult struct {
+	Token     string `json:"token"`
+	ExpiresAt string `json:"expires_at"`
+	AppSlug   string `json:"app_slug,omitempty"`
 }
 
 // runMint parses flags, builds the service graph, and mints a token.
@@ -54,6 +69,7 @@ func runMint(args []string) error {
 	roleName := fs.String("role", "", "role to mint (required)")
 	repo := fs.String("repo", "", "repository to scope the token to (owner/name); omit for all installed repos")
 	cfgPath := fs.String("config", "config.yaml", "path to config.yaml")
+	jsonOutput := fs.Bool("json", false, "emit {token, expires_at, app_slug} JSON instead of the bare token string; app_slug is the broker-verified value, empty when the role has no App-slug binding configured")
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -214,6 +230,18 @@ func runMint(args []string) error {
 		return fmt.Errorf("mint: %w", err)
 	}
 
+	if *jsonOutput {
+		enc := json.NewEncoder(os.Stdout)
+		return enc.Encode(mintResult{
+			Token:     token.Value,
+			ExpiresAt: token.ExpiresAt.Format(time.RFC3339),
+			AppSlug:   token.AppSlug,
+		})
+	}
+
+	// Default output is unchanged from before this field existed: the bare
+	// token string, nothing else. A consumer that never passes --json is
+	// unaffected by AppSlug's existence (lr-dbe5d4 backward-compat contract).
 	fmt.Println(token.Value)
 	return nil
 }
