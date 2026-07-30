@@ -224,7 +224,7 @@ func (s *Service) MintForDomain(ctx context.Context, domain attestation.Domain, 
 	if mintFn == nil {
 		mintFn = githubapp.Mint
 	}
-	return mintFn(ctx, githubapp.MintRequest{
+	token, err := mintFn(ctx, githubapp.MintRequest{
 		APIBase:        s.APIBase,
 		AppID:          appID,
 		InstallationID: installID,
@@ -233,4 +233,19 @@ func (s *Service) MintForDomain(ctx context.Context, domain attestation.Domain, 
 		Repositories:   repos,
 		TTL:            s.TTL,
 	})
+	if err != nil {
+		return githubapp.Token{}, err
+	}
+
+	// Carry the BROKER-VERIFIED slug forward on the returned Token, not the
+	// configured expectation (binding.AppSlug) — actualSlug is the value read
+	// from the broker at AppSlugPath and already proven equal to
+	// binding.AppSlug by the gate above (lr-dbe5d4). Using actualSlug here
+	// rather than binding.AppSlug is a deliberate distinction, even though
+	// the two are equal on every successful mint: a consumer inherits what
+	// gatekeeper verified against the broker, not a config echo. A mint that
+	// fails the gate above never reaches this line, so AppSlug is never
+	// populated for a mismatched or half-configured binding.
+	token.AppSlug = actualSlug
+	return token, nil
 }

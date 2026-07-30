@@ -24,9 +24,20 @@ import (
 )
 
 // Token is a minted installation access token and its expiry.
+//
+// AppSlug is OPTIONAL and additive (lr-dbe5d4): it carries the GitHub App
+// slug that internal/mint's App-slug verification gate already read from the
+// broker and checked against the role's configured expectation before this
+// Token was ever minted. It is populated by the caller that ran that
+// verification (internal/mint.Service), not by this package — githubapp
+// itself never touches the broker or the App-slug gate. A caller that
+// ignores this field (zero value "") sees exactly the same Token shape and
+// behavior as before this field existed; nothing about Value or ExpiresAt
+// changes based on whether AppSlug is set.
 type Token struct {
 	Value     string
 	ExpiresAt time.Time
+	AppSlug   string
 }
 
 // MintRequest narrows an installation token to a role's permissions and repos.
