@@ -764,6 +764,111 @@ func TestMintForDomain_Lead_PerSpawnMiss_StillResolvesViaSession(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// lr-dbe5d4: the returned Token carries the BROKER-VERIFIED App slug
+// (actualSlug, read from the broker at AppSlugPath), never the configured
+// expectation (binding.AppSlug) directly. The two are equal on every
+// successful mint by construction of the gate itself, so a happy-path-only
+// assertion that Token.AppSlug == the configured value is necessary but NOT
+// sufficient: it would pass identically whether mint.go assigns
+// `token.AppSlug = actualSlug` or the wrong-but-plausible
+// `token.AppSlug = binding.AppSlug`, since both hold the same string once
+// the gate has passed. TestMintReturnsBrokerVerifiedAppSlug demonstrates
+// this non-vacuity explicitly with a revert-and-confirm-RED step recorded in
+// the PR body: swapping the assignment to binding.AppSlug does not fail this
+// test (both are correct on the happy path) — proving the happy path alone
+// cannot distinguish the two implementations, which is exactly why
+// TestMintAppSlugMismatchReturnsNoTokenAndNoSlug below is the REQUIRED
+// counterpart. On a broker/config MISMATCH the two values diverge by
+// definition; only a fail-closed return (no Token at all, AppSlug included)
+// is correct there, and that assertion DOES distinguish "verified" from "an
+// echo of config that was never actually checked" if the App-slug gate
+// itself were ever weakened or bypassed.
+// ---------------------------------------------------------------------------
+
+// TestMintReturnsBrokerVerifiedAppSlug asserts that a successful mint's
+// returned Token.AppSlug equals the value read from the broker at
+// AppSlugPath. See the package-level comment above this test for why the
+// mismatch test that follows is the non-vacuity-bearing half of this pair.
+func TestMintReturnsBrokerVerifiedAppSlug(t *testing.T) {
+	broker := &fakeBroker{vals: fullBrokerVals()}
+
+	svc := &mint.Service{
+		APIBase:             "https://api.github.com",
+		TTL:                 5 * time.Minute,
+		Roles:               roles.NewRegistry(),
+		Broker:              broker,
+		AttestationResolver: testResolver(),
+		Bindings: map[string]mint.RoleBinding{
+			"builder": builderBinding(),
+		},
+		MintFunc: func(_ context.Context, _ githubapp.MintRequest) (githubapp.Token, error) {
+			return fakeToken, nil
+		},
+	}
+
+	tok, err := svc.Mint(context.Background(), "builder", nil)
+	if err != nil {
+		t.Fatalf("Mint() unexpected error: %v", err)
+	}
+	if tok.AppSlug != testAppSlug {
+		t.Errorf("Token.AppSlug = %q, want the broker-read value %q", tok.AppSlug, testAppSlug)
+	}
+}
+
+// TestMintAppSlugMismatchReturnsNoTokenAndNoSlug is the REQUIRED counterpart
+// to the happy-path assertion above (operator directive: a passing-mint-only
+// test is necessary but not sufficient). It proves the non-vacuous half of
+// the contract: when the broker-resolved slug does not match the configured
+// expectation, Mint must fail closed and return a zero-value Token — no
+// token string, no AppSlug, nothing a caller could mistake for a verified
+// identity.
+func TestMintAppSlugMismatchReturnsNoTokenAndNoSlug(t *testing.T) {
+	broker := &fakeBroker{vals: map[string]string{
+		testAppIDPath:      testAppID,
+		testInstallIDPath:  testInstallID,
+		testPrivateKeyPath: testFakeKey,
+		testAppSlugPath:    "some-other-app",
+	}}
+
+	mintCalled := false
+	svc := &mint.Service{
+		APIBase:             "https://api.github.com",
+		TTL:                 5 * time.Minute,
+		Roles:               roles.NewRegistry(),
+		Broker:              broker,
+		AttestationResolver: testResolver(),
+		Bindings: map[string]mint.RoleBinding{
+			"builder": {
+				AppIDPath:          testAppIDPath,
+				InstallationIDPath: testInstallIDPath,
+				PrivateKeyPath:     testPrivateKeyPath,
+				EntitledIdentities: []string{testIdentity},
+				AppSlug:            testAppSlug,
+				AppSlugPath:        testAppSlugPath,
+			},
+		},
+		MintFunc: func(_ context.Context, _ githubapp.MintRequest) (githubapp.Token, error) {
+			mintCalled = true
+			return fakeToken, nil
+		},
+	}
+
+	tok, err := svc.Mint(context.Background(), "builder", nil)
+	if err == nil {
+		t.Fatal("expected error on App-slug mismatch, got nil")
+	}
+	if mintCalled {
+		t.Error("MintFunc was called despite App-slug mismatch; must fail before minting")
+	}
+	if tok.AppSlug != "" {
+		t.Errorf("Token.AppSlug = %q on a failed mint, want empty zero value", tok.AppSlug)
+	}
+	if tok.Value != "" {
+		t.Errorf("Token.Value = %q on a failed mint, want empty zero value", tok.Value)
+	}
+}
+
 // TestMintBareInstallFailsClosed asserts the combined bare-install case: a
 // Service constructed with zero-value RoleBinding verification fields (no
 // EntitledIdentities, no AppSlug/AppSlugPath) — the state a config with no
