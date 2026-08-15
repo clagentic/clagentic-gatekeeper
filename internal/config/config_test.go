@@ -418,6 +418,110 @@ roles: {}
 	}
 }
 
+// TestLoad_A2AProvider verifies the OPTIONAL a2a_provider stanza (lr-890fae)
+// parses the OpenBao B3 issuance surface and its per-role mapping.
+func TestLoad_A2AProvider(t *testing.T) {
+	path := writeTemp(t, `
+github:
+  owner: myorg
+
+broker:
+  type: openbao
+  endpoint: https://bao.example.com
+  auth: approle
+
+roles: {}
+
+a2a_provider:
+  endpoint: https://bao.example.com
+  assertion_private_key_path: secret/gatekeeper/a2a/assertion-private-key
+  issuer: gatekeeper-example-issuer
+  assertion_ttl_seconds: 300
+  auth_mount: a2a-jwt
+  roles:
+    peer-builder:
+      auth_role: a2a-role
+      oidc_role: a2a-oidc-role
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+
+	if !cfg.A2AProvider.Enabled() {
+		t.Fatal("A2AProvider.Enabled() = false, want true for a fully configured stanza")
+	}
+	if cfg.A2AProvider.Endpoint != "https://bao.example.com" {
+		t.Errorf("A2AProvider.Endpoint = %q, want %q", cfg.A2AProvider.Endpoint, "https://bao.example.com")
+	}
+	if cfg.A2AProvider.AssertionPrivateKeyPath != "secret/gatekeeper/a2a/assertion-private-key" {
+		t.Errorf("A2AProvider.AssertionPrivateKeyPath = %q, want %q", cfg.A2AProvider.AssertionPrivateKeyPath, "secret/gatekeeper/a2a/assertion-private-key")
+	}
+	if cfg.A2AProvider.Issuer != "gatekeeper-example-issuer" {
+		t.Errorf("A2AProvider.Issuer = %q, want %q", cfg.A2AProvider.Issuer, "gatekeeper-example-issuer")
+	}
+	if cfg.A2AProvider.AssertionTTLSeconds != 300 {
+		t.Errorf("A2AProvider.AssertionTTLSeconds = %d, want 300", cfg.A2AProvider.AssertionTTLSeconds)
+	}
+	if cfg.A2AProvider.AuthMount != "a2a-jwt" {
+		t.Errorf("A2AProvider.AuthMount = %q, want %q", cfg.A2AProvider.AuthMount, "a2a-jwt")
+	}
+	roleCfg, ok := cfg.A2AProvider.Roles["peer-builder"]
+	if !ok {
+		t.Fatal("A2AProvider.Roles[peer-builder] not found")
+	}
+	if roleCfg.AuthRole != "a2a-role" {
+		t.Errorf("Roles[peer-builder].AuthRole = %q, want %q", roleCfg.AuthRole, "a2a-role")
+	}
+	if roleCfg.OIDCRole != "a2a-oidc-role" {
+		t.Errorf("Roles[peer-builder].OIDCRole = %q, want %q", roleCfg.OIDCRole, "a2a-oidc-role")
+	}
+}
+
+// TestLoad_A2AProviderAbsent verifies the byte-identical-behavior AC (AC5):
+// a config with no a2a_provider stanza at all loads with a zero-value,
+// disabled A2AProviderConfig — the GitHub-domain path is unaffected.
+func TestLoad_A2AProviderAbsent(t *testing.T) {
+	path := writeTemp(t, `
+github:
+  owner: myorg
+
+broker:
+  type: env
+
+roles: {}
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.A2AProvider.Enabled() {
+		t.Error("A2AProvider.Enabled() = true, want false for an absent stanza")
+	}
+	if len(cfg.A2AProvider.Roles) != 0 {
+		t.Errorf("A2AProvider.Roles = %v, want empty", cfg.A2AProvider.Roles)
+	}
+}
+
+// TestA2AProviderConfig_PartialConfigNotEnabled asserts a partially
+// configured provider (one of the three required fields missing) is treated
+// as NOT enabled — fail closed with a config error rather than an attempt
+// that cannot succeed.
+func TestA2AProviderConfig_PartialConfigNotEnabled(t *testing.T) {
+	cases := []A2AProviderConfig{
+		{AssertionPrivateKeyPath: "secret/x", AuthMount: "a2a-jwt"},         // missing Endpoint
+		{Endpoint: "https://bao.example.com", AuthMount: "a2a-jwt"},         // missing AssertionPrivateKeyPath
+		{Endpoint: "https://bao.example.com", AssertionPrivateKeyPath: "x"}, // missing AuthMount
+	}
+	for i, c := range cases {
+		if c.Enabled() {
+			t.Errorf("case %d: Enabled() = true, want false for partial config %+v", i, c)
+		}
+	}
+}
+
 func TestLoad_MissingFile(t *testing.T) {
 	_, err := Load("/nonexistent/path/config.yaml")
 	if err == nil {

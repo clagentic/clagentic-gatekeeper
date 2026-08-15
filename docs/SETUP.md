@@ -399,6 +399,141 @@ agent names, org names, or other deployment-specific identities anywhere in
 precisely so a released clone of this repository never ships anyone's real
 crew roster.
 
+## A2A token flow: from attested spawn to a peer-validated wire JWT
+
+Once an A2A caller's identity is attested (layer 1, above) and its role/
+audience entitlement is checked (`a2a_mapping`, above), `gatekeeper mint-a2a`
+brokers issuance of the actual peer-facing credential. This section is the
+end-to-end walkthrough: sidecar attestation -> gatekeeper's policy decision
+(PDP) -> OpenBao issuance -> the wire JWT -> peer validation.
+
+### The mechanism (B3 — attest-and-route, not mint-on-behalf-of)
+
+An earlier design considered having gatekeeper mint directly through its own
+OpenBao credential on behalf of an arbitrary attested caller. That does not
+work: OpenBao rejects a template-supplied `sub` override on an
+`identity/oidc/role` (a reserved key) and always stamps the *authenticated*
+entity's own id. The mechanism gatekeeper actually implements is different,
+and is *stronger*, not a workaround:
+
+1. **Sidecar attestation** (layer 1 above) resolves the caller's identity
+   from a structured sidecar record — the same substrate
+   [`docs/A2A-ATTESTATION-CONTRACT.md`](A2A-ATTESTATION-CONTRACT.md)
+   documents. For `mint-a2a` specifically, this MUST resolve through the
+   **per-spawn** sidecar entry: `attestation.DomainA2A`'s fail-closed MISS
+   policy (section 5, above) means a per-spawn miss refuses outright and
+   never falls through to a session-scoped identity.
+2. **Gatekeeper PDP**: `internal/a2apolicy.Policy.Check(identity, audience)`
+   resolves the attested identity's A2A caller role and verifies that role
+   covers the requested audience (`a2a_mapping` in `config.yaml`, documented
+   above). An identity absent from the mapping, or a role that does not
+   cover the requested audience, refuses here — **before any OpenBao call
+   at all**.
+3. **Gatekeeper signs a short-lived JWT ASSERTION** with its **own** key
+   (`a2a_provider.assertion_private_key_path`, read from the broker like any
+   other secret): `sub` = the already-attested, already-entitled caller
+   identity from step 1. This assertion is gatekeeper's, and gatekeeper's
+   alone — it is never OpenBao's issuing key, is rotatable independently,
+   and is never persisted or logged.
+4. **OpenBao issuance (the actual token exchange)**: gatekeeper POSTs the
+   assertion to OpenBao's dedicated JWT auth mount
+   (`/v1/auth/<a2a_provider.auth_mount>/login`). OpenBao independently
+   verifies the assertion's signature against its own configured
+   `jwt_validation_pubkeys`, narrows via `bound_subject`, and resolves `sub`
+   to a **pre-registered entity-alias** on that mount's own accessor — a
+   value gatekeeper cannot dictate or fabricate. Gatekeeper then reads
+   `identity/oidc/token/<role>` with the resulting client token. **OpenBao
+   signs the returned token; gatekeeper never does** — no signing-key
+   handling, no in-process signing, anywhere in this path for the
+   peer-facing credential.
+5. **The wire JWT**: a standard OIDC token, signed by OpenBao, whose `sub`
+   claim resolves natively to the caller's real, pre-registered OpenBao
+   entity. See "What's on the wire" below for the exact claim set.
+6. **Peer validation**: any standard OIDC validator can verify the token
+   against OpenBao's discovery/JWKS endpoint — see
+   [`docs/A2A-ATTESTATION-CONTRACT.md`](A2A-ATTESTATION-CONTRACT.md) and the
+   sibling validation-contract task (`lr-baa55b`) for the peer-side
+   consumption contract.
+
+This is why the mechanism is called *attest-and-route*, not
+*mint-on-behalf-of*: gatekeeper never authenticates to OpenBao pretending to
+be the caller, and never asks OpenBao to trust a caller-supplied `sub`.
+OpenBao independently re-derives the identity from a signature it verifies
+itself, against a binding (the pre-registered entity-alias) it controls.
+
+### What's on the wire (and what isn't)
+
+**The peer-facing token carries a native `sub` claim (the caller's OpenBao
+entity id) and a TTL bound — nothing else.** Earlier design iterations
+expected additional custom claims (a caller-role claim, a target-audience
+claim, a parent-session-attribution claim). Those claims were dropped from
+the live-provisioned `identity/oidc/role` template — not by design choice,
+but because of an unresolved upstream Vault/OpenBao parser bug (a `{{ }}`
+placeholder adjacent to a JSON closing brace is misread as unbalanced
+templating syntax; the `hashicorp/vault#30146` family), reproduced against
+this exact deployment and tracked separately (openbao `lr-1e7c97`, not
+gating). When that bug clears, the claim set widens additively — no
+consumer of the token shape described here breaks.
+
+**Do not build a side channel to carry the dropped claims.** This is a
+deliberate, reasoned choice, not a gap to route around: this repository is
+public and built for multiple independent consumers, and the wire format
+staying a **vanilla OIDC token any standard validator handles** is what
+keeps it adoptable. A bespoke out-of-band provenance envelope would make the
+credential unconsumable by anyone outside a crew running gatekeeper's own
+bespoke tooling.
+
+**The authorization decision did not move** — only its restatement on the
+wire did. `internal/a2apolicy` still resolves attestation and checks
+entitlement before any issuance call, fail-closed, exactly as described
+above. What changed is that gatekeeper's own audit record —not the wire
+token — is now the place that attribution (caller identity, resolved role,
+requested audience, parent session id) lives. `gatekeeper mint-a2a` writes
+one audit line per mint decision (permitted or refused) to stderr, so it is
+capturable by any log-collecting harness without contaminating the token
+output on stdout. OpenBao's own audit device remains the mint-of-record for
+the issuance event itself — gatekeeper's audit record is a separate,
+additional record of the PDP decision, not a restatement of what OpenBao
+already logs.
+
+### Configuring `a2a_provider`
+
+See the fully annotated `a2a_provider:` stanza in
+[`config.example.yaml`](../config.example.yaml). In brief:
+
+```yaml
+a2a_provider:
+  endpoint: https://bao.example.com
+  assertion_private_key_path: secret/gatekeeper/a2a/assertion-private-key
+  issuer: your-gatekeeper-issuer-id
+  auth_mount: a2a-jwt
+  roles:
+    peer-builder:
+      auth_role: a2a-role
+      oidc_role: a2a-oidc-role
+```
+
+- **Omitted, or any of `endpoint` / `assertion_private_key_path` /
+  `auth_mount` empty**: `gatekeeper mint-a2a` refuses with a clear config
+  error at startup. This has **zero effect** on `gatekeeper mint` (the
+  GitHub-domain command) — additive, off by default, byte-identical
+  existing behavior for a deployment that never sets this stanza.
+- **`roles`** maps each A2A caller role named in `a2a_mapping`'s `role:`
+  values to the specific OpenBao role names its issuance flows through. A
+  role resolved by `a2a_mapping` with no matching entry here refuses closed
+  rather than silently falling back to some other role's mapping.
+
+### Running it
+
+```bash
+gatekeeper mint-a2a --audience peer-project-x [--config path] [--json]
+```
+
+Requires a per-spawn sidecar attestation (see "The mechanism" above) and a
+covering `a2a_mapping` entry for the resolved identity/audience pair.
+`--json` emits `{"token", "expires_at", "subject"}`; the default output is
+the bare token string, matching `gatekeeper mint`'s own contract.
+
 ## Summary
 
 | Layer | What it answers | Config | Fails closed? |
@@ -407,6 +542,7 @@ crew roster.
 | 2. Role entitlement | What that identity may mint | `roles.<name>.entitled_identities` in `config.yaml` | Yes — empty/absent list refuses to mint (see [`docs/ROLES.md`](ROLES.md)) |
 | 3. Credential grantor | What credentials the role gets | Secret broker (`broker.*` in `config.yaml`) | N/A — reached only after 1 and 2 pass |
 | 2a. A2A caller entitlement (`a2a_mapping`, lr-0ae541) | Which A2A role and peer audience(s) an A2A caller identity may request | `a2a_mapping` in `config.yaml` (`internal/a2apolicy`) | Yes — absent/empty mapping refuses every request; additive, off by default, no effect on layer 2 above |
+| 3a. A2A issuance (`a2a_provider`, lr-890fae) | OpenBao B3 issuance surface `gatekeeper mint-a2a` brokers through once 2a permits | `a2a_provider` in `config.yaml` (`internal/a2atoken` / `internal/a2amint`) | Yes — unconfigured/partial stanza refuses with a config error; reached only after 1 and 2a pass; additive, off by default, no effect on `gatekeeper mint` |
 
 If you set up nothing beyond the defaults, you get layer 1 via the built-in
 OS-user fallback and layer 2 fully closed (no role has default entitlements).

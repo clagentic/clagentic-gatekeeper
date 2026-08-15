@@ -1,0 +1,257 @@
+package main
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// writeSpawnSidecarFile writes an A2A-domain per-spawn sidecar identity
+// file: attestation.DomainA2A REQUIRES a per-spawn-scoped resolver to
+// succeed (docs/SETUP.md section 5, lr-2ca216) — a `configured` or
+// session-only sidecar layer is never enough for mint-a2a, unlike the
+// GitHub-domain command. Returns the config.yaml `attestation.sidecars`
+// entry text plus the env var to set for the given identity/session id.
+func writeSpawnSidecarFile(t *testing.T, dir, sessionID, identity string) {
+	t.Helper()
+	path := filepath.Join(dir, "spawn-"+sessionID)
+	if err := os.WriteFile(path, []byte(identity), 0o600); err != nil {
+		t.Fatalf("setup: write spawn sidecar file: %v", err)
+	}
+}
+
+// TestRunMintA2A_NoProviderConfigured is the AC5/additive regression test:
+// a config.yaml with no a2a_provider stanza at all must refuse mint-a2a with
+// a clear config error, and this file's other tests below prove the
+// existing `gatekeeper mint` (GitHub-domain) path in main_test.go is
+// completely unaffected by mint-a2a's addition — no shared state, no
+// behavior change, since this test only ever exercises runMintA2A.
+func TestRunMintA2A_NoProviderConfigured(t *testing.T) {
+	path := writeTempConfig(t, `
+github:
+  owner: testorg
+
+broker:
+  type: env
+
+roles: {}
+`)
+
+	err := runMintA2A([]string{"--audience", "peer-project-x", "--config", path})
+	if err == nil {
+		t.Fatal("runMintA2A: expected config error when a2a_provider is not configured, got nil")
+	}
+	if !strings.Contains(err.Error(), "a2a_provider") {
+		t.Errorf("runMintA2A error = %q, want it to mention a2a_provider", err.Error())
+	}
+}
+
+// TestRunMintA2A_RequiresAudience verifies the required --audience flag is
+// enforced before any config load.
+func TestRunMintA2A_RequiresAudience(t *testing.T) {
+	err := runMintA2A([]string{})
+	if err == nil {
+		t.Fatal("runMintA2A: expected error for missing --audience, got nil")
+	}
+}
+
+// TestRunMintA2A_PerSpawnMissRefusesBeforeIssuance covers the fail-closed
+// attestation gate for the A2A domain: no per-spawn sidecar file present
+// (the per-spawn env var is set — a harness IS active — but its sidecar
+// file was never written) must refuse via ErrPerSpawnRequired, never
+// falling through to any other identity source, and never reaching
+// issuance. Proven here by NOT standing up any OpenBao stub server at all —
+// if the mint path ever reached issuance, the request would fail to connect
+// rather than return the expected attestation refusal.
+func TestRunMintA2A_PerSpawnMissRefusesBeforeIssuance(t *testing.T) {
+	const spawnEnv = "GATEKEEPER_TEST_A2A_SPAWN_MISS_LR890FAE"
+	spawnDir := t.TempDir()
+	t.Setenv(spawnEnv, "spawn-miss-1")
+	// Deliberately no sidecar file written for this session id — the MISS.
+
+	path := writeTempConfig(t, `
+github:
+  owner: testorg
+
+broker:
+  type: env
+
+roles: {}
+
+attestation:
+  sidecars:
+    - dir: `+spawnDir+`
+      file_prefix: spawn-
+      session_id_env: `+spawnEnv+`
+
+a2a_provider:
+  endpoint: https://openbao.invalid.example
+  assertion_private_key_path: GATEKEEPER_TEST_A2A_KEY_LR890FAE
+  issuer: gatekeeper-test-issuer
+  auth_mount: a2a-jwt
+  roles:
+    peer-builder:
+      auth_role: a2a-role
+      oidc_role: a2a-oidc-role
+`)
+
+	err := runMintA2A([]string{"--audience", "peer-project-x", "--config", path})
+	if err == nil {
+		t.Fatal("runMintA2A: expected fail-closed refusal for a per-spawn attestation MISS, got nil")
+	}
+	if strings.Contains(err.Error(), "connection refused") || strings.Contains(err.Error(), "no such host") {
+		t.Fatalf("runMintA2A reached the network before attestation refused — fail-closed gate did not run first: %v", err)
+	}
+	if !strings.Contains(err.Error(), "resolve attested identity") {
+		t.Errorf("runMintA2A error = %q, want it to name the attestation-resolution refusal", err.Error())
+	}
+}
+
+// TestRunMintA2A_NotEntitledRefusesBeforeIssuance verifies the fail-closed
+// entitlement gate: attestation resolves successfully (a real per-spawn
+// sidecar file is present), but the resolved identity is absent from
+// a2a_mapping — refuses before ever reaching OpenBao. Proven the same way
+// as the attestation-MISS test above: no OpenBao stub server exists, so
+// reaching issuance would surface as a network error instead of a denial.
+func TestRunMintA2A_NotEntitledRefusesBeforeIssuance(t *testing.T) {
+	const spawnEnv = "GATEKEEPER_TEST_A2A_NOT_ENTITLED_LR890FAE"
+	spawnDir := t.TempDir()
+	t.Setenv(spawnEnv, "spawn-notentitled-1")
+	writeSpawnSidecarFile(t, spawnDir, "spawn-notentitled-1", "unmapped-caller")
+
+	path := writeTempConfig(t, `
+github:
+  owner: testorg
+
+broker:
+  type: env
+
+roles: {}
+
+attestation:
+  sidecars:
+    - dir: `+spawnDir+`
+      file_prefix: spawn-
+      session_id_env: `+spawnEnv+`
+
+a2a_provider:
+  endpoint: https://openbao.invalid.example
+  assertion_private_key_path: GATEKEEPER_TEST_A2A_KEY_LR890FAE
+  issuer: gatekeeper-test-issuer
+  auth_mount: a2a-jwt
+  roles:
+    peer-builder:
+      auth_role: a2a-role
+      oidc_role: a2a-oidc-role
+`)
+
+	err := runMintA2A([]string{"--audience", "peer-project-x", "--config", path})
+	if err == nil {
+		t.Fatal("runMintA2A: expected fail-closed refusal for unentitled identity, got nil")
+	}
+	if strings.Contains(err.Error(), "connection refused") || strings.Contains(err.Error(), "no such host") {
+		t.Fatalf("runMintA2A reached the network before entitlement refused — fail-closed gate did not run first: %v", err)
+	}
+	if !strings.Contains(err.Error(), "not entitled") {
+		t.Errorf("runMintA2A error = %q, want it to name the entitlement denial", err.Error())
+	}
+}
+
+// TestRunMintA2A_PermittedIssuesJSON is the end-to-end happy path: a real
+// per-spawn sidecar attests the caller, a fully configured a2a_provider and
+// an entitled a2a_mapping entry permit the request, and a stub OpenBao
+// server stands in for the JWT-auth login + identity/oidc/token endpoints.
+// Verifies --json emits {token, expires_at, subject} and default output
+// stays the bare token string, mirroring runMint's own contract.
+func TestRunMintA2A_PermittedIssuesJSON(t *testing.T) {
+	const spawnEnv = "GATEKEEPER_TEST_A2A_PERMIT_LR890FAE"
+	const keyEnv = "GATEKEEPER_TEST_A2A_KEY_PERMIT_LR890FAE"
+	spawnDir := t.TempDir()
+	t.Setenv(spawnEnv, "spawn-permit-1")
+	t.Setenv(keyEnv, generateTestPEM(t))
+	writeSpawnSidecarFile(t, spawnDir, "spawn-permit-1", "peer-agent-alpha")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/login"):
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
+				"auth": map[string]string{"client_token": "s.test-client-token"},
+			})
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/identity/oidc/token/"):
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
+				"data": map[string]any{"token": "openbao-issued-peer-token", "ttl": 300},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	path := writeTempConfig(t, `
+github:
+  owner: testorg
+
+broker:
+  type: env
+
+roles: {}
+
+attestation:
+  sidecars:
+    - dir: `+spawnDir+`
+      file_prefix: spawn-
+      session_id_env: `+spawnEnv+`
+
+a2a_mapping:
+  peer-agent-alpha:
+    role: peer-builder
+    audiences:
+      - peer-project-x
+
+a2a_provider:
+  endpoint: `+srv.URL+`
+  assertion_private_key_path: `+keyEnv+`
+  issuer: gatekeeper-test-issuer
+  auth_mount: a2a-jwt
+  roles:
+    peer-builder:
+      auth_role: a2a-role
+      oidc_role: a2a-oidc-role
+`)
+
+	jsonOut := captureStdout(t, func() {
+		if err := runMintA2A([]string{"--audience", "peer-project-x", "--config", path, "--json"}); err != nil {
+			t.Fatalf("runMintA2A --json unexpected error: %v", err)
+		}
+	})
+
+	var got struct {
+		Token     string `json:"token"`
+		ExpiresAt string `json:"expires_at"`
+		Subject   string `json:"subject"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(jsonOut)), &got); err != nil {
+		t.Fatalf("runMintA2A --json output is not valid JSON: %v\noutput: %q", err, jsonOut)
+	}
+	if got.Token != "openbao-issued-peer-token" {
+		t.Errorf("json output token = %q, want %q", got.Token, "openbao-issued-peer-token")
+	}
+	if got.Subject != "peer-agent-alpha" {
+		t.Errorf("json output subject = %q, want %q", got.Subject, "peer-agent-alpha")
+	}
+
+	plainOut := captureStdout(t, func() {
+		if err := runMintA2A([]string{"--audience", "peer-project-x", "--config", path}); err != nil {
+			t.Fatalf("runMintA2A (default) unexpected error: %v", err)
+		}
+	})
+	if strings.TrimSpace(plainOut) != "openbao-issued-peer-token" {
+		t.Errorf("runMintA2A default output = %q, want bare token %q", strings.TrimSpace(plainOut), "openbao-issued-peer-token")
+	}
+}

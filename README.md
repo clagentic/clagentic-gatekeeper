@@ -96,17 +96,25 @@ peer, rather than being used purely locally:
   long-lived lead session legitimately has no per-spawn sidecar of its
   own.
 
-**What this repository ships today:** the attestation substrate above —
-structured-record parsing, the attribution fields it carries, and the
-domain-aware resolution policy (`internal/attestation.DomainResolver`).
-**What it does NOT yet ship:** an actual A2A token-minting command in
-`gatekeeper` itself. That mint path is a separate, gated epic; this
-substrate is what it will consume once it lands. See
+**What this repository ships today:** the full A2A mint path —
+`gatekeeper mint-a2a`. The attestation substrate (structured-record parsing,
+the attribution fields it carries, and the domain-aware resolution policy,
+`internal/attestation.DomainResolver`) feeds a config-driven entitlement gate
+(`internal/a2apolicy`, `a2a_mapping`) which, once permitted, brokers issuance
+of a peer-facing OIDC token through OpenBao (`internal/a2atoken` /
+`internal/a2amint`, `a2a_provider`): gatekeeper signs a short-lived
+assertion with its own key and exchanges it at OpenBao's JWT auth mount —
+OpenBao alone signs the returned token. See
+[`docs/SETUP.md`](docs/SETUP.md#a2a-token-flow-from-attested-spawn-to-a-peer-validated-wire-jwt)
+for the full attested-spawn -> PDP -> OpenBao-issuance -> wire-JWT ->
+peer-validation walkthrough,
 [`docs/SETUP.md`](docs/SETUP.md#the-a2a-caller-attestation-contract-required-fields)
 for the published required-fields contract a sidecar producer implements,
 and [`docs/SIDECAR-READ-CONTRACT.md`](docs/SIDECAR-READ-CONTRACT.md) for
 the generalized, tool-agnostic read-contract sections this substrate
-follows.
+follows. This command is additive and off by default: a deployment that
+never sets `a2a_provider` in `config.yaml` sees byte-identical behavior on
+the existing GitHub-domain `gatekeeper mint` path.
 
 ## Usage
 
@@ -118,6 +126,23 @@ gatekeeper mint --role builder --repo owner/name
 ```
 
 A consumer (e.g. an agent dispatcher) calls `gatekeeper mint --role <role>` with the role mapped to its agent, then uses the returned token for the git/API operations that role permits.
+
+### A2A (agent-to-agent) tokens
+
+```bash
+# Mint a peer-facing OIDC token for an attested A2A caller, scoped to one
+# peer audience. Requires attestation.sidecars, a2a_mapping, and
+# a2a_provider all configured — see docs/SETUP.md's "A2A token flow"
+# section for the full walkthrough.
+gatekeeper mint-a2a --audience peer-project-x
+
+# Returns a short-lived, OpenBao-issued OIDC token on stdout, whose "sub"
+# claim resolves natively to the caller's real OpenBao entity.
+```
+
+This is a separate, additive command from `gatekeeper mint` above — see
+[`docs/SETUP.md`](docs/SETUP.md#a2a-token-flow-from-attested-spawn-to-a-peer-validated-wire-jwt)
+for setup and the full attested-spawn -> issuance -> peer-validation flow.
 
 ### Structured output: inheriting the verified App slug
 

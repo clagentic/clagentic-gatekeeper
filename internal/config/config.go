@@ -38,6 +38,14 @@ type Config struct {
 	// request, and every existing GitHub-domain mint (internal/mint) is
 	// entirely unaffected — this stanza is additive and off by default.
 	A2AMapping map[string]A2AEntitlementConfig `yaml:"a2a_mapping,omitempty"`
+	// A2AProvider is the OPTIONAL A2A token-provider configuration
+	// (lr-890fae): the OpenBao B3 attest-and-route issuance surface this
+	// mapping's permitted requests are brokered through. Absent/zero-value
+	// means the A2A provider is not configured at all — the A2A mint
+	// command refuses with a clear config error, and every existing
+	// GitHub-domain mint (internal/mint) is entirely unaffected. Additive,
+	// off by default.
+	A2AProvider A2AProviderConfig `yaml:"a2a_provider,omitempty"`
 }
 
 // GitHubConfig holds GitHub connectivity settings.
@@ -170,6 +178,83 @@ func (c A2AEntitlementConfig) EntitlementRole() string { return c.Role }
 
 // EntitlementAudiences satisfies internal/a2apolicy.EntitlementSource.
 func (c A2AEntitlementConfig) EntitlementAudiences() []string { return c.Audiences }
+
+// A2AProviderConfig configures the B3 OpenBao issuance surface (lr-890fae,
+// mechanism settled at that task's comment #4, live-provisioned per openbao
+// lr-fbbf32 comment #12). It is a SEPARATE stanza from Broker: Broker's
+// existing openbao/vault implementations satisfy the generic
+// Get(path)-shaped secret-read interface every role's App credentials use,
+// while A2AProvider configures a materially different, A2A-specific
+// operation — a signed-assertion exchange against a dedicated JWT auth
+// mount, followed by an identity/oidc/token read. Both may point at the
+// same OpenBao server; they are still logically distinct surfaces.
+//
+// Every field here is deployment-specific; nothing is hardcoded in source.
+// Absent/zero-value (the default) means the A2A provider is not configured
+// — the A2A mint path refuses with a clear config error rather than
+// guessing at a partially-configured surface, and every existing
+// GitHub-domain mint is entirely unaffected (additive, off by default).
+type A2AProviderConfig struct {
+	// Endpoint is the OpenBao server URL. May be the same server as Broker,
+	// or a different one — this package does not assume they coincide.
+	Endpoint string `yaml:"endpoint"`
+
+	// AssertionPrivateKeyPath is the broker path holding gatekeeper's own
+	// assertion signing key — the bearer-of-attestation key used ONLY to
+	// sign the short-lived assertion exchanged at AuthMount. This key is
+	// never OpenBao's own OIDC signing key and is read via the SAME broker
+	// configured under `broker:`, not a second credential source.
+	AssertionPrivateKeyPath string `yaml:"assertion_private_key_path"`
+	// Issuer is stamped into the assertion's "iss" claim. Must match the
+	// JWT auth mount's configured bound_issuer.
+	Issuer string `yaml:"issuer"`
+	// AssertionTTLSeconds bounds the gatekeeper-signed assertion's own
+	// lifetime (distinct from the peer-facing token's TTL, which OpenBao's
+	// identity/oidc role controls independently). Defaults to 300 (5m)
+	// when unset.
+	AssertionTTLSeconds int `yaml:"assertion_ttl_seconds,omitempty"`
+
+	// AuthMount is the path segment of OpenBao's dedicated JWT auth mount
+	// (e.g. "a2a-jwt").
+	AuthMount string `yaml:"auth_mount"`
+
+	// Roles maps an A2A caller role (the role name internal/a2apolicy
+	// resolves from a2a_mapping) to the specific JWT auth role and
+	// identity/oidc role that role should be issued through. Every
+	// entitled role referenced in a2a_mapping must have a matching entry
+	// here for a mint request to succeed — a resolved role with no entry
+	// refuses closed rather than falling back to some other role's
+	// mapping.
+	Roles map[string]A2AProviderRoleConfig `yaml:"roles,omitempty"`
+}
+
+// A2AProviderRoleConfig binds one A2A caller role name to the specific
+// OpenBao role names its issuance flows through.
+type A2AProviderRoleConfig struct {
+	// AuthRole is the JWT auth role name to authenticate against under
+	// A2AProviderConfig.AuthMount (role_type=jwt, user_claim=sub).
+	AuthRole string `yaml:"auth_role"`
+	// OIDCRole is the identity/oidc role name to read for the peer-facing
+	// token: GET /v1/identity/oidc/token/<OIDCRole>.
+	OIDCRole string `yaml:"oidc_role"`
+}
+
+// enabled reports whether cfg has enough information to drive an A2A mint.
+// All of Endpoint, AssertionPrivateKeyPath, AuthMount are required together
+// for the provider to be usable; Issuer is deployment-specific but may
+// legitimately be empty (the assertion's "iss" claim is then simply
+// omitted — see internal/a2atoken). A partially configured provider (e.g.
+// AuthMount set but AssertionPrivateKeyPath empty) is treated as NOT
+// enabled — fail closed with a config error rather than attempting a
+// request that cannot succeed.
+func (cfg A2AProviderConfig) enabled() bool {
+	return cfg.Endpoint != "" && cfg.AssertionPrivateKeyPath != "" && cfg.AuthMount != ""
+}
+
+// Enabled reports whether cfg is configured enough for the A2A mint path to
+// run at all. Exported so cmd/gatekeeper can decide whether to wire the A2A
+// command without duplicating the required-fields list.
+func (cfg A2AProviderConfig) Enabled() bool { return cfg.enabled() }
 
 // RoleConfig binds a role name to broker paths for its GitHub App credentials.
 // Permissions is optional; when set it overrides the reference permission set

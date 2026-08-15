@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/clagentic/clagentic-gatekeeper/internal/a2amint"
+	"github.com/clagentic/clagentic-gatekeeper/internal/a2apolicy"
 	"github.com/clagentic/clagentic-gatekeeper/internal/attestation"
 	"github.com/clagentic/clagentic-gatekeeper/internal/broker"
 	"github.com/clagentic/clagentic-gatekeeper/internal/config"
@@ -33,6 +35,11 @@ func main() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
+	case "mint-a2a":
+		if err := runMintA2A(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	case "version":
 		fmt.Println("clagentic-gatekeeper dev")
 	default:
@@ -46,6 +53,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "commands:")
 	fmt.Fprintln(os.Stderr, "  mint --role <role> [--repo <owner/name>] [--config <path>] [--json]")
+	fmt.Fprintln(os.Stderr, "  mint-a2a --audience <audience> [--config <path>] [--json]")
 	fmt.Fprintln(os.Stderr, "  version")
 }
 
@@ -242,6 +250,152 @@ func runMint(args []string) error {
 	// Default output is unchanged from before this field existed: the bare
 	// token string, nothing else. A consumer that never passes --json is
 	// unaffected by AppSlug's existence (lr-dbe5d4 backward-compat contract).
+	fmt.Println(token.Value)
+	return nil
+}
+
+// a2aMintResult is the structured mint-a2a output emitted with --json. The
+// default (no --json) output is the bare token string, mirroring runMint's
+// existing contract. Subject is the caller entity id the peer-facing
+// token's own "sub" claim resolves to (internal/a2atoken.Token.Subject) —
+// gatekeeper's own audit-facing echo of what OpenBao issued, not a claim it
+// invents or restates onto the wire token itself.
+type a2aMintResult struct {
+	Token     string `json:"token"`
+	ExpiresAt string `json:"expires_at"`
+	Subject   string `json:"subject,omitempty"`
+}
+
+// runMintA2A parses flags, builds the A2A service graph, and mints a
+// peer-facing token via the B3 attest-and-route mechanism (lr-890fae).
+//
+// This command is ADDITIVE and OFF BY DEFAULT: it requires
+// config.a2a_provider to be fully configured (config.A2AProviderConfig.
+// Enabled()); a deployment that never sets that stanza gets a clear config
+// error here and is completely unaffected on the existing `gatekeeper mint`
+// (GitHub-domain) path — see cmd/gatekeeper's own package doc and
+// docs/SETUP.md for the byte-identical-behavior guarantee this preserves.
+func runMintA2A(args []string) error {
+	fs := flag.NewFlagSet("mint-a2a", flag.ContinueOnError)
+	audience := fs.String("audience", "", "peer audience/scope to request a mint for (required)")
+	cfgPath := fs.String("config", "config.yaml", "path to config.yaml")
+	jsonOutput := fs.Bool("json", false, "emit {token, expires_at, subject} JSON instead of the bare token string")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *audience == "" {
+		return fmt.Errorf("--audience is required")
+	}
+
+	cfg, err := config.Load(*cfgPath)
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+
+	if !cfg.A2AProvider.Enabled() {
+		return fmt.Errorf("config error: a2a_provider is not configured (endpoint, assertion_private_key_path, and auth_mount are all required together); see config.example.yaml")
+	}
+
+	br, err := broker.New(broker.Config{
+		Type:     cfg.Broker.Type,
+		Endpoint: cfg.Broker.Endpoint,
+		Auth:     cfg.Broker.Auth,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "broker: %v\n", err)
+		os.Exit(2)
+	}
+
+	// Attestation wiring mirrors runMint's (see that function's comments for
+	// the full resolution-order rationale), but mint-a2a ALWAYS resolves
+	// under attestation.DomainA2A — the A2A/remote-facing mint domain never
+	// falls through to the session sidecar on a per-spawn miss
+	// (docs/SETUP.md section 5, lr-2ca216), unlike the GitHub-domain
+	// command's per-invocation domain selection.
+	sidecarCfgs := cfg.Attestation.ResolveSidecars()
+	chainSidecars := make([]attestation.SidecarConfig, len(sidecarCfgs))
+	for i, sc := range sidecarCfgs {
+		chainSidecars[i] = attestation.SidecarConfig{
+			Dir:           sc.Dir,
+			FilePrefix:    sc.FilePrefix,
+			SessionIDEnv:  sc.SessionIDEnv,
+			IdentityField: sc.IdentityField,
+		}
+	}
+
+	resolver, err := attestation.NewChain(attestation.ChainConfig{
+		Configured: attestation.ConfiguredConfig{
+			Type:   attestation.ConfiguredType(cfg.Attestation.Configured.Type),
+			Source: cfg.Attestation.Configured.Source,
+		},
+		Sidecars: chainSidecars,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "attestation: %v\n", err)
+		os.Exit(2)
+	}
+
+	domainResolver := &attestation.DomainResolver{Chain: resolver}
+	if len(chainSidecars) > 0 {
+		perSpawnProvider, err := attestation.NewSidecarProvider(chainSidecars[0])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "attestation: build per-spawn resolver: %v\n", err)
+			os.Exit(2)
+		}
+		if perSpawnProvider != nil {
+			domainResolver.PerSpawn = attestation.NewResolver(perSpawnProvider)
+		}
+	}
+
+	policy := a2apolicy.NewPolicyFromEntries(cfg.A2AMapping)
+
+	authRoleForRole := make(map[string]string, len(cfg.A2AProvider.Roles))
+	oidcRoleForRole := make(map[string]string, len(cfg.A2AProvider.Roles))
+	for role, rc := range cfg.A2AProvider.Roles {
+		authRoleForRole[role] = rc.AuthRole
+		oidcRoleForRole[role] = rc.OIDCRole
+	}
+
+	assertionTTL := time.Duration(cfg.A2AProvider.AssertionTTLSeconds) * time.Second
+
+	svc := a2amint.Service{
+		DomainResolver:          domainResolver,
+		Policy:                  policy,
+		Broker:                  br,
+		AssertionPrivateKeyPath: cfg.A2AProvider.AssertionPrivateKeyPath,
+		Issuer:                  cfg.A2AProvider.Issuer,
+		AssertionTTL:            assertionTTL,
+		Endpoint:                cfg.A2AProvider.Endpoint,
+		AuthMount:               cfg.A2AProvider.AuthMount,
+		AuthRoleForRole:         authRoleForRole,
+		OIDCRoleForRole:         oidcRoleForRole,
+		// Audit: gatekeeper's own audit record of the mint decision
+		// (caller identity, resolved role, requested audience, parent
+		// session id) — printed to stderr so it never contaminates stdout
+		// (the token/JSON output contract) and is still capturable by any
+		// log-collecting harness. OpenBao's own audit device remains the
+		// mint-of-record for the issuance leg itself.
+		Audit: func(ev a2amint.AuditEvent) {
+			fmt.Fprintf(os.Stderr, "a2a mint audit: identity=%q role=%q audience=%q parent_session_id=%q permitted=%v reason=%q\n",
+				ev.Identity, ev.Role, ev.Audience, ev.ParentSessionID, ev.Permitted, ev.Reason)
+		},
+	}
+
+	token, err := svc.Mint(context.Background(), *audience)
+	if err != nil {
+		return fmt.Errorf("mint-a2a: %w", err)
+	}
+
+	if *jsonOutput {
+		enc := json.NewEncoder(os.Stdout)
+		return enc.Encode(a2aMintResult{
+			Token:     token.Value,
+			ExpiresAt: token.ExpiresAt.Format(time.RFC3339),
+			Subject:   token.Subject,
+		})
+	}
+
 	fmt.Println(token.Value)
 	return nil
 }
