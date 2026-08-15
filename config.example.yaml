@@ -250,3 +250,54 @@ roles:
 #     role: peer-reviewer
 #     audiences:
 #       - peer-project-x
+
+# A2A token-provider configuration (lr-890fae) — OPTIONAL and OFF BY
+# DEFAULT. Configures the OpenBao issuance surface `gatekeeper mint-a2a`
+# uses once `a2a_mapping` above has permitted a request: the B3
+# attest-and-route mechanism (docs/SETUP.md's "A2A token flow" section has
+# the full walkthrough).
+#
+# In one sentence: gatekeeper signs a short-lived JWT ASSERTION (sub = the
+# already-attested, already-entitled caller identity) with ITS OWN key, and
+# exchanges that assertion at OpenBao's dedicated JWT auth mount. OpenBao
+# independently verifies the assertion's signature, resolves sub via
+# bound_subject to a PRE-REGISTERED entity-alias, and returns a client token
+# scoped to the caller's REAL OpenBao entity. Gatekeeper then reads
+# identity/oidc/token/<role> with that client token — OpenBao signs the
+# resulting peer-facing token; gatekeeper never does.
+#
+# Omitting this stanza (or leaving any of endpoint / assertion_private_key_
+# path / auth_mount empty) means `gatekeeper mint-a2a` refuses with a clear
+# config error. It has ZERO effect on `gatekeeper mint` (the GitHub-domain
+# command) — additive, off by default, byte-identical existing behavior.
+#
+# a2a_provider:
+#   # OpenBao server URL. May be the same server as `broker:` above, or a
+#   # different one — this is a logically separate surface even when it
+#   # happens to be the same host.
+#   endpoint: https://bao.example.com
+#   # Broker path holding gatekeeper's OWN assertion signing key — the
+#   # bearer-of-attestation key, rotatable, NEVER OpenBao's own OIDC signing
+#   # key. Read via the SAME broker configured under `broker:` above.
+#   assertion_private_key_path: secret/gatekeeper/a2a/assertion-private-key
+#   # Stamped into the assertion's "iss" claim. Must match the JWT auth
+#   # mount's configured bound_issuer.
+#   issuer: your-gatekeeper-issuer-id
+#   # Optional: bounds the assertion's own short lifetime in seconds.
+#   # Defaults to 300 (5 minutes). Distinct from the peer-facing token's own
+#   # TTL, which OpenBao's identity/oidc role controls independently.
+#   assertion_ttl_seconds: 300
+#   # Path segment of OpenBao's dedicated JWT auth mount (see
+#   # docs/SETUP.md's A2A token-flow section for provisioning references).
+#   auth_mount: a2a-jwt
+#   # Maps each A2A caller role named in a2a_mapping's `role:` values to the
+#   # specific OpenBao role names its issuance flows through. A role
+#   # referenced by a2a_mapping with no entry here refuses closed rather
+#   # than falling back to some other role's mapping.
+#   roles:
+#     peer-builder:
+#       auth_role: a2a-role
+#       oidc_role: a2a-oidc-role
+#     peer-reviewer:
+#       auth_role: a2a-role
+#       oidc_role: a2a-oidc-role

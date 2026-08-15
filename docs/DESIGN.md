@@ -106,11 +106,90 @@ internal/mint/         Orchestration. Ties attestation + roles + broker +
                        fail-closed — an unresolvable identity, an unentitled
                        identity, or a missing/mismatched App-slug binding all
                        refuse to mint, never fall back. Returns the scoped
-                       token. No I/O of its own beyond the deps.
+                       token. No I/O of its own beyond the deps. This is the
+                       GitHub-domain mint path only — see internal/a2amint
+                       below for the separate A2A-domain path.
+
+internal/a2apolicy/    A2A caller entitlement policy (lr-0ae541): attested
+                       identity -> A2A caller role -> permitted peer
+                       audience(s)/scope(s). Config-driven
+                       (config.A2AMapping), fail-closed by construction (a
+                       nil/empty-built Policy refuses every request). Pure
+                       policy, no I/O — analogous to roles.<name>.
+                       entitled_identities but for the A2A domain instead of
+                       the GitHub-App-role domain. Runs strictly after
+                       attestation and before issuance; does not mint or
+                       issue anything itself.
+
+internal/a2atoken/     A2A issuance mechanics (lr-890fae) — the B3
+                       attest-and-route mechanism settled at that task's
+                       comment #4, live-provisioned per openbao lr-fbbf32.
+                       An I/O leaf, the A2A-domain analog of
+                       internal/githubapp: talks to OpenBao's HTTP API and
+                       nothing else.
+                         1. Sign a short-lived JWT ASSERTION with
+                            gatekeeper's OWN key: sub = the ALREADY-attested,
+                            ALREADY-entitled caller identity (this package
+                            performs no attestation or entitlement check of
+                            its own). No "aud" claim — present with no
+                            bound_audiences configured on the receiving role
+                            is a hard OpenBao validation failure.
+                         2. POST the assertion to OpenBao's dedicated JWT
+                            auth mount (/v1/auth/<mount>/login). OpenBao
+                            independently verifies the signature against
+                            jwt_validation_pubkeys and narrows via
+                            bound_subject, resolving sub to a
+                            PRE-REGISTERED entity-alias on that mount's own
+                            accessor — never a value gatekeeper can dictate.
+                         3. GET identity/oidc/token/<role> with the
+                            resulting client token. OpenBao signs the
+                            returned peer-facing token; gatekeeper never
+                            does (AC3 — no signing-key handling, no
+                            in-process signing, for the A2A domain).
+                       Gatekeeper's assertion signing key is a BEARER OF
+                       ATTESTATION — read from the broker like any other
+                       secret, rotatable, and never conflated with OpenBao's
+                       own OIDC signing key.
+
+internal/a2amint/      A2A orchestration (lr-890fae) — mirrors
+                       internal/mint's shape for the GitHub domain, but for
+                       the A2A/remote-facing mint domain:
+                         1. attestation.DomainResolver.Resolve(ctx,
+                            attestation.DomainA2A) -> attested caller
+                            identity. A per-spawn attestation MISS refuses
+                            outright (ErrPerSpawnRequired) — never falls
+                            through to a lower-priority provider such as the
+                            session sidecar, closing the confused-deputy
+                            path a remote-facing mint cannot tolerate.
+                         2. a2apolicy.Policy.Check(identity, audience) ->
+                            permitted role, or a fail-closed *DeniedError.
+                         3. broker.Get(assertion_private_key_path) -> read
+                            gatekeeper's own assertion key.
+                         4. a2atoken.Issue(...) -> the OpenBao-issued
+                            peer-facing token.
+                       EVERY gate (1-3) runs and can refuse BEFORE step 4 —
+                       an unresolvable attestation or an unentitled identity
+                       never reaches the broker, let alone OpenBao. Every
+                       outcome, permitted or refused, is reported to an
+                       injected AuditFunc: gatekeeper's OWN audit record of
+                       the mint decision (caller identity, resolved role,
+                       requested audience, parent session id). The
+                       peer-facing token itself carries only a native "sub"
+                       claim and a TTL bound — OpenBao's identity/oidc role
+                       template cannot carry the additional claims today
+                       (openbao lr-fbbf32 comment #12 / lr-1e7c97, an
+                       unresolved upstream parser bug) — so this audit
+                       record is where that attribution actually lives, not
+                       on the wire. OpenBao's own audit device remains the
+                       mint-of-record for the issuance leg itself.
 ```
 
-Dependency direction is one-way: `cmd -> mint -> {attestation, roles, broker, githubapp}`.
-`roles` is pure. `attestation`, `broker`, and `githubapp` are I/O leaves. Nothing imports `cmd`.
+Dependency direction is one-way: `cmd -> mint -> {attestation, roles, broker, githubapp}`
+for the GitHub domain, and `cmd -> a2amint -> {attestation, a2apolicy, broker, a2atoken}`
+for the A2A domain (`gatekeeper mint-a2a`, lr-890fae). `roles` and `a2apolicy` are pure.
+`attestation`, `broker`, `githubapp`, and `a2atoken` are I/O leaves. Nothing imports `cmd`.
+`mint` and `a2amint` are peers — neither imports the other — since they orchestrate two
+independent mint domains sharing only the lower `attestation`/`broker` layers.
 
 ## Secret flow (the security invariant)
 
