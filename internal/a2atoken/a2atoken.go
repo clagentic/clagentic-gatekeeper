@@ -43,14 +43,34 @@ import (
 	"time"
 )
 
-// maxRawBodyExcerpt bounds how much of an unparseable HTTP response body is
-// ever echoed into an error message. OpenBao's own documented error shape is
-// the small, bounded {"errors":[...]} envelope handled by
-// parseOpenBaoErrors below; this bound exists for the body that ARRIVES
-// looking like something else entirely — e.g. an intervening proxy's HTML
-// error page or a truncated/binary response — which is unbounded
+// maxRawBodyExcerpt bounds how much of an HTTP response body is ever echoed
+// into an error message — applied uniformly to BOTH parseOpenBaoErrors
+// branches: the joined {"errors":[...]} strings and the raw-body fallback
+// alike. OpenBao's own documented error shape is small, but neither branch
+// gets a free pass — an OpenBao deployment could still return an oversized
+// errors[] array, and the body that ARRIVES looking like something else
+// entirely (e.g. an intervening proxy's HTML error page) is unbounded
 // third-party content once anything sits between gatekeeper and OpenBao.
+// This bound is on the STRING gatekeeper builds from the body, not on the
+// bytes read off the wire — see maxResponseBodyBytes for that.
 const maxRawBodyExcerpt = 200
+
+// maxResponseBodyBytes caps how many bytes are ever read off an OpenBao HTTP
+// response before either parseOpenBaoErrors branch runs. This is a memory
+// bound, independent of maxRawBodyExcerpt: without it, io.ReadAll would
+// materialize an arbitrarily large body in full BEFORE any truncation logic
+// ever sees it, so maxRawBodyExcerpt bounded only the rendered error string,
+// never the read itself — a hostile or misconfigured intervening proxy could
+// still OOM the process on the read alone.
+//
+// 64KiB is chosen deliberately: comfortably larger than any legitimate
+// OpenBao response this package ever needs to parse (the {"errors":[...]}
+// envelope and the identity/oidc/token {"data":{"token":...}} envelope are
+// both tiny — well under 4KiB even with a verbose validation message or a
+// full-size signed JWT in the token field), so real diagnostics and real
+// token payloads are never silently clipped, while still being a real,
+// small bound on worst-case memory for a single response.
+const maxResponseBodyBytes = 64 * 1024
 
 // TransportError is returned for any failure a2atoken.Issue encounters while
 // talking to OpenBao's HTTP API: a non-2xx response, an unreadable body, or
@@ -63,11 +83,12 @@ const maxRawBodyExcerpt = 200
 // which ever carry third-party response content and all of which stay fully
 // diagnosable).
 //
-// Message is already bounded/redacted per Error() below — parsed out of
-// OpenBao's documented {"errors":[...]} envelope when the body matches that
-// shape, or truncated to maxRawBodyExcerpt when it does not. Callers should
-// use Error() (or fmt "%v"/"%w") rather than re-deriving a message from any
-// other field, so the bound is never bypassed downstream.
+// Message is already bounded/redacted per Error() below — both the joined
+// OpenBao "errors" strings and the raw-body fallback are truncated to
+// maxRawBodyExcerpt by parseOpenBaoErrors, and the body itself was never
+// read past maxResponseBodyBytes off the wire in the first place. Callers
+// should use Error() (or fmt "%v"/"%w") rather than re-deriving a message
+// from any other field, so the bound is never bypassed downstream.
 type TransportError struct {
 	// Op names the OpenBao call that failed (e.g. "jwt auth login",
 	// "read identity/oidc/token").
@@ -77,10 +98,10 @@ type TransportError struct {
 	// received (e.g. a read error).
 	StatusCode int
 	// detail is the already-bounded/redacted message describing the body —
-	// either the joined OpenBao "errors" strings, or a truncated raw excerpt
-	// when the body did not parse as OpenBao's envelope. Unexported so the
-	// only way to read it is through Error(), keeping the bound in one
-	// place.
+	// either the joined OpenBao "errors" strings (itself truncated to
+	// maxRawBodyExcerpt) or a truncated raw excerpt when the body did not
+	// parse as OpenBao's envelope. Unexported so the only way to read it is
+	// through Error(), keeping the bound in one place.
 	detail string
 }
 
@@ -92,24 +113,28 @@ func (e *TransportError) Error() string {
 }
 
 // parseOpenBaoErrors extracts a bounded, safe-to-log message from an OpenBao
-// HTTP error response body.
+// HTTP error response body. BOTH return paths are bounded to
+// maxRawBodyExcerpt — this function never returns an unbounded string.
 //
 // OpenBao's own documented error shape is {"errors": ["msg", ...]} — its own
 // error bodies carry no secret material (they describe validation/policy
 // outcomes, e.g. "permission denied", not request or token content), so
-// parsing and surfacing those strings verbatim is safe. That reasoning is
-// specific to OpenBao's own error responses; it does NOT extend to whatever
-// body an intervening proxy might substitute in OpenBao's place (a
-// misconfigured gateway, an auth-proxy error page, a load balancer 502) — a
-// body that fails to parse as the documented envelope is untrusted,
-// unbounded, third-party content, and is truncated rather than echoed
-// verbatim.
+// parsing and surfacing those strings is safe from a CONTENT-sensitivity
+// standpoint. That safety reasoning is specific to OpenBao's own error
+// responses; it does NOT extend to whatever body an intervening proxy might
+// substitute in OpenBao's place (a misconfigured gateway, an auth-proxy
+// error page, a load balancer 502) — a body that fails to parse as the
+// documented envelope is untrusted, third-party content. Regardless of
+// which branch runs, the LENGTH bound applies identically: a deployment
+// could still configure OpenBao to return an oversized errors[] array, so
+// the joined-strings branch is truncated exactly like the fallback rather
+// than assumed small because it parsed.
 func parseOpenBaoErrors(body []byte) string {
 	var envelope struct {
 		Errors []string `json:"errors"`
 	}
 	if err := json.Unmarshal(body, &envelope); err == nil && len(envelope.Errors) > 0 {
-		return strings.Join(envelope.Errors, "; ")
+		return truncateExcerpt([]byte(strings.Join(envelope.Errors, "; ")))
 	}
 	return truncateExcerpt(body)
 }
@@ -290,7 +315,10 @@ func exchangeAssertion(ctx context.Context, endpoint, mount, role, assertion str
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	// Capped BEFORE any parsing decision is made — see maxResponseBodyBytes:
+	// this is a memory bound on the read itself, independent of
+	// maxRawBodyExcerpt's bound on the rendered error string.
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodyBytes))
 	if err != nil {
 		return "", fmt.Errorf("read login response: %w", err)
 	}
@@ -301,9 +329,10 @@ func exchangeAssertion(ctx context.Context, endpoint, mount, role, assertion str
 		// surface for diagnosis. This is exactly where the two negative
 		// controls (untrusted key, bogus subject) surface their rejection.
 		// parseOpenBaoErrors extracts OpenBao's documented {"errors":[...]}
-		// envelope when the body matches that shape; a body that does NOT
-		// match (e.g. an intervening proxy's own error page) is unbounded
-		// third-party content and is truncated rather than echoed verbatim.
+		// envelope when the body matches that shape, or truncates when it
+		// does not (e.g. an intervening proxy's own error page); both
+		// outcomes are bounded to maxRawBodyExcerpt, and respBody itself was
+		// already capped to maxResponseBodyBytes off the wire above.
 		return "", &TransportError{Op: "jwt auth login", StatusCode: resp.StatusCode, detail: parseOpenBaoErrors(respBody)}
 	}
 
@@ -344,7 +373,10 @@ func readOIDCToken(ctx context.Context, endpoint, role, clientToken, wantSubject
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	// Capped BEFORE any parsing decision is made — see maxResponseBodyBytes.
+	// The legitimate success payload here (a signed JWT in envelope.Data.Token)
+	// is well within the cap; only an oversized/hostile body is affected.
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodyBytes))
 	if err != nil {
 		return Token{}, fmt.Errorf("read oidc token response: %w", err)
 	}

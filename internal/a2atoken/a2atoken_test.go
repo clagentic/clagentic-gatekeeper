@@ -358,6 +358,92 @@ func TestIssueLoginFailureTruncatesNonOpenBaoBody(t *testing.T) {
 	}
 }
 
+// TestIssueLoginFailureTruncatesOversizedOpenBaoEnvelope covers the F1
+// class-completeness gap MILLER's adjudication (lr-890fae comment #11)
+// identified: parseOpenBaoErrors' PARSED-envelope branch
+// (strings.Join(envelope.Errors, "; ")) was returned with no bound at all —
+// only the raw-body FALLBACK branch was ever truncated. This test drives a
+// body that DOES match OpenBao's documented {"errors":[...]} shape but whose
+// joined strings exceed maxRawBodyExcerpt, asserting the parsed-envelope
+// branch is bounded identically to the fallback branch.
+func TestIssueLoginFailureTruncatesOversizedOpenBaoEnvelope(t *testing.T) {
+	oversizedErrors := []string{
+		strings.Repeat("validation-failure-detail-", 10),
+		strings.Repeat("second-error-detail-", 10),
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
+			"errors": oversizedErrors,
+		})
+	}))
+	defer srv.Close()
+
+	req := baseRequest(t, srv.URL)
+	_, err := Issue(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected error for login failure, got nil")
+	}
+	var transportErr *TransportError
+	if !errors.As(err, &transportErr) {
+		t.Fatalf("expected *TransportError, got %T: %v", err, err)
+	}
+	msg := transportErr.Error()
+
+	joined := strings.Join(oversizedErrors, "; ")
+	if len(joined) <= maxRawBodyExcerpt {
+		t.Fatalf("test setup error: joined envelope strings (%d bytes) must exceed maxRawBodyExcerpt (%d) to exercise the bound", len(joined), maxRawBodyExcerpt)
+	}
+	if strings.Contains(msg, joined) {
+		t.Fatalf("TransportError.Error() contains the full, untruncated joined envelope strings: %q", msg)
+	}
+	if !strings.Contains(msg, "...(truncated)") {
+		t.Errorf("TransportError.Error() = %q, want the truncation marker for an oversized parsed-envelope body", msg)
+	}
+	if len(msg) > maxRawBodyExcerpt+100 {
+		t.Errorf("TransportError.Error() is not bounded: %d bytes: %q", len(msg), msg)
+	}
+}
+
+// TestIssueLoginFailureCapsResponseBodyRead covers the second F1-class gap
+// MILLER's adjudication identified as WORSE than the truncation bug: neither
+// exchangeAssertion nor readOIDCToken ever bounded the io.ReadAll read
+// itself — the full body materialized in memory BEFORE either
+// parseOpenBaoErrors branch ran, so maxRawBodyExcerpt was never a memory
+// bound on any path. This test drives a body larger than
+// maxResponseBodyBytes and asserts Issue still returns promptly with a
+// bounded error, proving the read itself — not just the rendered string —
+// is capped.
+func TestIssueLoginFailureCapsResponseBodyRead(t *testing.T) {
+	// Larger than maxResponseBodyBytes, not merely larger than
+	// maxRawBodyExcerpt — this exercises the io.LimitReader on the read
+	// itself, a distinct bound from the string-truncation bound.
+	hugeBody := strings.Repeat("a", maxResponseBodyBytes*2)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		w.Write([]byte(hugeBody)) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	req := baseRequest(t, srv.URL)
+	_, err := Issue(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected error for login failure, got nil")
+	}
+	var transportErr *TransportError
+	if !errors.As(err, &transportErr) {
+		t.Fatalf("expected *TransportError, got %T: %v", err, err)
+	}
+	msg := transportErr.Error()
+	if len(msg) > maxRawBodyExcerpt+100 {
+		t.Errorf("TransportError.Error() is not bounded: %d bytes: %q", len(msg), msg)
+	}
+	if !strings.Contains(msg, "...(truncated)") {
+		t.Errorf("TransportError.Error() = %q, want the truncation marker", msg)
+	}
+}
+
 // TestIssueOIDCReadFailureUsesTransportError covers the second raw-body
 // interpolation site (originally a2atoken.go:265, the identity/oidc/token
 // read): it must also return a *TransportError with a bounded/parsed
