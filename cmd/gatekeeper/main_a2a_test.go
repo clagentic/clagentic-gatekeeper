@@ -255,3 +255,73 @@ a2a_provider:
 		t.Errorf("runMintA2A default output = %q, want bare token %q", strings.TrimSpace(plainOut), "openbao-issued-peer-token")
 	}
 }
+
+// TestRunMintA2A_MixedLegacyAndNewSidecarConfigRejected is the cmd-level
+// wiring test for the MILLER-adjudicated defect (lr-890fae comment #8, item
+// F2): config_test.go's TestAttestationConfig_ResolveSidecars_BackCompat
+// covers the legacy+new MERGE in isolation only — it never traces the
+// merged value across the config -> cmd boundary to see which entry lands
+// in the domain-scoped PerSpawn resolver mint-a2a actually uses.
+//
+// Without this test, a deployment could set the legacy `attestation.sidecar`
+// block to a SESSION namespace and `attestation.sidecars[0]` to the
+// per-spawn namespace; ResolveSidecars' documented, deliberate prepend
+// ordering (legacy first) would then put the SESSION entry at index 0, and
+// main.go's chainSidecars[0] wiring would install the session sidecar AS
+// PerSpawn — DomainA2A fail-closes correctly, but against the wrong
+// namespace, a confused-deputy outcome.
+//
+// config.Load now rejects this combination outright (internal/config's
+// AttestationConfig.validate) rather than silently accepting whichever
+// entry ordering the merge happens to produce, so this test asserts the
+// REJECTION reaches the caller through runMintA2A specifically — the same
+// code path that used to install chainSidecars[0] as PerSpawn — rather than
+// re-testing the merge or the validation rule in isolation again.
+func TestRunMintA2A_MixedLegacyAndNewSidecarConfigRejected(t *testing.T) {
+	spawnDir := t.TempDir()
+	sessionDir := t.TempDir()
+
+	// Legacy `sidecar:` names a SESSION namespace; `sidecars[0]` names the
+	// per-spawn namespace — exactly the inversion MILLER's adjudication
+	// names as the real defect underneath the reviewer's refuted claim.
+	path := writeTempConfig(t, `
+github:
+  owner: testorg
+
+broker:
+  type: env
+
+roles: {}
+
+attestation:
+  sidecar:
+    dir: `+sessionDir+`
+    file_prefix: session-
+    session_id_env: GATEKEEPER_TEST_MIXED_SESSION_LR890FAE
+  sidecars:
+    - dir: `+spawnDir+`
+      file_prefix: spawn-
+      session_id_env: GATEKEEPER_TEST_MIXED_SPAWN_LR890FAE
+
+a2a_provider:
+  endpoint: https://openbao.invalid.example
+  assertion_private_key_path: GATEKEEPER_TEST_A2A_KEY_LR890FAE
+  issuer: gatekeeper-test-issuer
+  auth_mount: a2a-jwt
+  roles:
+    peer-builder:
+      auth_role: a2a-role
+      oidc_role: a2a-oidc-role
+`)
+
+	err := runMintA2A([]string{"--audience", "peer-project-x", "--config", path})
+	if err == nil {
+		t.Fatal("runMintA2A: expected config error for mixed legacy sidecar + sidecars, got nil")
+	}
+	if !strings.Contains(err.Error(), "sidecar") {
+		t.Errorf("runMintA2A error = %q, want it to name the sidecar config conflict", err.Error())
+	}
+	if strings.Contains(err.Error(), "connection refused") || strings.Contains(err.Error(), "no such host") {
+		t.Fatalf("runMintA2A reached the network before the mixed-config rejection ran: %v", err)
+	}
+}

@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -253,6 +254,76 @@ func TestAttestationConfig_ResolveSidecars_BackCompat(t *testing.T) {
 	}
 	if resolved[1].FilePrefix != "new-" {
 		t.Errorf("ResolveSidecars()[1].FilePrefix = %q, want %q", resolved[1].FilePrefix, "new-")
+	}
+}
+
+// TestLoad_MixedLegacySidecarAndSidecarsRejected is the MILLER-adjudicated
+// hardening fix (lr-890fae comment #8, item F2): ResolveSidecars' merge
+// ordering itself is correct and unit-tested above
+// (TestAttestationConfig_ResolveSidecars_BackCompat) — this test instead
+// covers Load's NEW validation, which rejects the combination outright
+// rather than accepting whatever the merge order happens to produce. See
+// cmd/gatekeeper's TestRunMintA2A_MixedLegacyAndNewSidecarConfigRejected for
+// the cross-boundary wiring test (does the rejection actually reach the
+// mint-a2a command, not just this package's own Load call).
+func TestLoad_MixedLegacySidecarAndSidecarsRejected(t *testing.T) {
+	path := writeTemp(t, `
+github:
+  owner: myorg
+
+broker:
+  type: env
+
+roles: {}
+
+attestation:
+  sidecar:
+    dir: /tmp
+    file_prefix: legacy-
+    session_id_env: LEGACY_SESSION_ID
+  sidecars:
+    - dir: /tmp
+      file_prefix: spawn-
+      session_id_env: SPAWN_SESSION_ID
+`)
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load: expected error for mixed legacy `sidecar:` + `sidecars:`, got nil")
+	}
+	if !strings.Contains(err.Error(), "sidecar") {
+		t.Errorf("Load error = %q, want it to name the sidecar config conflict", err.Error())
+	}
+}
+
+// TestLoad_PartialLegacySidecarWithSidecarsAccepted verifies the rejection
+// above is specific to a FULLY configured legacy block coexisting with
+// `sidecars:` — a partially configured (disabled, per
+// AttestationSidecarConfig.enabled) legacy block alongside `sidecars:` is
+// not a real conflict (ResolveSidecars already omits the disabled legacy
+// entry entirely) and must still load.
+func TestLoad_PartialLegacySidecarWithSidecarsAccepted(t *testing.T) {
+	path := writeTemp(t, `
+github:
+  owner: myorg
+
+broker:
+  type: env
+
+roles: {}
+
+attestation:
+  sidecar:
+    dir: /tmp
+    # file_prefix and session_id_env left unset: legacy block is disabled.
+  sidecars:
+    - dir: /tmp
+      file_prefix: spawn-
+      session_id_env: SPAWN_SESSION_ID
+`)
+
+	if _, err := Load(path); err != nil {
+		t.Fatalf("Load returned error for a disabled legacy sidecar block alongside sidecars: %v", err)
 	}
 }
 
