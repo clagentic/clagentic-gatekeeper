@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -351,6 +352,79 @@ func TestMintAuditRedactsTransportErrorBody(t *testing.T) {
 	if !strings.Contains(reason, "jwt auth login") {
 		t.Errorf("AuditEvent.Reason = %q, want it to still name the failing OpenBao operation", reason)
 	}
+}
+
+// TestMintAuditRedactsOversizedOpenBaoErrorEnvelope is the cross-boundary
+// regression test for the F1-class-completeness gap MILLER's adjudication
+// (lr-890fae comment #11) identified: TestMintAuditRedactsTransportErrorBody
+// above only ever drove a NON-OpenBao-shaped (raw-fallback) body across this
+// boundary. This test drives a body that DOES match OpenBao's documented
+// {"errors":[...]} envelope shape but whose joined error strings exceed
+// a2atoken's maxRawBodyExcerpt, through the REAL a2atoken.Issue, and asserts
+// AuditEvent.Reason — what a real deployment's log sink would see — is
+// bounded on this branch exactly as it is on the raw-fallback branch.
+func TestMintAuditRedactsOversizedOpenBaoErrorEnvelope(t *testing.T) {
+	oversizedErrors := []string{
+		strings.Repeat("policy-validation-detail-", 12),
+		strings.Repeat("secondary-detail-", 12),
+	}
+	joined := strings.Join(oversizedErrors, "; ")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"errors":[%s]}`, quoteAll(oversizedErrors)) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	svc := baseService(t)
+	svc.Endpoint = srv.URL
+	svc.IssueFunc = nil // use the real a2atoken.Issue, the actual boundary.
+	svc.Broker = &fakeBroker{val: generateTestRSAPEM(t)}
+
+	var events []a2amint.AuditEvent
+	svc.Audit = func(ev a2amint.AuditEvent) { events = append(events, ev) }
+
+	_, err := svc.Mint(context.Background(), fixtureAudience)
+	if err == nil {
+		t.Fatal("expected error propagated from issuance, got nil")
+	}
+	var transportErr *a2atoken.TransportError
+	if !errors.As(err, &transportErr) {
+		t.Fatalf("expected the returned error to wrap *a2atoken.TransportError, got %T: %v", err, err)
+	}
+	if len(events) != 1 || events[0].Permitted {
+		t.Fatalf("expected exactly one refused audit event, got %+v", events)
+	}
+
+	reason := events[0].Reason
+	if len(joined) < 200 {
+		t.Fatalf("test setup error: joined envelope strings (%d bytes) must exceed the a2atoken truncation bound to exercise it", len(joined))
+	}
+	if strings.Contains(reason, joined) {
+		t.Fatalf("AuditEvent.Reason contains the full, untruncated joined OpenBao envelope strings: %q", reason)
+	}
+	if !strings.Contains(reason, "...(truncated)") {
+		t.Errorf("AuditEvent.Reason = %q, want it to carry the truncation marker for an oversized OpenBao errors[] envelope", reason)
+	}
+	if len(reason) > 400 {
+		t.Errorf("AuditEvent.Reason is not bounded: %d bytes: %q", len(reason), reason)
+	}
+	if !strings.Contains(reason, "jwt auth login") {
+		t.Errorf("AuditEvent.Reason = %q, want it to still name the failing OpenBao operation", reason)
+	}
+}
+
+// quoteAll renders each string in ss as a JSON string literal, joined by
+// commas, for constructing a raw {"errors":[...]} response body by hand in
+// TestMintAuditRedactsOversizedOpenBaoErrorEnvelope — avoids importing
+// encoding/json purely to marshal a one-off literal in the test itself.
+func quoteAll(ss []string) string {
+	quoted := make([]string, len(ss))
+	for i, s := range ss {
+		quoted[i] = strconv.Quote(s)
+	}
+	return strings.Join(quoted, ",")
 }
 
 // fakeBrokerFunc implements broker.Broker with a caller-supplied function,

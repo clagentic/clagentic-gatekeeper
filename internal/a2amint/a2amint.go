@@ -138,19 +138,23 @@ func (s *Service) audit(ev AuditEvent) {
 //
 // a2atoken.Issue's own errors are already bounded/redacted at the source for
 // the specific case that carries third-party content (a non-2xx OpenBao
-// response body — see a2atoken.TransportError and parseOpenBaoErrors) — this
-// function does not need to re-truncate that content. What it DOES do is
-// route on the error's *class*: a *a2atoken.TransportError is reported by
-// its own already-safe Error() string, kept short and free of any
-// higher-level wrapping; every OTHER error (attestation resolution,
-// entitlement denial, missing broker/config, key-parse failure) keeps its
-// full, unredacted message, because none of those originate from
-// third-party response content and full diagnosability matters for them.
+// response body): *a2atoken.TransportError's detail is bounded to
+// a2atoken.maxRawBodyExcerpt on BOTH the parsed-envelope and raw-fallback
+// paths (see a2atoken.parseOpenBaoErrors), and the underlying response body
+// was itself capped to a2atoken.maxResponseBodyBytes before either path ever
+// ran — this function does not need to re-truncate that content, only route
+// on the error's *class*: a *a2atoken.TransportError is reported by its own
+// already-bounded Error() string, kept short and free of any higher-level
+// wrapping; every OTHER error (attestation resolution, entitlement denial,
+// missing broker/config, key-parse failure) keeps its full, unredacted
+// message, because none of those originate from third-party response
+// content and full diagnosability matters for them.
 //
 // This targeted routing — rather than a blanket truncation of every Reason
 // string — is deliberate: a blanket redaction would degrade diagnosability
 // of gatekeeper's own errors for no security benefit, since only the
-// a2atoken transport-error class can ever carry unbounded external content.
+// a2atoken transport-error class can ever carry third-party response
+// content, and that class is already bounded at its own source.
 func auditReason(err error) string {
 	var te *a2atoken.TransportError
 	if errors.As(err, &te) {
