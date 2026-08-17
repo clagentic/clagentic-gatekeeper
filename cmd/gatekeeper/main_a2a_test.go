@@ -2,13 +2,55 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
+
+// captureStderr redirects os.Stderr for the duration of fn and returns
+// everything written to it. Mirrors captureStdout (main_test.go) — used here
+// because runMintA2A's audit hook (Service.Audit in main.go) writes the mint
+// audit record to os.Stderr specifically, never os.Stdout.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("captureStderr: create pipe: %v", err)
+	}
+	orig := os.Stderr
+	os.Stderr = w
+	defer func() { os.Stderr = orig }()
+
+	fn()
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("captureStderr: close pipe writer: %v", err)
+	}
+	var buf strings.Builder
+	if _, err := io.Copy(&buf, r); err != nil {
+		t.Fatalf("captureStderr: read pipe: %v", err)
+	}
+	return buf.String()
+}
+
+// quoteAllJSONStrings renders each string in ss as a JSON string literal,
+// joined by commas — used to hand-construct a raw OpenBao {"errors":[...]}
+// response body without importing encoding/json purely for a one-off test
+// literal.
+func quoteAllJSONStrings(ss []string) string {
+	quoted := make([]string, len(ss))
+	for i, s := range ss {
+		quoted[i] = strconv.Quote(s)
+	}
+	return strings.Join(quoted, ",")
+}
 
 // writeSpawnSidecarFile writes an A2A-domain per-spawn sidecar identity
 // file: attestation.DomainA2A REQUIRES a per-spawn-scoped resolver to
@@ -253,5 +295,168 @@ a2a_provider:
 	})
 	if strings.TrimSpace(plainOut) != "openbao-issued-peer-token" {
 		t.Errorf("runMintA2A default output = %q, want bare token %q", strings.TrimSpace(plainOut), "openbao-issued-peer-token")
+	}
+}
+
+// TestRunMintA2A_MixedLegacyAndNewSidecarConfigRejected is the cmd-level
+// wiring test for the MILLER-adjudicated defect (lr-890fae comment #8, item
+// F2): config_test.go's TestAttestationConfig_ResolveSidecars_BackCompat
+// covers the legacy+new MERGE in isolation only — it never traces the
+// merged value across the config -> cmd boundary to see which entry lands
+// in the domain-scoped PerSpawn resolver mint-a2a actually uses.
+//
+// Without this test, a deployment could set the legacy `attestation.sidecar`
+// block to a SESSION namespace and `attestation.sidecars[0]` to the
+// per-spawn namespace; ResolveSidecars' documented, deliberate prepend
+// ordering (legacy first) would then put the SESSION entry at index 0, and
+// main.go's chainSidecars[0] wiring would install the session sidecar AS
+// PerSpawn — DomainA2A fail-closes correctly, but against the wrong
+// namespace, a confused-deputy outcome.
+//
+// config.Load now rejects this combination outright (internal/config's
+// AttestationConfig.validate) rather than silently accepting whichever
+// entry ordering the merge happens to produce, so this test asserts the
+// REJECTION reaches the caller through runMintA2A specifically — the same
+// code path that used to install chainSidecars[0] as PerSpawn — rather than
+// re-testing the merge or the validation rule in isolation again.
+func TestRunMintA2A_MixedLegacyAndNewSidecarConfigRejected(t *testing.T) {
+	spawnDir := t.TempDir()
+	sessionDir := t.TempDir()
+
+	// Legacy `sidecar:` names a SESSION namespace; `sidecars[0]` names the
+	// per-spawn namespace — exactly the inversion MILLER's adjudication
+	// names as the real defect underneath the reviewer's refuted claim.
+	path := writeTempConfig(t, `
+github:
+  owner: testorg
+
+broker:
+  type: env
+
+roles: {}
+
+attestation:
+  sidecar:
+    dir: `+sessionDir+`
+    file_prefix: session-
+    session_id_env: GATEKEEPER_TEST_MIXED_SESSION_LR890FAE
+  sidecars:
+    - dir: `+spawnDir+`
+      file_prefix: spawn-
+      session_id_env: GATEKEEPER_TEST_MIXED_SPAWN_LR890FAE
+
+a2a_provider:
+  endpoint: https://openbao.invalid.example
+  assertion_private_key_path: GATEKEEPER_TEST_A2A_KEY_LR890FAE
+  issuer: gatekeeper-test-issuer
+  auth_mount: a2a-jwt
+  roles:
+    peer-builder:
+      auth_role: a2a-role
+      oidc_role: a2a-oidc-role
+`)
+
+	err := runMintA2A([]string{"--audience", "peer-project-x", "--config", path})
+	if err == nil {
+		t.Fatal("runMintA2A: expected config error for mixed legacy sidecar + sidecars, got nil")
+	}
+	if !strings.Contains(err.Error(), "sidecar") {
+		t.Errorf("runMintA2A error = %q, want it to name the sidecar config conflict", err.Error())
+	}
+	if strings.Contains(err.Error(), "connection refused") || strings.Contains(err.Error(), "no such host") {
+		t.Fatalf("runMintA2A reached the network before the mixed-config rejection ran: %v", err)
+	}
+}
+
+// TestRunMintA2A_StderrAuditBoundedForOversizedOpenBaoErrorEnvelope is the
+// full cross-boundary sink test MILLER's adjudication (lr-890fae comment
+// #11) called for: a2atoken -> a2amint -> main.go's stderr Fprintf, not just
+// an in-package or a2amint-package-boundary assertion. A stub OpenBao server
+// returns an oversized (>200 byte joined) {"errors":[...]} envelope on the
+// jwt-auth-login leg — the parsed-envelope branch of
+// a2atoken.parseOpenBaoErrors, the specific branch the F1 defect left
+// unbounded. Asserts the actual bytes printed to os.Stderr by main.go's
+// audit hook are bounded, never an unbounded echo of the envelope.
+func TestRunMintA2A_StderrAuditBoundedForOversizedOpenBaoErrorEnvelope(t *testing.T) {
+	const spawnEnv = "GATEKEEPER_TEST_A2A_SINK_LR890FAE"
+	const keyEnv = "GATEKEEPER_TEST_A2A_SINK_KEY_LR890FAE"
+	spawnDir := t.TempDir()
+	t.Setenv(spawnEnv, "spawn-sink-1")
+	t.Setenv(keyEnv, generateTestPEM(t))
+	writeSpawnSidecarFile(t, spawnDir, "spawn-sink-1", "peer-agent-alpha")
+
+	oversizedErrors := []string{
+		strings.Repeat("audit-sink-detail-", 15),
+		strings.Repeat("second-detail-", 15),
+	}
+	joined := strings.Join(oversizedErrors, "; ")
+	if len(joined) < 200 {
+		t.Fatalf("test setup error: joined envelope strings (%d bytes) must exceed the a2atoken truncation bound to exercise it", len(joined))
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"errors":[%s]}`, quoteAllJSONStrings(oversizedErrors)) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	path := writeTempConfig(t, `
+github:
+  owner: testorg
+
+broker:
+  type: env
+
+roles: {}
+
+attestation:
+  sidecars:
+    - dir: `+spawnDir+`
+      file_prefix: spawn-
+      session_id_env: `+spawnEnv+`
+
+a2a_mapping:
+  peer-agent-alpha:
+    role: peer-builder
+    audiences:
+      - peer-project-x
+
+a2a_provider:
+  endpoint: `+srv.URL+`
+  assertion_private_key_path: `+keyEnv+`
+  issuer: gatekeeper-test-issuer
+  auth_mount: a2a-jwt
+  roles:
+    peer-builder:
+      auth_role: a2a-role
+      oidc_role: a2a-oidc-role
+`)
+
+	var runErr error
+	stderrOut := captureStderr(t, func() {
+		runErr = runMintA2A([]string{"--audience", "peer-project-x", "--config", path})
+	})
+	if runErr == nil {
+		t.Fatal("runMintA2A: expected error propagated from issuance, got nil")
+	}
+
+	if !strings.Contains(stderrOut, "a2a mint audit:") {
+		t.Fatalf("stderr output = %q, want it to contain the audit record line", stderrOut)
+	}
+	if strings.Contains(stderrOut, joined) {
+		t.Fatalf("stderr audit output contains the full, untruncated joined OpenBao envelope strings: %q", stderrOut)
+	}
+	if !strings.Contains(stderrOut, "truncated") {
+		t.Errorf("stderr audit output = %q, want it to carry the truncation marker for an oversized OpenBao errors[] envelope", stderrOut)
+	}
+	// Bounded per main.go's own documented expansion: maxRawBodyExcerpt (200
+	// bytes) run through the audit line's %q verb (Go strconv.Quote
+	// semantics) can expand roughly 4x on control-heavy input, plus the
+	// fixed audit-line scaffolding (identity/role/audience/etc fields). 1500
+	// bytes is comfortably above that worst case and still proves the line
+	// is not an unbounded echo of an attacker/proxy-controlled body.
+	if len(stderrOut) > 1500 {
+		t.Errorf("stderr audit output is not bounded: %d bytes: %q", len(stderrOut), stderrOut)
 	}
 }

@@ -111,6 +111,36 @@ func (a AttestationConfig) ResolveSidecars() []AttestationSidecarConfig {
 	return out
 }
 
+// validate rejects a deployment that configures BOTH the legacy singular
+// `sidecar:` block and the `sidecars:` list.
+//
+// ResolveSidecars' prepend ordering (legacy first, deliberately — see that
+// method and config_test.go's BackCompat test) is correct on its own and
+// stays unchanged. The hazard is what a caller does with the MERGED result:
+// cmd/gatekeeper passes ONLY the first entry of the resolved list into the
+// domain-scoped PerSpawn resolver (docs/SIDECAR-READ-CONTRACT.md section 2
+// mandates spawn-first: the first `sidecars:` entry is meant to be the
+// per-spawn namespace). If an operator's legacy `sidecar:` block actually
+// names a SESSION namespace while `sidecars[0]` names the per-spawn
+// namespace, the merge silently puts the session entry first, and it gets
+// installed as PerSpawn — DomainA2A then fail-closes correctly against the
+// WRONG namespace (a session identity accepted as if per-spawn), a
+// confused-deputy outcome. config.example.yaml already deprecates the
+// legacy block in favor of `sidecars:`, so rejecting the combination —
+// rather than silently accepting an ordering nothing enforces — is the
+// fail-closed choice consistent with the rest of this repo's posture, and
+// costs nothing for any deployment already following the documented
+// single-block-OR-list convention.
+func (a AttestationConfig) validate() error {
+	if a.Sidecar.enabled() && len(a.Sidecars) > 0 {
+		return fmt.Errorf("attestation: both the legacy `sidecar:` block and `sidecars:` are configured; " +
+			"use `sidecars:` alone (with the per-spawn namespace first, per docs/SIDECAR-READ-CONTRACT.md " +
+			"section 2) — mixing the two makes which namespace lands in the per-spawn resolver depend on " +
+			"merge order rather than explicit config")
+	}
+	return nil
+}
+
 // AttestationConfiguredConfig configures layer (a) of the attestation
 // chain. Type is "env" or "file"; empty disables this layer.
 type AttestationConfiguredConfig struct {
@@ -310,6 +340,10 @@ func Load(path string) (*Config, error) {
 	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
+	}
+
+	if err := cfg.Attestation.validate(); err != nil {
+		return nil, fmt.Errorf("config %s: %w", path, err)
 	}
 
 	applyDefaults(&cfg)
