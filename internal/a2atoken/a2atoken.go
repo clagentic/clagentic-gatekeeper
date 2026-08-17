@@ -43,6 +43,90 @@ import (
 	"time"
 )
 
+// maxRawBodyExcerpt bounds how much of an unparseable HTTP response body is
+// ever echoed into an error message. OpenBao's own documented error shape is
+// the small, bounded {"errors":[...]} envelope handled by
+// parseOpenBaoErrors below; this bound exists for the body that ARRIVES
+// looking like something else entirely — e.g. an intervening proxy's HTML
+// error page or a truncated/binary response — which is unbounded
+// third-party content once anything sits between gatekeeper and OpenBao.
+const maxRawBodyExcerpt = 200
+
+// TransportError is returned for any failure a2atoken.Issue encounters while
+// talking to OpenBao's HTTP API: a non-2xx response, an unreadable body, or
+// an undecodable response envelope. It is a distinct error type — rather
+// than a plain fmt.Errorf-wrapped string — specifically so a caller (e.g.
+// internal/a2amint) can apply targeted redaction to THIS error class without
+// having to blanket-redact every error a2amint might see, including its own
+// internal ones (a2amint.Service.Mint's other failure paths: missing
+// resolver, denied entitlement, missing broker, unreadable key — none of
+// which ever carry third-party response content and all of which stay fully
+// diagnosable).
+//
+// Message is already bounded/redacted per Error() below — parsed out of
+// OpenBao's documented {"errors":[...]} envelope when the body matches that
+// shape, or truncated to maxRawBodyExcerpt when it does not. Callers should
+// use Error() (or fmt "%v"/"%w") rather than re-deriving a message from any
+// other field, so the bound is never bypassed downstream.
+type TransportError struct {
+	// Op names the OpenBao call that failed (e.g. "jwt auth login",
+	// "read identity/oidc/token").
+	Op string
+	// StatusCode is the HTTP status OpenBao (or an intervening proxy)
+	// returned. Zero when the failure occurred before a response was ever
+	// received (e.g. a read error).
+	StatusCode int
+	// detail is the already-bounded/redacted message describing the body —
+	// either the joined OpenBao "errors" strings, or a truncated raw excerpt
+	// when the body did not parse as OpenBao's envelope. Unexported so the
+	// only way to read it is through Error(), keeping the bound in one
+	// place.
+	detail string
+}
+
+func (e *TransportError) Error() string {
+	if e.StatusCode != 0 {
+		return fmt.Sprintf("a2atoken: %s: HTTP %d: %s", e.Op, e.StatusCode, e.detail)
+	}
+	return fmt.Sprintf("a2atoken: %s: %s", e.Op, e.detail)
+}
+
+// parseOpenBaoErrors extracts a bounded, safe-to-log message from an OpenBao
+// HTTP error response body.
+//
+// OpenBao's own documented error shape is {"errors": ["msg", ...]} — its own
+// error bodies carry no secret material (they describe validation/policy
+// outcomes, e.g. "permission denied", not request or token content), so
+// parsing and surfacing those strings verbatim is safe. That reasoning is
+// specific to OpenBao's own error responses; it does NOT extend to whatever
+// body an intervening proxy might substitute in OpenBao's place (a
+// misconfigured gateway, an auth-proxy error page, a load balancer 502) — a
+// body that fails to parse as the documented envelope is untrusted,
+// unbounded, third-party content, and is truncated rather than echoed
+// verbatim.
+func parseOpenBaoErrors(body []byte) string {
+	var envelope struct {
+		Errors []string `json:"errors"`
+	}
+	if err := json.Unmarshal(body, &envelope); err == nil && len(envelope.Errors) > 0 {
+		return strings.Join(envelope.Errors, "; ")
+	}
+	return truncateExcerpt(body)
+}
+
+// truncateExcerpt bounds an arbitrary response body to a fixed-length,
+// safe-to-log excerpt.
+func truncateExcerpt(body []byte) string {
+	s := strings.TrimSpace(string(body))
+	if s == "" {
+		return "(empty body)"
+	}
+	if len(s) > maxRawBodyExcerpt {
+		return s[:maxRawBodyExcerpt] + "...(truncated)"
+	}
+	return s
+}
+
 // Token is a minted peer-facing A2A credential. It is signed exclusively by
 // OpenBao; gatekeeper never signs this value.
 //
@@ -216,7 +300,11 @@ func exchangeAssertion(ctx context.Context, endpoint, mount, role, assertion str
 		// unregistered subject) do not carry secret material — safe to
 		// surface for diagnosis. This is exactly where the two negative
 		// controls (untrusted key, bogus subject) surface their rejection.
-		return "", fmt.Errorf("jwt auth login: HTTP %d: %s", resp.StatusCode, string(respBody))
+		// parseOpenBaoErrors extracts OpenBao's documented {"errors":[...]}
+		// envelope when the body matches that shape; a body that does NOT
+		// match (e.g. an intervening proxy's own error page) is unbounded
+		// third-party content and is truncated rather than echoed verbatim.
+		return "", &TransportError{Op: "jwt auth login", StatusCode: resp.StatusCode, detail: parseOpenBaoErrors(respBody)}
 	}
 
 	var result struct {
@@ -262,7 +350,7 @@ func readOIDCToken(ctx context.Context, endpoint, role, clientToken, wantSubject
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return Token{}, fmt.Errorf("read identity/oidc/token/%s: HTTP %d: %s", role, resp.StatusCode, string(respBody))
+		return Token{}, &TransportError{Op: "read identity/oidc/token/" + role, StatusCode: resp.StatusCode, detail: parseOpenBaoErrors(respBody)}
 	}
 
 	var envelope struct {
