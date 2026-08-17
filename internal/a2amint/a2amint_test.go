@@ -2,8 +2,15 @@ package a2amint_test
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +19,20 @@ import (
 	"github.com/clagentic/clagentic-gatekeeper/internal/a2atoken"
 	"github.com/clagentic/clagentic-gatekeeper/internal/attestation"
 )
+
+// generateTestRSAPEM generates a fresh RSA-2048 private key and returns it
+// as a PKCS#1 PEM string, for tests that drive the real a2atoken.Issue
+// (which parses AssertionPrivateKeyPEM before making any HTTP call).
+func generateTestRSAPEM(t *testing.T) string {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate test RSA key: %v", err)
+	}
+	der := x509.MarshalPKCS1PrivateKey(key)
+	block := &pem.Block{Type: "RSA PRIVATE KEY", Bytes: der}
+	return string(pem.EncodeToMemory(block))
+}
 
 // Roster-agnostic fixture values — invented names, generic role vocabulary.
 // None correspond to any real crew agent.
@@ -260,6 +281,75 @@ func TestMintRefusedIssuanceError(t *testing.T) {
 	}
 	if len(events) != 1 || events[0].Permitted {
 		t.Fatalf("expected exactly one refused audit event, got %+v", events)
+	}
+}
+
+// TestMintAuditRedactsTransportErrorBody is the cross-boundary regression
+// test for the MILLER-adjudicated F1 finding (lr-890fae comment #8): the
+// per-package invariants around key material were already covered (neither
+// a2atoken nor a2amint ever puts key content in an error), but nothing
+// traced an OpenBao HTTP response BODY across the a2atoken -> a2amint
+// boundary into AuditEvent.Reason. This test drives Service.Mint with the
+// REAL a2atoken.Issue (not a stub IssueFunc) against a stub HTTP server that
+// stands in for an intervening proxy returning an oversized, non-OpenBao-
+// shaped error body on the jwt-auth-login leg, and asserts the value that
+// actually lands in AuditEvent.Reason — what a real deployment's log sink
+// would see — is bounded and redacted, not an unbounded echo of the body.
+func TestMintAuditRedactsTransportErrorBody(t *testing.T) {
+	hugeProxyBody := "<html><body>" + strings.Repeat("leaked-upstream-content-", 20) + "</body></html>"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// A proxy error page: not JSON, not OpenBao's {"errors":[...]}
+		// envelope — exactly the unbounded third-party-content case
+		// a2atoken.TransportError's truncation exists for.
+		w.WriteHeader(http.StatusBadGateway)
+		w.Write([]byte(hugeProxyBody)) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	svc := baseService(t)
+	svc.Endpoint = srv.URL
+	svc.IssueFunc = nil // use the real a2atoken.Issue, the actual boundary.
+	// The real a2atoken.Issue parses this as a PEM-encoded RSA key before
+	// ever reaching the HTTP call this test exercises — baseService's
+	// placeholder string is not valid PEM, so swap in a real generated key.
+	svc.Broker = &fakeBroker{val: generateTestRSAPEM(t)}
+
+	var events []a2amint.AuditEvent
+	svc.Audit = func(ev a2amint.AuditEvent) { events = append(events, ev) }
+
+	_, err := svc.Mint(context.Background(), fixtureAudience)
+	if err == nil {
+		t.Fatal("expected error propagated from issuance, got nil")
+	}
+	var transportErr *a2atoken.TransportError
+	if !errors.As(err, &transportErr) {
+		t.Fatalf("expected the returned error to wrap *a2atoken.TransportError, got %T: %v", err, err)
+	}
+	if len(events) != 1 || events[0].Permitted {
+		t.Fatalf("expected exactly one refused audit event, got %+v", events)
+	}
+
+	reason := events[0].Reason
+	// The proxy body is ~500 bytes; the load-bearing assertion is that
+	// Reason is BOUNDED (truncated) rather than an unbounded, verbatim echo
+	// of the full body — not that every substring of the body is absent, a
+	// truncated excerpt legitimately still contains a prefix of the source
+	// content by design (a2atoken.truncateExcerpt).
+	if !strings.Contains(reason, "...(truncated)") {
+		t.Errorf("AuditEvent.Reason = %q, want it to carry the truncation marker for an oversized non-OpenBao-shaped body", reason)
+	}
+	if strings.Contains(reason, hugeProxyBody) {
+		t.Fatalf("AuditEvent.Reason contains the full, untruncated proxy body: %q", reason)
+	}
+	if len(reason) > 400 {
+		t.Errorf("AuditEvent.Reason is not bounded: %d bytes: %q", len(reason), reason)
+	}
+	// The bounded TransportError message itself (op + status + truncated
+	// excerpt marker) must still be present — this is redaction, not
+	// silence; gatekeeper's own audit record must still show an OpenBao
+	// call failed and why, just not an unbounded echo of what a proxy sent.
+	if !strings.Contains(reason, "jwt auth login") {
+		t.Errorf("AuditEvent.Reason = %q, want it to still name the failing OpenBao operation", reason)
 	}
 }
 

@@ -376,6 +376,14 @@ func runMintA2A(args []string) error {
 		// (the token/JSON output contract) and is still capturable by any
 		// log-collecting harness. OpenBao's own audit device remains the
 		// mint-of-record for the issuance leg itself.
+		//
+		// ev.Reason is already bounded/redacted at the source
+		// (a2amint.Service.Mint's auditReason helper): a refusal originating
+		// from an a2atoken.TransportError (an OpenBao HTTP call) carries only
+		// that error's own already-bounded message, never a raw third-party
+		// response body, so this Fprintf performs no additional filtering of
+		// its own — it is not the place third-party content could reach
+		// stderr unbounded.
 		Audit: func(ev a2amint.AuditEvent) {
 			fmt.Fprintf(os.Stderr, "a2a mint audit: identity=%q role=%q audience=%q parent_session_id=%q permitted=%v reason=%q\n",
 				ev.Identity, ev.Role, ev.Audience, ev.ParentSessionID, ev.Permitted, ev.Reason)

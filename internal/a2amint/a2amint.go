@@ -26,6 +26,7 @@ package a2amint
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -55,7 +56,10 @@ type AuditEvent struct {
 	// a fail-closed refusal (false).
 	Permitted bool
 	// Reason is a short description of the outcome — the granted role for
-	// a permit, or the refusal cause for a denial.
+	// a permit, or the refusal cause for a denial. When the refusal
+	// originates from an a2atoken.TransportError (an OpenBao HTTP call),
+	// this is that error's own already-bounded/redacted message — never the
+	// raw third-party response body — see auditReason.
 	Reason string
 }
 
@@ -127,6 +131,32 @@ func (s *Service) audit(ev AuditEvent) {
 	if s.Audit != nil {
 		s.Audit(ev)
 	}
+}
+
+// auditReason derives the Reason field for a failed-issuance AuditEvent from
+// err.
+//
+// a2atoken.Issue's own errors are already bounded/redacted at the source for
+// the specific case that carries third-party content (a non-2xx OpenBao
+// response body — see a2atoken.TransportError and parseOpenBaoErrors) — this
+// function does not need to re-truncate that content. What it DOES do is
+// route on the error's *class*: a *a2atoken.TransportError is reported by
+// its own already-safe Error() string, kept short and free of any
+// higher-level wrapping; every OTHER error (attestation resolution,
+// entitlement denial, missing broker/config, key-parse failure) keeps its
+// full, unredacted message, because none of those originate from
+// third-party response content and full diagnosability matters for them.
+//
+// This targeted routing — rather than a blanket truncation of every Reason
+// string — is deliberate: a blanket redaction would degrade diagnosability
+// of gatekeeper's own errors for no security benefit, since only the
+// a2atoken transport-error class can ever carry unbounded external content.
+func auditReason(err error) string {
+	var te *a2atoken.TransportError
+	if errors.As(err, &te) {
+		return te.Error()
+	}
+	return err.Error()
 }
 
 // Mint resolves the attested A2A caller identity, checks it is entitled to
@@ -248,7 +278,7 @@ func (s *Service) Mint(ctx context.Context, audience string) (a2atoken.Token, er
 			Audience:        audience,
 			ParentSessionID: identity.ParentSessionID,
 			Permitted:       false,
-			Reason:          err.Error(),
+			Reason:          auditReason(err),
 		})
 		return a2atoken.Token{}, fmt.Errorf("a2amint: %w", err)
 	}
