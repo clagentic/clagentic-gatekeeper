@@ -380,10 +380,17 @@ func runMintA2A(args []string) error {
 		// ev.Reason is already bounded/redacted at the source
 		// (a2amint.Service.Mint's auditReason helper): a refusal originating
 		// from an a2atoken.TransportError (an OpenBao HTTP call) carries only
-		// that error's own already-bounded message, never a raw third-party
-		// response body, so this Fprintf performs no additional filtering of
-		// its own — it is not the place third-party content could reach
-		// stderr unbounded.
+		// that error's own message, bounded to a2atoken.maxRawBodyExcerpt
+		// (currently 200 bytes) on both the parsed-envelope and raw-fallback
+		// paths, never a raw third-party response body — so this Fprintf
+		// performs no additional filtering of its own. Note the %q verb below
+		// is not itself a bound: it escapes newlines/control bytes (Go's
+		// strconv.Quote semantics), which closes any log/terminal-injection
+		// concern for this sink, but a %q-quoted control-heavy string can run
+		// roughly 4x its input length — a 200-byte-bounded Reason can still
+		// print up to ~800 bytes here. That expansion is accounted for, not a
+		// gap: it is bounded (by maxRawBodyExcerpt transitively), just not to
+		// exactly 200 bytes at this exact call site.
 		Audit: func(ev a2amint.AuditEvent) {
 			fmt.Fprintf(os.Stderr, "a2a mint audit: identity=%q role=%q audience=%q parent_session_id=%q permitted=%v reason=%q\n",
 				ev.Identity, ev.Role, ev.Audience, ev.ParentSessionID, ev.Permitted, ev.Reason)
