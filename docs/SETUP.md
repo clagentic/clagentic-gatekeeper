@@ -316,13 +316,12 @@ default for an invocation with no per-spawn source by design (a
 lead/director session, lr-86779f); it is unaffected.
 
 **Status in this repository:** `gatekeeper mint` (`cmd/gatekeeper/main.go`)
-now constructs a `DomainResolver` for every invocation. It selects
+constructs a `DomainResolver` for every invocation. It selects
 `DomainLocalSubagent` when the configured per-spawn sidecar namespace's own
 `session_id_env` is set in the process environment (a per-spawn harness is
-active for this invocation) and `DomainLocal` otherwise. No A2A mint command
-exists yet in `cmd/gatekeeper` — `DomainA2A` is available for the A2A mint
-path (lr-a850d0, gated on a separate substrate-ratification decision) to
-consume once it lands, and remains otherwise unused today.
+active for this invocation) and `DomainLocal` otherwise. `gatekeeper
+mint-a2a` consumes `DomainA2A` for the A2A/remote-facing mint path — see "A2A
+token flow" below for the full walkthrough.
 
 ## The A2A caller-attestation contract (required fields)
 
