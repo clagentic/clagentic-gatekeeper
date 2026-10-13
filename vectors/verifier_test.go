@@ -103,7 +103,6 @@ type jwksDoc struct {
 	Keys []jwk `json:"keys"`
 }
 
-// trust maps a trusted issuer to its key set.
 type trust map[string]jwksDoc
 
 type outcome struct {
