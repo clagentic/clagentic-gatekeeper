@@ -225,6 +225,8 @@ func TestRegenerateVectors(t *testing.T) {
 			ed.rawToken(hdrJSON, cat(payloadJSON, ` junk`)), errE("malformed")),
 
 		tokV("time-nbf-string", "nbf is a string; type is checked before any time comparison.", L, genDirA, tok(ed, with(session(), "nbf", "0")), errE("claims_invalid")),
+		tokV("time-nbf-string-expired", "nbf is a string and exp is already past; the type fault wins over expired.", L, genDirA, tok(ed, with(session(), "iat", genNow-7200, "exp", genNow-3600, "nbf", "0")), errE("claims_invalid")),
+		tokV("time-iat-string-expired", "iat is a string and exp is already past; the type fault wins over expired.", L, genDirA, tok(ed, with(session(), "iat", "1791992800", "exp", genNow-3600)), errE("claims_invalid")),
 		tokV("time-exp-string", "exp is a string.", L, genDirA, tok(ed, with(session(), "exp", "1792000900")), errE("claims_invalid")),
 		tokV("time-exp-fractional", "exp is a fractional number.", L, genDirA, tok(ed, with(session(), "exp", float64(genNow)+0.5)), errE("claims_invalid")),
 		tokV("time-exp-fractional-expired", "exp is fractional and also in the past; the type fault wins over expired.", L, genDirA, tok(ed, with(session(), "exp", float64(genNow-3600)+0.5)), errE("claims_invalid")),
