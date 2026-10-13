@@ -224,6 +224,11 @@ func TestRegenerateVectors(t *testing.T) {
 		tokV("malformed-payload-trailing-junk", "Payload segment holds a valid object followed by junk; validly signed.", L, genDirA,
 			ed.rawToken(hdrJSON, cat(payloadJSON, ` junk`)), errE("malformed")),
 
+		tokV("time-nbf-string", "nbf is a string; type is checked before any time comparison.", L, genDirA, tok(ed, with(session(), "nbf", "0")), errE("claims_invalid")),
+		tokV("time-exp-string", "exp is a string.", L, genDirA, tok(ed, with(session(), "exp", "1792000900")), errE("claims_invalid")),
+		tokV("time-exp-fractional", "exp is a fractional number.", L, genDirA, tok(ed, with(session(), "exp", float64(genNow)+0.5)), errE("claims_invalid")),
+		tokV("time-exp-fractional-expired", "exp is fractional and also in the past; the type fault wins over expired.", L, genDirA, tok(ed, with(session(), "exp", float64(genNow-3600)+0.5)), errE("claims_invalid")),
+
 		tokV("contract-version-unsupported", "Validly signed, cia is 2.", L, genDirA, tok(ed, with(session(), "cia", 2)), errE("contract_version_unsupported")),
 
 		tokV("workload-missing-dir", "Workload local assertion without dir.", L, genDirA, tok(ed, with(session(), "dir", nil)), errE("claims_invalid")),

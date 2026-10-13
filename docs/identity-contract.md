@@ -129,8 +129,11 @@ code for a token with several faults.
    type does not match `alg`: `signature_invalid`.
 6. `cia` MUST equal a contract major version the verifier supports. Otherwise
    `contract_version_unsupported`.
-7. Time. `iat` and `exp` MUST be integers, else `claims_invalid`. Then, with
-   `now` read once and zero leeway for conformance runs:
+7. Time. `iat` and `exp` MUST be present and `nbf`, when present, MUST be an
+   integer NumericDate (a JSON number with no fraction or exponent). A string,
+   a fractional number, or any other type is `claims_invalid`; no comparison
+   or coercion happens before this check passes. Then, with `now` read once
+   and zero leeway for conformance runs:
    `exp <= now` is `expired`; `nbf` present and `now < nbf`, or `iat > now`, is
    `not_yet_valid`; `exp - iat > 43200` is `ttl_exceeded`. A deployment MAY
    configure leeway of at most 60 seconds.

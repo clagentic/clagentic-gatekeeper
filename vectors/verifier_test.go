@@ -300,20 +300,22 @@ func verifyToken(tr trust, v vector) (outcome, string) {
 	}
 	iat, okIat := asInt(claims["iat"])
 	exp, okExp := asInt(claims["exp"])
+	nbf, hasNbf := int64(0), false
+	if nbfRaw, has := claims["nbf"]; has {
+		var okNbf bool
+		if nbf, okNbf = asInt(nbfRaw); !okNbf {
+			return outcome{}, "claims_invalid"
+		}
+		hasNbf = true
+	}
 	if !okIat || !okExp {
 		return outcome{}, "claims_invalid"
 	}
 	if exp <= v.Now {
 		return outcome{}, "expired"
 	}
-	if nbfRaw, has := claims["nbf"]; has {
-		nbf, ok := asInt(nbfRaw)
-		if !ok {
-			return outcome{}, "claims_invalid"
-		}
-		if v.Now < nbf {
-			return outcome{}, "not_yet_valid"
-		}
+	if hasNbf && v.Now < nbf {
+		return outcome{}, "not_yet_valid"
 	}
 	if iat > v.Now {
 		return outcome{}, "not_yet_valid"

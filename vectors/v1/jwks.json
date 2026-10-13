@@ -6,7 +6,7 @@
       "kid": "ed-1",
       "kty": "OKP",
       "use": "sig",
-      "x": "mQfStmARYHuesxdyQ9sUKkAC1Tguz8W9xR3pEcF25oY"
+      "x": "fTGedwJ4R5K6-uXsQq-eL2L1QAn-NEkSt_GfHJHunAw"
     },
     {
       "alg": "ES256",
@@ -14,8 +14,8 @@
       "kid": "es-1",
       "kty": "EC",
       "use": "sig",
-      "x": "JLValOfitfXHinqFbTWZ-kO4j57Dem-vbLqD8vZ_aIE",
-      "y": "dmifCeKbq2LFQa5UkqsMu1Zpo3rYNKbcowKOchb6y8o"
+      "x": "thz0if4ybsM78eBPw2cacg6Ojm8QpH43NRA2tt0o3VE",
+      "y": "NfnmkqmBdt2Z14RyLDa_U76P1iIylXPj3-UatBEZP94"
     }
   ]
 }
