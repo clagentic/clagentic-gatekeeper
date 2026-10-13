@@ -1,0 +1,21 @@
+{
+  "keys": [
+    {
+      "alg": "EdDSA",
+      "crv": "Ed25519",
+      "kid": "ed-1",
+      "kty": "OKP",
+      "use": "sig",
+      "x": "EqV8FXb02_B4sMQH1ue4w_C2Q-ZFBav0jf8VDMGeUw0"
+    },
+    {
+      "alg": "ES256",
+      "crv": "P-256",
+      "kid": "es-1",
+      "kty": "EC",
+      "use": "sig",
+      "x": "aDc_u6u_dI4hXnbjKj5IUlbolGzR47WrQNyhQO653Ec",
+      "y": "aoaHsI3soH2Qx2gXQCHdhBqrfhKyHEAO7HY9njNu284"
+    }
+  ]
+}

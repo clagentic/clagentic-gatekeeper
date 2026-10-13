@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.clagentic.ai/jwks-discovery/1.json",
+  "title": "Clagentic issuer trust and JWKS discovery",
+  "description": "Verifier-side trust list (root) and the JWKS document a locator resolves to ($defs.jwks). Contract version 1.0.0; see docs/identity-contract.md section 5. A trusted issuer is matched by exact string equality; the locator only says where its keys are.",
+  "type": "object",
+  "required": ["issuers"],
+  "properties": {
+    "issuers": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/trustedIssuer" }
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "issuerIdentifier": {
+      "description": "Opaque, compared by exact equality. The four URI forms below also derive a JWKS locator when no explicit one is configured: https/http -> <iss>/.well-known/jwks.json, file -> the file itself, unix -> GET /.well-known/jwks.json over the socket.",
+      "type": "string",
+      "minLength": 1
+    },
+    "locator": {
+      "description": "file: names the JWKS document. http(s): is the full document URL. unix: names a socket serving /.well-known/jwks.json.",
+      "type": "string",
+      "pattern": "^(file:///|https?://|unix:///)"
+    },
+    "trustedIssuer": {
+      "type": "object",
+      "required": ["iss"],
+      "properties": {
+        "iss": { "$ref": "#/$defs/issuerIdentifier" },
+        "jwks": { "$ref": "#/$defs/locator" }
+      },
+      "additionalProperties": true
+    },
+    "jwks": {
+      "type": "object",
+      "required": ["keys"],
+      "properties": {
+        "keys": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/jwk" }
+        }
+      }
+    },
+    "jwk": {
+      "description": "Public keys only. No private parameter (d, p, q, dp, dq, qi, k) may appear.",
+      "type": "object",
+      "required": ["kty", "kid", "alg", "use"],
+      "properties": {
+        "kid": { "type": "string", "minLength": 1 },
+        "use": { "const": "sig" },
+        "d": false, "p": false, "q": false, "dp": false, "dq": false, "qi": false, "k": false
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "kty": { "const": "OKP" },
+            "crv": { "const": "Ed25519" },
+            "alg": { "const": "EdDSA" },
+            "x": { "type": "string", "minLength": 1 }
+          },
+          "required": ["crv", "x"]
+        },
+        {
+          "properties": {
+            "kty": { "const": "EC" },
+            "crv": { "const": "P-256" },
+            "alg": { "const": "ES256" },
+            "x": { "type": "string", "minLength": 1 },
+            "y": { "type": "string", "minLength": 1 }
+          },
+          "required": ["crv", "x", "y"]
+        }
+      ]
+    }
+  }
+}
