@@ -124,6 +124,11 @@ func decodeObject(seg string) (map[string]any, bool) {
 	if err := dec.Decode(&m); err != nil || m == nil {
 		return nil, false
 	}
+	// Decode stops after the first value; anything but EOF after it is a second
+	// value or junk, and the segment must be exactly one object.
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, false
+	}
 	return m, true
 }
 

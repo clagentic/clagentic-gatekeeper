@@ -52,6 +52,18 @@ func (s signer) token(claims map[string]any) string {
 	return h + "." + p + "." + enc(s.sign([]byte(h+"."+p)))
 }
 
+// rawToken signs caller-supplied segment bytes, so a vector can carry content
+// that json.Marshal would never produce (trailing values, junk).
+func (s signer) rawToken(header, payload []byte) string {
+	h, p := enc(header), enc(payload)
+	return h + "." + p + "." + enc(s.sign([]byte(h+"."+p)))
+}
+
+// cat returns a fresh slice so vectors built from one base never share storage.
+func cat(base []byte, tail string) []byte {
+	return append(append([]byte(nil), base...), tail...)
+}
+
 func edSigner(kid string, priv ed25519.PrivateKey) signer {
 	return signer{alg: "EdDSA", kid: kid, sign: func(in []byte) []byte { return ed25519.Sign(priv, in) }}
 }
@@ -172,6 +184,9 @@ func TestRegenerateVectors(t *testing.T) {
 	}()
 	noneToken := enc(mustJSON(map[string]any{"alg": "none", "kid": "ed-1"})) + "." + enc(mustJSON(session())) + "."
 
+	hdrJSON := mustJSON(map[string]any{"alg": "EdDSA", "kid": "ed-1"})
+	payloadJSON := mustJSON(session())
+
 	L := audienceLocal
 	P := audiencePeer
 	vs := []vector{
@@ -199,6 +214,15 @@ func TestRegenerateVectors(t *testing.T) {
 		tokV("alg-hs256", "HMAC token, algorithm confusion attempt.", L, genDirA, hsToken, errE("alg_not_allowed")),
 		tokV("malformed-segments", "Two segments only.", L, genDirA, "abc.def", errE("malformed")),
 		tokV("malformed-payload", "Payload is not a JSON object.", L, genDirA, enc(mustJSON(map[string]any{"alg": "EdDSA", "kid": "ed-1"}))+"."+enc([]byte("not-json"))+"."+enc([]byte("sig")), errE("malformed")),
+
+		tokV("malformed-header-trailing-value", "Header segment holds a valid object followed by a second JSON object; validly signed.", L, genDirA,
+			ed.rawToken(cat(hdrJSON, `{}`), payloadJSON), errE("malformed")),
+		tokV("malformed-header-trailing-junk", "Header segment holds a valid object followed by junk; validly signed.", L, genDirA,
+			ed.rawToken(cat(hdrJSON, ` junk`), payloadJSON), errE("malformed")),
+		tokV("malformed-payload-trailing-value", "Payload segment holds a valid object followed by a second JSON object; validly signed.", L, genDirA,
+			ed.rawToken(hdrJSON, cat(payloadJSON, `{}`)), errE("malformed")),
+		tokV("malformed-payload-trailing-junk", "Payload segment holds a valid object followed by junk; validly signed.", L, genDirA,
+			ed.rawToken(hdrJSON, cat(payloadJSON, ` junk`)), errE("malformed")),
 
 		tokV("contract-version-unsupported", "Validly signed, cia is 2.", L, genDirA, tok(ed, with(session(), "cia", 2)), errE("contract_version_unsupported")),
 

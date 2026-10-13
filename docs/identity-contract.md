@@ -116,7 +116,10 @@ failure by its code. The order is normative so that two verifiers agree on the
 code for a token with several faults.
 
 1. Split into three base64url segments; decode the header and payload as JSON
-   objects. Otherwise `malformed`. A `crit` header member is also `malformed`.
+   objects. The header and the payload are each exactly one JSON object: any
+   non-whitespace content after it, whether a second JSON value or junk, is
+   `malformed`. Otherwise `malformed`. A `crit` header member is also
+   `malformed`.
 2. Header `alg` MUST be `EdDSA` or `ES256`. Otherwise `alg_not_allowed`.
 3. Read `iss` from the payload (not yet trusted). It MUST be a string equal to
    one of the verifier's trusted issuers. Otherwise `issuer_untrusted`.
@@ -153,7 +156,7 @@ verifier.
 | `identity_dir_unsafe` | The delivery directory is a symlink, is not owned by the verifier's user, or has any group or other permission bit. |
 | `identity_file_missing` | `identity.jwt` does not exist in the delivery directory. |
 | `identity_file_symlink` | `identity.jwt` is a symlink or not a regular file. |
-| `malformed` | Not a three-segment compact JWS, header or payload not a JSON object, a `crit` header, or a file over 16384 bytes. |
+| `malformed` | Not a three-segment compact JWS, header or payload not exactly one JSON object (trailing content included), a `crit` header, or a file over 16384 bytes. |
 | `alg_not_allowed` | Header `alg` is not `EdDSA` or `ES256`. |
 | `issuer_untrusted` | `iss` is absent, not a string, or not a trusted issuer. |
 | `key_not_found` | The issuer's JWKS has no key with the header `kid`. |
