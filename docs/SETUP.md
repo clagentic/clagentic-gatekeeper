@@ -325,16 +325,19 @@ token flow" below for the full walkthrough.
 
 ## The A2A caller-attestation contract (required fields)
 
-The normative, standalone required-fields contract — what a structured
-sidecar record must carry so gatekeeper can resolve an A2A caller's
-attestation with no crew-specific knowledge in gatekeeper source, which
-sidecar source is authoritative for that domain, and how a missing required
-field is refused — is published in
-[`docs/A2A-ATTESTATION-CONTRACT.md`](A2A-ATTESTATION-CONTRACT.md) (lr-a850d0).
-A producer (e.g. the crew-manifest harness that writes the sidecar file for
-an A2A-caller spawn) implements that doc's contract by writing a file that
-satisfies it; this repository never needs code that knows the producer's
-identity.
+What a structured sidecar record must carry so gatekeeper can resolve an A2A
+caller's attestation with no deployment-specific knowledge in gatekeeper
+source is specified by section 4 above ("Structured sidecar records"; only
+the field named by `identity_field` is required, the attribution fields are
+optional) and by [`docs/SIDECAR-READ-CONTRACT.md`](SIDECAR-READ-CONTRACT.md)
+section 8. For an A2A mint the identity MUST resolve from the per-spawn
+sidecar entry (section 5 above). A producer implements that by writing a file
+that satisfies it; this repository never needs code that knows the
+producer's identity.
+
+The contract for what an A2A *peer* validates is the Identity Assertion
+contract, [`docs/identity-contract.md`](identity-contract.md) (section 9),
+which supersedes the former `docs/A2A-ATTESTATION-CONTRACT.md`.
 
 ## A2A caller entitlement mapping (`a2a_mapping`) — lr-0ae541
 
@@ -416,9 +419,7 @@ entity's own id. The mechanism gatekeeper actually implements is different,
 and is *stronger*, not a workaround:
 
 1. **Sidecar attestation** (layer 1 above) resolves the caller's identity
-   from a structured sidecar record — the same substrate
-   [`docs/A2A-ATTESTATION-CONTRACT.md`](A2A-ATTESTATION-CONTRACT.md)
-   documents. For `mint-a2a` specifically, this MUST resolve through the
+   from a structured sidecar record (section 4 above). For `mint-a2a` specifically, this MUST resolve through the
    **per-spawn** sidecar entry: `attestation.DomainA2A`'s fail-closed MISS
    policy (section 5, above) means a per-spawn miss refuses outright and
    never falls through to a session-scoped identity.
@@ -450,9 +451,8 @@ and is *stronger*, not a workaround:
    entity. See "What's on the wire" below for the exact claim set.
 6. **Peer validation**: any standard OIDC validator can verify the token
    against OpenBao's discovery/JWKS endpoint — see
-   [`docs/A2A-ATTESTATION-CONTRACT.md`](A2A-ATTESTATION-CONTRACT.md) and the
-   sibling validation-contract task (`lr-baa55b`) for the peer-side
-   consumption contract.
+   [`docs/identity-contract.md`](identity-contract.md) (section 9) for the
+   peer-side validation contract.
 
 This is why the mechanism is called *attest-and-route*, not
 *mint-on-behalf-of*: gatekeeper never authenticates to OpenBao pretending to
