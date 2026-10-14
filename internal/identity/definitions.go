@@ -5,10 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"regexp"
-	"syscall"
 
 	"gopkg.in/yaml.v3"
 )
@@ -52,15 +50,13 @@ func (d Definitions) Load(name string) (Definition, error) {
 	if !reName.MatchString(name) {
 		return Definition{}, fmt.Errorf("%w: %q is not a valid definition name", ErrUnknownDefinition, name)
 	}
-	fd, err := syscall.Open(filepath.Join(d.Dir, name+".md"), syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	// A definition request must never block on, or follow a link to, something
+	// that is not a plain file in Dir.
+	f, _, err := openRegular(filepath.Join(d.Dir, name+".md"))
 	if err != nil {
-		return Definition{}, fmt.Errorf("%w: %q", ErrUnknownDefinition, name)
+		return Definition{}, fmt.Errorf("%w: %q: %v", ErrUnknownDefinition, name, err)
 	}
-	f := os.NewFile(uintptr(fd), name+".md")
 	defer f.Close()
-	if fi, err := f.Stat(); err != nil || !fi.Mode().IsRegular() {
-		return Definition{}, fmt.Errorf("%w: %q is not a regular file", ErrUnknownDefinition, name)
-	}
 	raw, err := io.ReadAll(io.LimitReader(f, maxDefinitionBytes+1))
 	if err != nil || len(raw) > maxDefinitionBytes {
 		return Definition{}, fmt.Errorf("%w: %q is unreadable or too large", ErrUnknownDefinition, name)
