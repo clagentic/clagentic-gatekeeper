@@ -1,3 +1,8 @@
+//go:build linux
+
+// These tests drive the real socket: SO_PEERCRED and the real /proc, both of
+// which exist only on linux.
+
 package identity
 
 import (

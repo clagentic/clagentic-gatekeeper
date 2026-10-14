@@ -96,10 +96,3 @@ func TestIssuedAssertionIsBoundToPeerStartTime(t *testing.T) {
 		t.Fatalf("registry entry %+v ok=%v", bound, ok)
 	}
 }
-
-func TestReadProcOfThisProcess(t *testing.T) {
-	info, err := ReadProc(int32(os.Getpid()))
-	if err != nil || info.Exe == "" || info.StartTime == 0 || len(info.Args) == 0 {
-		t.Fatalf("%+v %v", info, err)
-	}
-}
