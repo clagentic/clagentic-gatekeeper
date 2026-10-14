@@ -17,9 +17,10 @@ func TestDefinitionFIFORefusedWithoutBlocking(t *testing.T) {
 	if err := syscall.Mkfifo(fifo, 0o644); err != nil {
 		t.Skipf("cannot create a FIFO here: %v", err)
 	}
+	d := newDefs(t, dir)
 	done := make(chan error, 1)
 	go func() {
-		_, err := (Definitions{Dir: dir}).Load("example-fifo")
+		_, err := d.Load("example-fifo")
 		done <- err
 	}()
 	select {
@@ -41,7 +42,7 @@ func TestDefinitionDirectoryRefused(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(dir, "example-dir.md"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := (Definitions{Dir: dir}).Load("example-dir"); !errors.Is(err, ErrUnknownDefinition) {
+	if _, err := newDefs(t, dir).Load("example-dir"); !errors.Is(err, ErrUnknownDefinition) {
 		t.Fatalf("directory definition: got %v", err)
 	}
 }

@@ -322,17 +322,28 @@ roles:
 #   issuer: unix:///run/clagentic-gatekeeper/identity.sock
 #   # Default /run/clagentic-gatekeeper/identity.sock; `serve --socket` wins.
 #   socket_path: /run/clagentic-gatekeeper/identity.sock
-#   socket_mode: "0666"
-#   # The only uid that may receive a human subject. Unset: nobody does.
+#   # Default "0600" (serving uid only). A second layer: who may ask is decided
+#   # in-process from the peer's uid and gid (operator_uid, allowed_uids,
+#   # allowed_gids); a wider mode never admits a uid those exclude.
+#   socket_mode: "0600"
+#   # The only uid that may receive a human subject. Unset: nobody does. It may
+#   # always ask.
 #   operator_uid: 1000
 #   operator_name: example-operator      # default: the account name of operator_uid
+#   # Who else may ask, matched on the SO_PEERCRED uid or primary gid. Absent:
+#   # the operator uid only. A permitted uid may name any definition.
+#   allowed_uids: [1001]
+#   allowed_gids: []
 #   # Role ceilings for sessions that name no definition. runtime_roles is one
 #   # list for every runtime session: it is never keyed by runtime name, because
 #   # the runtime id comes from the peer's argv and is self-asserted attribution
 #   # within the peer uid (docs/SETUP.md).
 #   operator_roles: [reader]
 #   runtime_roles: []
-#   # One <name>.md per agent, frontmatter keys name, roles, trust_boundary.
+#   # One <name>.md per agent, frontmatter keys name, roles, trust_boundary
+#   # (trust_boundary is parsed and not yet enforced). The directory, each file
+#   # and every ancestor must be owned by root or the serving uid and not
+#   # writable by group or other, or serve refuses to start.
 #   definitions_dir: /etc/gatekeeper/definitions
 #   # What issue-child may hand a child. Absent: every role. [] : none. A child
 #   # also never holds a role its parent token lacks.

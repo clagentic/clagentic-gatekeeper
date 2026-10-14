@@ -1,6 +1,9 @@
+//go:build linux
+
 package identity
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -267,15 +270,26 @@ func TestChildFromOtherPidRefusesNamingMismatch(t *testing.T) {
 	f, parent := childSetup(t, nil)
 	_, err := f.issuer.IssueChild(selfPeer(11), ChildRequest{ParentToken: parent.Token, AgentType: "example-builder", AgentID: "a1"})
 	ie, ok := IsIssueError(err)
-	if !ok || ie.Code != "parent_pid_mismatch" || !strings.Contains(ie.Message, "pid 10") || !strings.Contains(ie.Message, "pid 11") {
+	if !ok || ie.Code != CodePIDMismatch {
 		t.Fatalf("got %v", err)
+	}
+	// The client learns the code; the pids that differed are for the log.
+	if strings.ContainsAny(ie.Message, "0123456789") {
+		t.Fatalf("the public message carries a number: %q", ie.Message)
+	}
+	cause := errors.Unwrap(ie)
+	if cause == nil || !strings.Contains(cause.Error(), "pid 10") || !strings.Contains(cause.Error(), "pid 11") {
+		t.Fatalf("the logged cause does not name the mismatch: %v", cause)
 	}
 }
 
 func TestChildFromOtherUidWithMatchingPidRefuses(t *testing.T) {
-	f, parent := childSetup(t, nil)
 	other := selfPeer(10)
 	other.UID++
+	f, parent := childSetup(t, nil)
+	// Widened on the issuer itself: NewIssuer would (rightly) probe that it can
+	// serve the extra uid, which an unprivileged run cannot.
+	f.issuer.AllowedUIDs = append(f.issuer.AllowedUIDs, other.UID)
 	_, err := f.issuer.IssueChild(other, ChildRequest{ParentToken: parent.Token, AgentType: "example-builder", AgentID: "a1"})
 	ie, ok := IsIssueError(err)
 	if !ok || ie.Code != "uid_mismatch" {
@@ -321,7 +335,7 @@ func TestGrantsFollowPeerCredentialsNotProcData(t *testing.T) {
 
 	// A foreign peer uid needs CAP_CHOWN to be served, which only root has here.
 	if os.Geteuid() == 0 {
-		f := newFixture(t, nil)
+		f := newFixture(t, func(s *Settings) { s.AllowedUIDs = append(s.AllowedUIDs, foreign) })
 		peer := Peer{UID: foreign, GID: foreign, PID: 10}
 		out, c := mustSession(t, f, peer, SessionRequest{})
 		if strings.HasPrefix(c.Sub, "human:") {
@@ -448,6 +462,58 @@ func TestIssuingRefusesAnAssertionThatExpiresNoLaterThanItIsIssued(t *testing.T)
 	}
 	if entries, rerr := os.ReadDir(f.root); rerr != nil || len(entries) != 0 {
 		t.Fatalf("a refused issue left delivery directories: %v %v", entries, rerr)
+	}
+}
+
+// Who may ask is decided from the SO_PEERCRED uid and gid against an explicit
+// list; absent means the operator uid only.
+func TestPeerOutsideTheAllowListIsRefusedForBothOperations(t *testing.T) {
+	f := newFixture(t, nil)
+	stranger := selfPeer(10)
+	stranger.UID, stranger.GID = stranger.UID+1000, stranger.GID+1000
+	_, err := f.issuer.IssueSession(stranger, SessionRequest{Definition: "example-builder"})
+	if ie, ok := IsIssueError(err); !ok || ie.Code != CodePeerNotAllowed || ie.Status != 403 {
+		t.Fatalf("issue-session: got %v", err)
+	}
+	parent, _ := mustSession(t, f, selfPeer(10), SessionRequest{})
+	_, err = f.issuer.IssueChild(stranger, ChildRequest{ParentToken: parent.Token, AgentType: "example-builder", AgentID: "a1"})
+	if ie, ok := IsIssueError(err); !ok || ie.Code != CodePeerNotAllowed {
+		t.Fatalf("issue-child: got %v", err)
+	}
+	if entries, rerr := os.ReadDir(f.root); rerr != nil || len(entries) != 1 {
+		t.Fatalf("a refused request left a delivery directory: %v %v", entries, rerr)
+	}
+}
+
+func TestAbsentAllowListAdmitsTheOperatorUidOnly(t *testing.T) {
+	uid := uint32(os.Getuid())
+	f := newFixture(t, func(s *Settings) { s.OperatorUID = &uid; s.AllowedUIDs, s.AllowedGIDs = nil, nil })
+	if _, err := f.issuer.IssueSession(selfPeer(10), SessionRequest{}); err != nil {
+		t.Fatalf("operator uid: %v", err)
+	}
+	other := selfPeer(10)
+	other.UID++
+	if _, err := f.issuer.IssueSession(other, SessionRequest{}); err == nil {
+		t.Fatal("a uid on no list was served")
+	}
+}
+
+func TestAllowedGidAdmitsAPeerWhoseUidIsNotListed(t *testing.T) {
+	f := newFixture(t, func(s *Settings) { s.AllowedUIDs = nil; s.AllowedGIDs = []uint32{uint32(os.Getgid())} })
+	if _, err := f.issuer.IssueSession(selfPeer(10), SessionRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	other := selfPeer(10)
+	other.GID++
+	if _, err := f.issuer.IssueSession(other, SessionRequest{}); err == nil {
+		t.Fatal("a gid on no list was served")
+	}
+}
+
+func TestNewIssuerRefusesAConfigNobodyCouldUse(t *testing.T) {
+	_, err := NewIssuer(Settings{KeyPath: "/k", SocketPath: "/run/x.sock", SpawnRoot: "/run/spawn"})
+	if err == nil || !strings.Contains(err.Error(), "nobody may request issuance") {
+		t.Fatalf("got %v", err)
 	}
 }
 

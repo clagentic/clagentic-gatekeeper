@@ -45,6 +45,20 @@ func TestIdentityWrittenPathsMustBeAbsoluteAndNameTheKey(t *testing.T) {
 	loadIdentity(t, "identity:\n  key_path: /k\n  socket_path: /run/x.sock\n  jwks_path: /var/j.json\n  spawn_root: /run/spawn\n")
 }
 
+func TestIdentityAllowListParsesAndIsAbsentByDefault(t *testing.T) {
+	cfg := loadIdentity(t, "identity:\n  key_path: /k\n  allowed_uids: [1001, 1002]\n  allowed_gids: [2000]\n")
+	if got := cfg.Identity.AllowedUIDs; len(got) != 2 || got[0] != 1001 || got[1] != 1002 {
+		t.Fatalf("allowed_uids %v", got)
+	}
+	if got := cfg.Identity.AllowedGIDs; len(got) != 1 || got[0] != 2000 {
+		t.Fatalf("allowed_gids %v", got)
+	}
+	absent := loadIdentity(t, "identity:\n  key_path: /k\n")
+	if absent.Identity.AllowedUIDs != nil || absent.Identity.AllowedGIDs != nil {
+		t.Fatalf("an absent allow-list is not empty: %+v", absent.Identity)
+	}
+}
+
 func TestIdentityOnlyConfigLoads(t *testing.T) {
 	cfg := loadIdentity(t, "identity:\n  key_path: /k\n  operator_uid: 1000\n")
 	if !cfg.Identity.Enabled() || cfg.Identity.OperatorUID == nil || *cfg.Identity.OperatorUID != 1000 {

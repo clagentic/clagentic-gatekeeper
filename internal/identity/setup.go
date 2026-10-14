@@ -1,3 +1,5 @@
+//go:build linux
+
 package identity
 
 import (
@@ -7,6 +9,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"strconv"
+	"syscall"
 	"time"
 )
 
@@ -20,6 +23,8 @@ type Settings struct {
 	JWKSPath       string
 	OperatorUID    *uint32
 	OperatorName   string
+	AllowedUIDs    []uint32
+	AllowedGIDs    []uint32
 	OperatorRoles  []string
 	RuntimeRoles   []string
 	DefinitionsDir string
@@ -28,8 +33,10 @@ type Settings struct {
 	SessionTTL     time.Duration
 }
 
-// NewIssuer validates s, loads the keys, prepares the spawn root and returns
-// a ready Issuer.
+// NewIssuer validates s, verifies every trust root it names (signing key,
+// definitions, socket directory, key set directory, spawn root), loads the keys
+// and returns a ready Issuer. Any root another uid could write to refuses the
+// start and names the path; nothing is published first.
 func NewIssuer(s Settings) (*Issuer, error) {
 	if s.KeyPath == "" {
 		return nil, errors.New("identity.key_path is required to serve")
@@ -69,48 +76,104 @@ func NewIssuer(s Settings) (*Issuer, error) {
 	if !filepath.IsAbs(root) {
 		return nil, fmt.Errorf("identity.spawn_root %q must be absolute", root)
 	}
+	if s.OperatorUID == nil && len(s.AllowedUIDs) == 0 && len(s.AllowedGIDs) == 0 {
+		return nil, errors.New("nobody may request issuance: set identity.operator_uid, identity.allowed_uids or identity.allowed_gids")
+	}
+
 	keys, err := LoadKeyring(s.KeyPath, s.Alg)
 	if err != nil {
+		return nil, err
+	}
+	// The socket and key set directories are verified now so a bad one stops the
+	// start before anything is created; Listen and WriteJWKS verify again at use.
+	sockDir, err := openTrustedDir(filepath.Dir(s.SocketPath), 0o755)
+	if err != nil {
+		return nil, fmt.Errorf("socket directory: %w", err)
+	}
+	sockDir.Close()
+	if s.JWKSPath != "" {
+		jwksDir, err := openTrustedDir(filepath.Dir(s.JWKSPath), 0)
+		if err != nil {
+			return nil, fmt.Errorf("identity.jwks_path directory: %w", err)
+		}
+		jwksDir.Close()
+	}
+	defs, err := NewDefinitions(s.DefinitionsDir)
+	if err != nil {
+		return nil, err
+	}
+	dirs, err := NewSpawnDirs(filepath.Clean(root))
+	if err != nil {
+		defs.Close()
+		return nil, err
+	}
+	uids := append([]uint32(nil), s.AllowedUIDs...)
+	if s.OperatorUID != nil {
+		uids = append(uids, *s.OperatorUID)
+	}
+	if err := dirs.CheckRemovable(uids, s.AllowedGIDs); err != nil {
+		defs.Close()
+		dirs.Close()
 		return nil, err
 	}
 	issuer := s.Issuer
 	if issuer == "" {
 		issuer = "unix://" + s.SocketPath
 	}
-	dirs := SpawnDirs{Root: filepath.Clean(root)}
-	if err := dirs.Ensure(); err != nil {
-		return nil, fmt.Errorf("spawn root: %w", err)
-	}
 	return &Issuer{
-		Issuer: issuer, Keys: keys, Defs: Definitions{Dir: s.DefinitionsDir}, Dirs: dirs,
+		Issuer: issuer, Keys: keys, Defs: defs, Dirs: dirs,
 		Registry: NewRegistry(), Proc: ReadProc, Now: time.Now,
 		OperatorUID: s.OperatorUID, OperatorName: name,
+		AllowedUIDs: s.AllowedUIDs, AllowedGIDs: s.AllowedGIDs,
 		OperatorRoles: s.OperatorRoles, RuntimeRoles: s.RuntimeRoles,
 		DelegableRoles: s.DelegableRoles, SessionTTL: ttl,
 	}, nil
 }
 
-// WriteJWKS publishes the key set at path atomically, readable by everyone.
+// WriteJWKS publishes the key set at path atomically, readable by everyone. The
+// directory is a trust root; the temporary file is created in it relative to the
+// directory handle and renamed over path with the same handle.
 func (k *Keyring) WriteJWKS(path string) error {
 	body, err := k.MarshalJWKS()
 	if err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".jwks-*")
+	dir, err := openTrustedDir(filepath.Dir(path), 0)
 	if err != nil {
 		return err
 	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.Write(append(body, '\n')); err != nil {
-		tmp.Close()
+	defer dir.Close()
+	dfd := int(dir.Fd())
+	id, err := randomID()
+	if err != nil {
 		return err
 	}
-	if err := tmp.Chmod(0o644); err != nil {
+	tmpName := ".jwks-" + id[:16]
+	fd, err := syscall.Openat(dfd, tmpName, syscall.O_WRONLY|syscall.O_CREAT|syscall.O_EXCL|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0o644)
+	if err != nil {
+		return err
+	}
+	tmp := os.NewFile(uintptr(fd), tmpName)
+	committed := false
+	defer func() {
 		tmp.Close()
+		if !committed {
+			_ = syscall.Unlinkat(dfd, tmpName)
+		}
+	}()
+	// Openat's mode is filtered by the umask; fchmod is not.
+	if err := tmp.Chmod(0o644); err != nil {
+		return err
+	}
+	if _, err := tmp.Write(append(body, '\n')); err != nil {
 		return err
 	}
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp.Name(), path)
+	if err := syscall.Renameat(dfd, tmpName, dfd, filepath.Base(path)); err != nil {
+		return err
+	}
+	committed = true
+	return nil
 }

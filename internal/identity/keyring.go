@@ -1,8 +1,5 @@
-// Package identity issues the Identity Assertion defined in
-// docs/identity-contract.md: a signed statement of which actor is acting, on
-// whose behalf, under which role ceiling. It owns the signing key, the
-// published key set, and the policy that turns kernel-attested peer
-// credentials into claims.
+//go:build linux
+
 package identity
 
 import (
@@ -19,6 +16,7 @@ import (
 	"io"
 	"math/big"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -27,22 +25,6 @@ const (
 	AlgEdDSA = "EdDSA"
 	AlgES256 = "ES256"
 )
-
-// JWK is the public half of a key, in the shape of RFC 7517/7518/8037.
-type JWK struct {
-	Kty string `json:"kty"`
-	Crv string `json:"crv"`
-	Kid string `json:"kid"`
-	Alg string `json:"alg"`
-	Use string `json:"use"`
-	X   string `json:"x"`
-	Y   string `json:"y,omitempty"`
-}
-
-// JWKS is the published key set.
-type JWKS struct {
-	Keys []JWK `json:"keys"`
-}
 
 type publicKey struct {
 	jwk JWK
@@ -97,12 +79,17 @@ const maxKeyFileBytes = 64 << 10
 
 // readPrivateKeyPEM enforces the key-handling rule from the contract's
 // security section (a regular file, mode 0600, owned by the serving uid) and
-// returns the decoded PEM block. The file is opened once without following
-// links, and owner and mode are read from that descriptor, so the bytes parsed
-// are those of the inode that was validated; a path swapped after the check
-// cannot substitute a different key.
+// returns the decoded PEM block. Its directory is verified like every trust
+// root, the file is opened once relative to it without following links, and
+// owner and mode are read from that descriptor, so the bytes parsed are those
+// of the inode that was validated.
 func readPrivateKeyPEM(path, wantType string) ([]byte, error) {
-	f, fi, err := openRegular(path)
+	dir, err := openTrustedDir(filepath.Dir(path), 0)
+	if err != nil {
+		return nil, err
+	}
+	defer dir.Close()
+	f, fi, err := openRegularAt(dir, filepath.Base(path))
 	if err != nil {
 		return nil, err
 	}

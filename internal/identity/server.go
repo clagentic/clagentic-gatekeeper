@@ -1,3 +1,5 @@
+//go:build linux
+
 package identity
 
 import (
@@ -13,20 +15,11 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"syscall"
 	"time"
 )
 
-// Wire paths. JWKS discovery uses the contract's fixed path.
-const (
-	PathJWKS         = "/.well-known/jwks.json"
-	PathIssueSession = "/v1/issue-session"
-	PathIssueChild   = "/v1/issue-child"
-)
-
 const maxRequestBytes = 64 << 10
-
-// DefaultSocketPath is used when neither --socket nor identity.socket_path is set.
-const DefaultSocketPath = "/run/clagentic-gatekeeper/identity.sock"
 
 type peerKey struct{}
 
@@ -80,7 +73,7 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) jwks(w http.ResponseWriter, _ *http.Request) {
 	body, err := s.Issuer.Keys.MarshalJWKS()
 	if err != nil {
-		s.writeRefusal(w, refuseInternal(http.StatusInternalServerError, "internal", publicInternalMessage, err))
+		s.writeRefusal(w, refuse(http.StatusInternalServerError, CodeInternal, err))
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -114,17 +107,15 @@ func (s *Server) issueChild(w http.ResponseWriter, r *http.Request) {
 func (s *Server) decode(w http.ResponseWriter, r *http.Request, into any) (Peer, bool) {
 	peer, ok := peerOf(r)
 	if !ok {
-		s.writeRefusal(w, refuse(http.StatusForbidden, "peer_unattested", "no peer credentials for this connection"))
+		s.writeRefusal(w, refuse(http.StatusForbidden, CodePeerUnattested, errors.New("no peer credentials for this connection")))
 		return Peer{}, false
 	}
 	if err := decodeOneObject(http.MaxBytesReader(w, r.Body, maxRequestBytes), into); err != nil {
-		s.writeRefusal(w, refuseInternal(http.StatusBadRequest, "bad_request", publicBadBody, err))
+		s.writeRefusal(w, refuse(http.StatusBadRequest, CodeBadRequest, err))
 		return Peer{}, false
 	}
 	return peer, true
 }
-
-const publicBadBody = "the request body must be exactly one JSON object with known members"
 
 // decodeOneObject decodes a body that is a single JSON object and nothing
 // else: empty, non-object, malformed, unknown-member and trailing content are
@@ -155,7 +146,7 @@ func (s *Server) respond(w http.ResponseWriter) func(*Issued, error) {
 				s.writeRefusal(w, ie)
 				return
 			}
-			s.writeRefusal(w, refuseInternal(http.StatusInternalServerError, "internal", publicInternalMessage, err))
+			s.writeRefusal(w, refuse(http.StatusInternalServerError, CodeInternal, err))
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -164,15 +155,13 @@ func (s *Server) respond(w http.ResponseWriter) func(*Issued, error) {
 }
 
 // writeRefusal sends only the public code and message; the internal cause, if
-// any, goes to the server log.
+// any, goes to the server log with the code.
 func (s *Server) writeRefusal(w http.ResponseWriter, e *IssueError) {
-	if e.detail != nil {
-		logf := s.Logf
-		if logf == nil {
-			logf = func(format string, args ...any) { fmt.Fprintf(os.Stderr, format+"\n", args...) }
-		}
-		logf("identity: refused %s (%d): %v", e.Code, e.Status, e.detail)
+	logf := s.Logf
+	if logf == nil {
+		logf = func(format string, args ...any) { fmt.Fprintf(os.Stderr, format+"\n", args...) }
 	}
+	logf("identity: refused %s (%d): %v", e.Code, e.Status, e.detail)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(e.Status)
 	_ = json.NewEncoder(w).Encode(e)
@@ -184,7 +173,10 @@ func (s *Server) writeRefusal(w http.ResponseWriter, e *IssueError) {
 var listenAfterBind func(privateDir, tempSocket string)
 
 // Listen binds the socket and refuses to start when anything already exists at
-// path, whatever it is. Invariants, for every caller and under any process umask:
+// path, whatever it is. The directory that holds path is a trust root: it and
+// every ancestor must be owned by root or the serving uid and not writable by
+// group or other, and its final component is created when missing. Invariants,
+// for every caller and under any process umask:
 //
 //   - no name bound to the listener is ever connectable by a uid that mode
 //     excludes. The socket is first bound inside a fresh directory created by
@@ -197,21 +189,44 @@ var listenAfterBind func(privateDir, tempSocket string)
 //     removes are the temporary socket and the private directory it created.
 //
 // Cleanup of a leftover socket belongs to the operator or the service manager.
+//
+// bind(2), chmod and link(2) take a path and AF_UNIX has no *at form. The
+// paths used for them are built from the verified directory plus a name this
+// call generated, and no uid but the serving uid and root can alter any
+// component of them; everything else here goes through the directory handle.
 func Listen(path string, mode os.FileMode) (net.Listener, error) {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, err
+	path = filepath.Clean(path)
+	dirPath := filepath.Dir(path)
+	dir, err := openTrustedDir(dirPath, 0o755)
+	if err != nil {
+		return nil, fmt.Errorf("socket directory: %w", err)
 	}
-	private, err := os.MkdirTemp(dir, ".gk-")
+	defer dir.Close()
+	dfd := int(dir.Fd())
+
+	id, err := randomID()
 	if err != nil {
 		return nil, err
 	}
+	privName := ".gk-" + id[:16]
+	if err := syscall.Mkdirat(dfd, privName, 0o700); err != nil {
+		return nil, err
+	}
 	// cleanup removes only the directory this call created and its contents.
-	cleanup := func() { os.RemoveAll(private) }
-	if err := os.Chmod(private, 0o700); err != nil {
+	cleanup := func() { _ = removeAt(dfd, privName) }
+	pfd, err := syscall.Openat(dfd, privName, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	if err != nil {
 		cleanup()
 		return nil, err
 	}
+	// Mkdirat is filtered by the umask; fchmod is not.
+	err = syscall.Fchmod(pfd, 0o700)
+	syscall.Close(pfd)
+	if err != nil {
+		cleanup()
+		return nil, err
+	}
+	private := filepath.Join(dirPath, privName)
 	tmp := filepath.Join(private, "s")
 	l, err := net.ListenUnix("unix", &net.UnixAddr{Name: tmp, Net: "unix"})
 	if err != nil {
@@ -238,7 +253,7 @@ func Listen(path string, mode os.FileMode) (net.Listener, error) {
 	}
 	// The socket is already published with its mode; a leftover private
 	// directory is unreachable to other uids, but report it.
-	if err := os.RemoveAll(private); err != nil {
+	if err := removeAt(dfd, privName); err != nil {
 		fmt.Fprintf(os.Stderr, "identity: could not remove temporary socket directory %s: %v\n", private, err)
 	}
 	return l, nil
@@ -300,10 +315,16 @@ func (s *Server) reapLoop(ctx context.Context) {
 	}
 }
 
-// ParseSocketMode parses an octal permission string such as "0666".
+// DefaultSocketMode is the socket mode when identity.socket_mode is unset: the
+// serving uid only. Who may ask is decided in-process from SO_PEERCRED against
+// the allow-list; the mode is a second layer, and widening it never admits a
+// uid the allow-list excludes.
+const DefaultSocketMode os.FileMode = 0o600
+
+// ParseSocketMode parses an octal permission string such as "0660".
 func ParseSocketMode(s string) (os.FileMode, error) {
 	if s == "" {
-		return 0o666, nil
+		return DefaultSocketMode, nil
 	}
 	n, err := strconv.ParseUint(s, 8, 32)
 	if err != nil || n > 0o777 {

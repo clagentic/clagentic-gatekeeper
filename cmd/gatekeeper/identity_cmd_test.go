@@ -1,3 +1,5 @@
+//go:build linux
+
 package main
 
 import (
@@ -5,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/pem"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -53,6 +56,10 @@ func identityDeployment(t *testing.T) (dir, key, defs string) {
 	return dir, key, defs
 }
 
+// allowSelf is the allow-list line that admits the test process: with none,
+// only the operator uid may ask.
+func allowSelf() string { return fmt.Sprintf("  allowed_uids: [%d]\n", os.Getuid()) }
+
 func writeConfig(t *testing.T, dir, body string) string {
 	t.Helper()
 	p := filepath.Join(dir, "config.yaml")
@@ -96,7 +103,7 @@ func TestIdentityOnlyConfigServesAndMintReportsNotConfigured(t *testing.T) {
 	dir, key, defs := identityDeployment(t)
 	sock := filepath.Join(dir, "id.sock")
 	jwks := filepath.Join(dir, "jwks.json")
-	cfg := writeConfig(t, dir, "identity:\n  key_path: "+key+"\n  jwks_path: "+jwks+"\n  definitions_dir: "+defs+"\n  spawn_root: "+filepath.Join(dir, "spawn")+"\n")
+	cfg := writeConfig(t, dir, "identity:\n  key_path: "+key+"\n  jwks_path: "+jwks+"\n  definitions_dir: "+defs+"\n  spawn_root: "+filepath.Join(dir, "spawn")+"\n"+allowSelf())
 	startServe(t, cfg, sock)
 
 	c := identity.Client{Socket: sock}
@@ -166,7 +173,7 @@ identity:
   key_path: `+key+`
   definitions_dir: `+defs+`
   spawn_root: `+filepath.Join(dir, "spawn")+`
-`)
+`+allowSelf())
 	startServe(t, cfg, sock)
 	if _, err := (identity.Client{Socket: sock}).IssueSession(identity.SessionRequest{}); err != nil {
 		t.Fatal(err)
@@ -198,7 +205,7 @@ func TestServeRefusedAtOccupiedSocketPublishesNoJWKS(t *testing.T) {
 			if err := os.WriteFile(sock, []byte("occupied"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			cfg := writeConfig(t, dir, "identity:\n  key_path: "+key+"\n  jwks_path: "+jwks+"\n  definitions_dir: "+defs+"\n  spawn_root: "+filepath.Join(dir, "spawn")+"\n")
+			cfg := writeConfig(t, dir, "identity:\n  key_path: "+key+"\n  jwks_path: "+jwks+"\n  definitions_dir: "+defs+"\n  spawn_root: "+filepath.Join(dir, "spawn")+"\n"+allowSelf())
 			err := runServe([]string{"--config", cfg, "--socket", sock})
 			if err == nil || !strings.Contains(err.Error(), "already exists") {
 				t.Fatalf("serve at an occupied socket: %v", err)
@@ -214,6 +221,72 @@ func TestServeRefusedAtOccupiedSocketPublishesNoJWKS(t *testing.T) {
 				t.Fatalf("jwks_path changed by a refused serve: %q %v", got, readErr)
 			}
 		})
+	}
+}
+
+// Serve verifies every trust root before it creates or publishes anything, and
+// names the path it refused. Each case makes exactly one root writable by group.
+func TestServeRefusesAtStartWhenATrustRootIsWritableByOthers(t *testing.T) {
+	for _, root := range []string{"definitions_dir", "spawn_root", "socket directory", "jwks_path directory", "key_path directory"} {
+		t.Run(root, func(t *testing.T) {
+			dir, key, defs := identityDeployment(t)
+			sock := filepath.Join(dir, "id.sock")
+			jwks := filepath.Join(dir, "pub", "jwks.json")
+			spawn := filepath.Join(dir, "spawn")
+			keyDir := filepath.Join(dir, "keys")
+			for _, d := range []string{filepath.Dir(jwks), spawn, keyDir} {
+				if err := os.Mkdir(d, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.Rename(key, filepath.Join(keyDir, "key.pem")); err != nil {
+				t.Fatal(err)
+			}
+			key = filepath.Join(keyDir, "key.pem")
+			loose := map[string]string{
+				"definitions_dir": defs, "spawn_root": spawn, "socket directory": dir,
+				"jwks_path directory": filepath.Dir(jwks), "key_path directory": keyDir,
+			}[root]
+			if err := os.Chmod(loose, 0o775); err != nil {
+				t.Fatal(err)
+			}
+			cfg := writeConfig(t, t.TempDir(), "identity:\n  key_path: "+key+"\n  jwks_path: "+jwks+"\n  definitions_dir: "+defs+"\n  spawn_root: "+spawn+"\n"+allowSelf())
+			err := runServe([]string{"--config", cfg, "--socket", sock})
+			if err == nil || !strings.Contains(err.Error(), loose) {
+				t.Fatalf("got %v, want a refusal naming %s", err, loose)
+			}
+			if _, statErr := os.Lstat(sock); statErr == nil {
+				t.Fatalf("a refused start left a socket behind")
+			}
+			if _, statErr := os.Lstat(jwks); statErr == nil {
+				t.Fatalf("a refused start published a key set")
+			}
+		})
+	}
+}
+
+// With no allow-list the operator uid alone may ask, whatever the socket mode.
+func TestServeWithNoAllowListAdmitsOnlyTheOperatorUid(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("an operator uid other than the serving uid needs root or CAP_CHOWN to be served; serve refuses to start without it")
+	}
+	dir, key, defs := identityDeployment(t)
+	sock := filepath.Join(dir, "id.sock")
+	other := os.Getuid() + 1
+	cfg := writeConfig(t, dir, fmt.Sprintf("identity:\n  key_path: %s\n  definitions_dir: %s\n  spawn_root: %s\n  operator_uid: %d\n  operator_name: example-operator\n", key, defs, filepath.Join(dir, "spawn"), other))
+	startServe(t, cfg, sock)
+	_, err := identity.Client{Socket: sock}.IssueSession(identity.SessionRequest{})
+	if ie, ok := identity.IsIssueError(err); !ok || ie.Code != identity.CodePeerNotAllowed {
+		t.Fatalf("a uid that is not the operator and on no list: %v", err)
+	}
+}
+
+func TestServeRefusesAConfigNobodyCouldUse(t *testing.T) {
+	dir, key, defs := identityDeployment(t)
+	cfg := writeConfig(t, dir, "identity:\n  key_path: "+key+"\n  definitions_dir: "+defs+"\n  spawn_root: "+filepath.Join(dir, "spawn")+"\n")
+	err := runServe([]string{"--config", cfg, "--socket", filepath.Join(dir, "id.sock")})
+	if err == nil || !strings.Contains(err.Error(), "nobody may request issuance") {
+		t.Fatalf("got %v", err)
 	}
 }
 

@@ -1,3 +1,5 @@
+//go:build linux
+
 package identity
 
 import (
@@ -102,17 +104,39 @@ func newFixture(t *testing.T, mutate func(*Settings)) *fixture {
 		SocketPath: filepath.Join(tmp, "run", "identity.sock"), KeyPath: writeKey(t, tmp, "key.pem", false),
 		OperatorUID: &operator, OperatorName: "example-operator", OperatorRoles: []string{"reader"},
 		DefinitionsDir: defs, SpawnRoot: filepath.Join(tmp, "spawn"),
+		// The test process is the only peer unless a test widens the list.
+		AllowedUIDs: []uint32{uint32(os.Getuid())},
 	}
 	if mutate != nil {
 		mutate(&s)
+	}
+	// NewIssuer proves it can serve every uid it names, which an unprivileged run
+	// cannot do for an invented operator uid. The operator is therefore applied to
+	// the issuer directly; the start-time probe has its own tests.
+	operatorUID, operatorName := s.OperatorUID, s.OperatorName
+	if operatorUID != nil && int(*operatorUID) != os.Geteuid() {
+		s.OperatorUID = nil
 	}
 	iss, err := NewIssuer(s)
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(iss.Close)
+	iss.OperatorUID, iss.OperatorName = operatorUID, operatorName
 	iss.Now = func() time.Time { return testNow }
 	iss.Proc = fakeProc("/opt/example/example-runtime", 100)
 	return &fixture{issuer: iss, defs: defs, root: s.SpawnRoot, logs: &logSink{}}
+}
+
+// newDefs opens dir as a definitions trust root and closes it with the test.
+func newDefs(t *testing.T, dir string) *Definitions {
+	t.Helper()
+	d, err := NewDefinitions(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { d.Close() })
+	return d
 }
 
 func selfPeer(pid int32) Peer {

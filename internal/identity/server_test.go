@@ -47,14 +47,21 @@ func TestHelperProcess(t *testing.T) {
 	}
 }
 
+// startServer serves with the default socket mode: only the serving uid can
+// connect, which is every test peer here.
 func startServer(t *testing.T, mutate func(*Settings)) (Client, *fixture) {
+	t.Helper()
+	return startServerMode(t, DefaultSocketMode, mutate)
+}
+
+func startServerMode(t *testing.T, mode os.FileMode, mutate func(*Settings)) (Client, *fixture) {
 	t.Helper()
 	f := newFixture(t, mutate)
 	// The socket tests read the real /proc and real SO_PEERCRED.
 	f.issuer.Proc = ReadProc
 	f.issuer.Now = time.Now
 	sock := filepath.Join(shortSocketDir(t), "s.sock")
-	l, err := Listen(sock, 0o666)
+	l, err := Listen(sock, mode)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +159,7 @@ func TestParentInvalidResponseCarriesNoParserText(t *testing.T) {
 	c, f := startServer(t, nil)
 	_, err := c.IssueChild(ChildRequest{ParentToken: "not.a.token", AgentType: "example-builder", AgentID: "a1"})
 	ie, ok := IsIssueError(err)
-	if !ok || ie.Code != "parent_invalid" || ie.Message != publicParentInvalid {
+	if !ok || ie.Code != CodeParentInvalid || ie.Message != publicMessages[CodeParentInvalid] {
 		t.Fatalf("got %v", err)
 	}
 	if !strings.Contains(f.logs.all(), "parent_invalid") {
@@ -167,7 +174,7 @@ func TestUnknownDefinitionResponseDoesNotCarryParseDetail(t *testing.T) {
 	}
 	_, err := c.IssueSession(SessionRequest{Definition: "example-broken"})
 	ie, ok := IsIssueError(err)
-	if !ok || ie.Code != "definition_unknown" || ie.Message != `definition "example-broken" is not available` {
+	if !ok || ie.Code != CodeDefinitionUnknown || ie.Message != publicMessages[CodeDefinitionUnknown] {
 		t.Fatalf("got %v", err)
 	}
 	if !strings.Contains(f.logs.all(), "example-broken") {
@@ -324,6 +331,18 @@ func TestSocketOperatorGetsHuman(t *testing.T) {
 	}
 }
 
+func TestSocketModeDefaultsToTheServingUidOnly(t *testing.T) {
+	if mode, err := ParseSocketMode(""); err != nil || mode != 0o600 {
+		t.Fatalf("default socket mode %v %v", mode, err)
+	}
+	if mode, err := ParseSocketMode("0660"); err != nil || mode != 0o660 {
+		t.Fatalf("explicit socket mode %v %v", mode, err)
+	}
+	if _, err := ParseSocketMode("0o1777"); err == nil {
+		t.Fatal("a non-octal mode was accepted")
+	}
+}
+
 func TestSocketServesJWKS(t *testing.T) {
 	c, f := startServer(t, nil)
 	doc, err := c.FetchJWKS()
@@ -346,7 +365,13 @@ func runHelper(t *testing.T, sock, parentToken string) string {
 // A peer running under a different uid is attested by the kernel, not by
 // anything it says. Needs root to switch uid; skipped otherwise.
 func TestSocketRealOtherUidGetsWorkloadAndOwnDirectory(t *testing.T) {
-	runOtherUidSession(t)
+	runOtherUidSession(t, true)
+}
+
+// The allow-list, not the socket mode, decides who may ask: a uid that can
+// connect (mode 0666) but is on no list is refused by the issuer.
+func TestSocketRealOtherUidOutsideTheAllowListIsRefusedAtMode0666(t *testing.T) {
+	runOtherUidSession(t, false)
 }
 
 // ancestorModes records mode and owner of every directory from dir up to /.
@@ -373,7 +398,7 @@ func TestOtherUidSessionLeavesEveryAncestorModeUnchanged(t *testing.T) {
 		t.Skip("needs root to run a peer under another uid")
 	}
 	before := ancestorModes(t, os.TempDir())
-	runOtherUidSession(t)
+	runOtherUidSession(t, true)
 	after := ancestorModes(t, os.TempDir())
 	for d, want := range before {
 		if after[d] != want {
@@ -387,7 +412,7 @@ func TestOtherUidSessionLeavesEveryAncestorModeUnchanged(t *testing.T) {
 // the helper binary and the socket are reached through a directory descriptor
 // the parent opened and passes down: the helper still does its own connect(),
 // and the kernel records its uid. No path the test did not create is touched.
-func runOtherUidSession(t *testing.T) {
+func runOtherUidSession(t *testing.T, allowed bool) {
 	t.Helper()
 	if os.Geteuid() != 0 {
 		t.Skip("needs root to run a peer under another uid")
@@ -402,7 +427,12 @@ func runOtherUidSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("TMPDIR", private)
-	c, f := startServer(t, nil)
+	// Mode 0666 lets the other uid connect, so the allow-list is what decides.
+	c, f := startServerMode(t, 0o666, func(s *Settings) {
+		if allowed {
+			s.AllowedUIDs = append(s.AllowedUIDs, otherUID)
+		}
+	})
 	shared := filepath.Dir(c.Socket)
 	self, err := os.ReadFile(os.Args[0])
 	if err != nil {
@@ -432,6 +462,15 @@ func runOtherUidSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helper under uid %d could not run or connect through /proc/self/fd/3 (the environment denies exec or connect through a descriptor path): %v; stderr: %s", otherUID, err, stderr.String())
 	}
+	if !allowed {
+		if !strings.Contains(string(out), "session:"+CodePeerNotAllowed) {
+			t.Fatalf("a uid on no list was not refused: %q", out)
+		}
+		if entries, err := os.ReadDir(f.root); err != nil || len(entries) != 0 {
+			t.Fatalf("a refused uid left spawn dirs: %v %v", entries, err)
+		}
+		return
+	}
 	if !strings.Contains(string(out), "session:runtime:helper.test runtime:helper.test") {
 		t.Fatalf("got %q", out)
 	}
@@ -460,7 +499,7 @@ func TestSocketChildSamePidAndOtherPid(t *testing.T) {
 	}
 
 	got := runHelper(t, c.Socket, parent.Token)
-	if !strings.Contains(got, "child:parent_pid_mismatch") || !strings.Contains(got, "was issued to pid") {
+	if !strings.Contains(got, "child:"+CodePIDMismatch) || !strings.Contains(got, publicMessages[CodePIDMismatch]) {
 		t.Fatalf("other pid was not refused with the mismatch: %q", got)
 	}
 	// The process-launcher child can still obtain its own workload session.

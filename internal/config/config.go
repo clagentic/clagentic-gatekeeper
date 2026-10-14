@@ -65,9 +65,10 @@ type IdentityConfig struct {
 	Issuer string `yaml:"issuer,omitempty"`
 	// SocketPath is the unix socket serve listens on (flag --socket wins).
 	SocketPath string `yaml:"socket_path,omitempty" abspath:"true"`
-	// SocketMode is the octal permission of the socket, default "0666": any
-	// local uid may ask, and the kernel-attested peer credentials decide what
-	// it gets.
+	// SocketMode is the octal permission of the socket, default "0600": the
+	// serving uid only. It is a second layer behind the in-process allow-list
+	// (OperatorUID, AllowedUIDs, AllowedGIDs), which decides who may ask; a
+	// wider mode lets more uids connect and never admits one the list excludes.
 	SocketMode string `yaml:"socket_mode,omitempty"`
 	// KeyPath is the signing key: a PKCS#8 PEM, Ed25519 or P-256, mode 0600
 	// and owned by the serving uid. Required to serve.
@@ -82,6 +83,11 @@ type IdentityConfig struct {
 	// OperatorName is the name in `human:<name>`; defaults to the account name
 	// of OperatorUID.
 	OperatorName string `yaml:"operator_name,omitempty"`
+	// AllowedUIDs and AllowedGIDs name who else may request issuance, checked
+	// in-process against the SO_PEERCRED uid and primary gid. Absent means the
+	// operator uid only. A permitted uid may name any definition.
+	AllowedUIDs []uint32 `yaml:"allowed_uids,omitempty"`
+	AllowedGIDs []uint32 `yaml:"allowed_gids,omitempty"`
 	// OperatorRoles is the role ceiling of a human session that names no
 	// definition. RuntimeRoles is the same for a runtime session with none; it
 	// is one list for all runtime sessions, never keyed by the argv-derived
@@ -89,7 +95,8 @@ type IdentityConfig struct {
 	OperatorRoles []string `yaml:"operator_roles,omitempty"`
 	RuntimeRoles  []string `yaml:"runtime_roles,omitempty"`
 	// DefinitionsDir holds one <name>.md per agent definition (YAML
-	// frontmatter keys name, roles, trust_boundary).
+	// frontmatter keys name, roles, trust_boundary; trust_boundary is parsed
+	// and not yet enforced).
 	DefinitionsDir string `yaml:"definitions_dir,omitempty" abspath:"true"`
 	// DelegableRoles narrows what issue-child may hand a child. Absent means
 	// every role is delegable; an explicit empty list means none is.

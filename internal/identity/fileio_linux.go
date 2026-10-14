@@ -5,22 +5,26 @@ package identity
 import (
 	"fmt"
 	"os"
-	"path/filepath"
+	"strings"
 	"syscall"
 )
 
-// openRegular opens path for reading and returns the open file with the
-// result of fstat on that same descriptor. It never blocks and never follows
-// a link: O_NONBLOCK stops a FIFO from holding the open, O_NOFOLLOW refuses a
-// symlink in the final component, and anything that is not a regular file is
-// refused after the fstat. Callers validate and read through the returned
-// file, so what they check is what they read.
-func openRegular(path string) (*os.File, os.FileInfo, error) {
-	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
-	if err != nil {
-		return nil, nil, &os.PathError{Op: "open", Path: path, Err: err}
+// openRegularAt opens the plain file name inside dir for reading and returns
+// the open file with the result of fstat on that same descriptor. It never
+// blocks and never follows a link: O_NONBLOCK stops a FIFO from holding the
+// open, O_NOFOLLOW refuses a symlink, and anything that is not a regular file
+// is refused after the fstat. name must be a single path component. Callers
+// validate and read through the returned file, so what they check is what they
+// read.
+func openRegularAt(dir *os.File, name string) (*os.File, os.FileInfo, error) {
+	if name == "" || strings.ContainsRune(name, '/') {
+		return nil, nil, fmt.Errorf("%q is not a single file name", name)
 	}
-	f := os.NewFile(uintptr(fd), filepath.Base(path))
+	fd, err := syscall.Openat(int(dir.Fd()), name, syscall.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, nil, &os.PathError{Op: "open", Path: name, Err: err}
+	}
+	f := os.NewFile(uintptr(fd), name)
 	fi, err := f.Stat()
 	if err != nil {
 		f.Close()
@@ -28,7 +32,7 @@ func openRegular(path string) (*os.File, os.FileInfo, error) {
 	}
 	if !fi.Mode().IsRegular() {
 		f.Close()
-		return nil, nil, fmt.Errorf("%s is not a regular file", path)
+		return nil, nil, fmt.Errorf("%s is not a regular file", name)
 	}
 	return f, fi, nil
 }
@@ -40,4 +44,18 @@ func ownerUID(fi os.FileInfo) (uint32, bool) {
 		return 0, false
 	}
 	return st.Uid, true
+}
+
+// checkTrustedFile fails unless the file is owned by root or the serving uid
+// and is not writable by group or other: a definition anyone else can edit
+// would let them choose the roles it grants.
+func checkTrustedFile(name string, fi os.FileInfo) error {
+	uid, ok := ownerUID(fi)
+	if !ok || !trustedOwner(uid) {
+		return fmt.Errorf("%s is not owned by root or the serving uid", name)
+	}
+	if fi.Mode().Perm()&0o022 != 0 {
+		return fmt.Errorf("%s is writable by group or other (mode %#o)", name, fi.Mode().Perm())
+	}
+	return nil
 }

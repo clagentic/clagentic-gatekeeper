@@ -62,7 +62,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "commands:")
 	fmt.Fprintln(os.Stderr, "  mint --role <role> [--repo <owner/name>] [--config <path>] [--json]")
 	fmt.Fprintln(os.Stderr, "  mint-a2a --audience <audience> [--config <path>] [--json]")
-	fmt.Fprintln(os.Stderr, "  serve [--socket <path>] [--config <path>]")
+	fmt.Fprintln(os.Stderr, "  serve [--socket <path>] [--config <path>]   (linux only)")
 	fmt.Fprintln(os.Stderr, "  issue-session [--socket <path>] [--definition <name>] [--origin <origin>] [--runtime] [--runtime-id <id>] [--runtime-version <v>] [--json]")
 	fmt.Fprintln(os.Stderr, "  issue-child [--socket <path>] [--parent-token-file <path>] --agent-type <name> --agent-id <id> [--json]")
 	fmt.Fprintln(os.Stderr, "  version")

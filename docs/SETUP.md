@@ -553,17 +553,84 @@ The socket also answers `GET /.well-known/jwks.json` (HTTP/1.1), so a
 verifier trusting `iss = unix:///path/to/socket` finds the keys with no extra
 configuration.
 
-The socket is created with `identity.socket_mode` (default `0666`, so any local
-uid may ask and the kernel-attested peer credentials decide what it gets). The
-path never exists with another mode: `serve` binds a private temporary name in
-the same directory, sets the mode there, and only then links it to the socket
-path.
+`serve` runs on linux only (it needs `SO_PEERCRED` and `/proc`). On other
+platforms the module still builds, the client commands (`issue-session`,
+`issue-child`) and `mint` work, and `serve` reports that it is linux-only.
+
+Who may ask is decided in-process: see "Who may ask" below. The socket is
+created with `identity.socket_mode`, default `0600` (the serving uid only),
+which is a second layer behind that check: widening it lets more uids connect
+and never admits one the allow-list excludes. The path never exists with another
+mode: `serve` binds a private temporary name in the same directory, sets the
+mode there, and only then links it to the socket path.
 
 `serve` refuses to start when anything exists at the socket path (a socket, a
 file, a directory, a link) and names it. It never removes or replaces any path,
 including its own socket on shutdown: telling a stale socket from one a live
 server is about to use cannot be done without racing that server. Remove a
 leftover socket by hand, or have whatever starts `serve` clear it first.
+
+### Who may ask
+
+The `SO_PEERCRED` uid and primary gid of each connection are checked in-process
+against an explicit allow-list before anything is issued:
+
+- `identity.operator_uid` may always ask.
+- `identity.allowed_uids` and `identity.allowed_gids` admit further uids and
+  gids. A peer matches when its uid is in the first list or its primary gid is
+  in the second; supplementary groups are not consulted.
+- With no list and no operator, `serve` refuses to start. With no list, the
+  operator uid alone may ask.
+- A refused peer receives `peer_not_allowed` and nothing is created for it.
+
+Normatively, this check, not file permissions, is the access boundary. Socket
+mode, the socket directory and its ancestors are defense in depth only; a
+deployment must not rely on them to exclude a uid.
+
+A permitted uid may name any definition: a definition's roles are a ceiling,
+not a grant, and a consumer's own entitlement still decides what is granted.
+Per-definition authorization (limiting which uids may name which definition)
+is not implemented. Each definition's `trust_boundary` key is parsed and
+carried but **not yet enforced**: no decision reads it. Enforcing it as a
+per-definition allow-list is tracked as follow-up work.
+
+### Trust roots
+
+`serve` acts on, and decides from, only filesystem state that no uid other than
+the serving uid and root can write. At start it verifies each trust root and
+refuses to start, naming the path, when any check fails:
+
+- the signing key's directory, `identity.definitions_dir`, `identity.spawn_root`,
+  the socket's directory and the directory of `identity.jwks_path`;
+- each must be owned by root or the serving uid, and neither it nor any
+  ancestor may be writable by group or other. An ancestor with the sticky bit
+  (a shared temporary directory) is accepted; the root itself never is;
+- every regular `*.md` file in `identity.definitions_dir` must likewise be owned
+  by root or the serving uid and not writable by group or other, because
+  whoever can edit a definition chooses the roles it grants (a definition that
+  changes after start is re-checked when it is loaded);
+- a path with a symbolic link anywhere on it is refused: configure the real path;
+- only the final component of the spawn root and of the socket directory is
+  created when missing; any other missing directory is an error.
+
+Everything `serve` later reads, writes, chmods, chowns or removes is reached
+through a handle opened from a verified directory. Stale delivery directories
+are aged by the creation time `serve` encoded in each directory's name, never
+by the metadata of a directory its peer owns, and are removed relative to the
+spawn root handle opened at start. Because that removal must work on trees the
+peer owns, `serve` proves at start (with a probe tree holding a nested
+mode-0000 directory) that it can remove trees owned by every uid and gid it
+will hand directories to, and otherwise refuses to start.
+
+### Public errors
+
+Every refusal carries a stable `error` code and one constant message per code.
+No message includes a uid, pid, path, name the client sent, or parser text; the
+detail goes to the server log only. The codes are `bad_request`,
+`peer_unattested`, `peer_not_allowed`, `runtime_mismatch`, `origin_forbidden`,
+`definition_unknown`, `parent_invalid`, `parent_expired`, `parent_unknown`,
+`uid_mismatch`, `parent_pid_mismatch`, `lifetime_empty`, `spawn_dir` and
+`internal`.
 
 ### Who gets what
 
@@ -587,8 +654,10 @@ leftover socket by hand, or have whatever starts `serve` clear it first.
 - Every assertion gets its own delivery directory under `identity.spawn_root`
   (mode 0700, handed to the peer uid, with `identity.jwt` and `tmp/`), and the
   `dir` claim is bound to it. Serving a uid other than its own needs root or
-  `CAP_CHOWN`, and reading `/proc/<pid>/exe` of another uid needs ptrace
-  access, so run the service as root or with those capabilities.
+  `CAP_CHOWN` plus the ability to remove trees that uid owns (`CAP_DAC_OVERRIDE`
+  and `CAP_FOWNER`), and reading `/proc/<pid>/exe` of another uid needs ptrace
+  access, so run the service as root or with those capabilities. `serve` checks
+  the first two at start.
 
 **The runtime id is self-asserted attribution within the peer uid.** It is
 derived from the peer's executable and command line, and any process can set
@@ -618,12 +687,7 @@ granted. Accepted residual: a pid reused before the first `/proc` read can make
 the derived runtime id describe the wrong process. That affects attribution
 only, never roles, grade or ownership, because those do not read `/proc`.
 
-Any local uid able to open the socket may ask for a definition's roles; roles
-are a ceiling and a consumer's own entitlement still decides what is granted.
-This is a known limit of the design, accepted deliberately: the definition is
-the ceiling and `identity.socket_mode` is the access boundary. Narrow
-`identity.socket_mode`, or the socket directory, to restrict who may ask at
-all. An operator-uid peer that names a definition receives subject
+An operator-uid peer that names a definition receives subject
 `human:<operator_name>` with `act.sub = agent:<definition>` (RFC 8693 actor
 semantics).
 
