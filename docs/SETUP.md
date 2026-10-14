@@ -554,6 +554,12 @@ The socket also answers `GET /.well-known/jwks.json` (HTTP/1.1), so a
 verifier trusting `iss = unix:///path/to/socket` finds the keys with no extra
 configuration.
 
+At start, `serve` replaces a leftover socket file only when it is a socket
+owned by the serving uid and a connection attempt is refused outright
+(`ECONNREFUSED`). If the probe times out, or the file is owned by another uid,
+`serve` refuses to start and names the path: a live but paused server must not
+lose its socket to a second issuer.
+
 ### Who gets what
 
 - Peer uid equals `identity.operator_uid` and no runtime session is declared:

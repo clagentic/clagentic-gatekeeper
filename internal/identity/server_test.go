@@ -2,6 +2,7 @@ package identity
 
 import (
 	"context"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -117,6 +118,97 @@ func TestUnknownDefinitionResponseDoesNotCarryParseDetail(t *testing.T) {
 	}
 	if !strings.Contains(f.logs.all(), "example-broken") {
 		t.Fatalf("definition failure not logged: %q", f.logs.all())
+	}
+}
+
+func shortSocketDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "gk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	if len(filepath.Join(dir, "s.sock")) >= 108 {
+		t.Fatalf("socket directory %q is too long for sun_path; point TMPDIR at a shorter directory", dir)
+	}
+	return dir
+}
+
+// leaveStaleSocket binds a socket and closes it without unlinking, the state a
+// crashed server leaves behind.
+func leaveStaleSocket(t *testing.T, path string) {
+	t.Helper()
+	l, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.SetUnlinkOnClose(false)
+	if err := l.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestListenReplacesASocketNobodyListensOn(t *testing.T) {
+	path := filepath.Join(shortSocketDir(t), "s.sock")
+	leaveStaleSocket(t, path)
+	l, err := Listen(path, 0o600)
+	if err != nil {
+		t.Fatalf("a refused, owned, stale socket was not replaced: %v", err)
+	}
+	l.Close()
+}
+
+func TestListenRefusesALiveServer(t *testing.T) {
+	path := filepath.Join(shortSocketDir(t), "s.sock")
+	first, err := Listen(path, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	if _, err := Listen(path, 0o600); err == nil || !strings.Contains(err.Error(), path) {
+		t.Fatalf("second listener on a live socket: %v", err)
+	}
+}
+
+func TestListenKeepsASocketWhoseProbeIsInconclusive(t *testing.T) {
+	path := filepath.Join(shortSocketDir(t), "s.sock")
+	leaveStaleSocket(t, path)
+	real := probeSocket
+	probeSocket = func(string) error { return os.ErrDeadlineExceeded }
+	t.Cleanup(func() { probeSocket = real })
+	_, err := Listen(path, 0o600)
+	if err == nil || !strings.Contains(err.Error(), path) {
+		t.Fatalf("an inconclusive probe did not refuse, naming the path: %v", err)
+	}
+	if _, serr := os.Lstat(path); serr != nil {
+		t.Fatalf("the socket path was unlinked on an inconclusive probe: %v", serr)
+	}
+}
+
+func TestListenRefusesASocketOwnedByAnotherUid(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("needs root to hand a socket file to another uid")
+	}
+	path := filepath.Join(shortSocketDir(t), "s.sock")
+	leaveStaleSocket(t, path)
+	if err := os.Lchown(path, 65534, 65534); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Listen(path, 0o600); err == nil || !strings.Contains(err.Error(), path) {
+		t.Fatalf("a socket owned by another uid was replaced: %v", err)
+	}
+	if _, serr := os.Lstat(path); serr != nil {
+		t.Fatalf("the socket path was unlinked: %v", serr)
+	}
+}
+
+func TestListenRefusesANonSocketPath(t *testing.T) {
+	path := filepath.Join(shortSocketDir(t), "s.sock")
+	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Listen(path, 0o600); err == nil {
+		t.Fatal("a regular file was replaced by a socket")
 	}
 }
 

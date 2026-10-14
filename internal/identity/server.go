@@ -6,11 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
+	"syscall"
 	"time"
 )
 
@@ -154,19 +156,44 @@ func (s *Server) writeRefusal(w http.ResponseWriter, e *IssueError) {
 	_ = json.NewEncoder(w).Encode(e)
 }
 
-// Listen binds the socket. A leftover socket file from a dead server is
-// replaced; a live one is an error.
+// probeSocket tries to connect to path. It is a variable so a test can produce
+// outcomes (a timeout from a backlogged server) a filesystem cannot on demand.
+var probeSocket = func(path string) error {
+	c, err := net.DialTimeout("unix", path, time.Second)
+	if err == nil {
+		c.Close()
+	}
+	return err
+}
+
+// Listen binds the socket. A leftover socket file is replaced only when it is
+// provably stale: a socket owned by the serving uid whose probe is refused
+// outright (ECONNREFUSED, nothing is listening). A probe that merely failed,
+// such as a timeout from a live but paused or backlogged server, proves
+// nothing, and unlinking then would let a second issuer bind the path, so
+// Listen refuses and names the path.
 func Listen(path string, mode os.FileMode) (net.Listener, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
-	if fi, err := os.Lstat(path); err == nil {
+	fi, err := os.Lstat(path)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+	case err != nil:
+		return nil, fmt.Errorf("inspect %s: %w", path, err)
+	default:
 		if fi.Mode()&os.ModeSocket == 0 {
 			return nil, fmt.Errorf("%s exists and is not a socket", path)
 		}
-		if c, err := net.DialTimeout("unix", path, time.Second); err == nil {
-			c.Close()
+		if st, ok := fi.Sys().(*syscall.Stat_t); !ok || int(st.Uid) != os.Geteuid() {
+			return nil, fmt.Errorf("%s exists and is not owned by the serving uid; remove it by hand if it is stale", path)
+		}
+		perr := probeSocket(path)
+		if perr == nil {
 			return nil, fmt.Errorf("another server is already listening on %s", path)
+		}
+		if !errors.Is(perr, syscall.ECONNREFUSED) {
+			return nil, fmt.Errorf("cannot tell whether a server is listening on %s (%v); remove the file by hand if it is stale", path, perr)
 		}
 		if err := os.Remove(path); err != nil {
 			return nil, err
