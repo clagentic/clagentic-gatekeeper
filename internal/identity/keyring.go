@@ -6,7 +6,6 @@
 package identity
 
 import (
-	"crypto"
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
@@ -139,6 +138,9 @@ func readPEM(path, wantType string) ([]byte, error) {
 	return block.Bytes, nil
 }
 
+// loadRetired reads a retired key. Only the public half is accepted: a retired
+// key is trusted for verification alone, so a private key here would be a
+// secret kept alive (and unchecked for ownership and mode) for no purpose.
 func loadRetired(path string) (publicKey, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -148,25 +150,15 @@ func loadRetired(path string) (publicKey, error) {
 	if block == nil {
 		return publicKey{}, errors.New("no PEM block")
 	}
-	var pub any
-	switch block.Type {
-	case "PRIVATE KEY":
-		priv, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-		if err != nil {
-			return publicKey{}, err
-		}
-		signer, ok := priv.(crypto.Signer)
-		if !ok {
-			return publicKey{}, fmt.Errorf("unsupported key type %T", priv)
-		}
-		pub = signer.Public()
-	case "PUBLIC KEY":
-		pub, err = x509.ParsePKIXPublicKey(block.Bytes)
-		if err != nil {
-			return publicKey{}, err
-		}
-	default:
-		return publicKey{}, fmt.Errorf("unsupported PEM type %q", block.Type)
+	if strings.HasSuffix(block.Type, "PRIVATE KEY") {
+		return publicKey{}, errors.New("contains a private key; retired_keys accept PKIX public keys only (extract the public half, e.g. openssl pkey -pubout, and remove the private copy)")
+	}
+	if block.Type != "PUBLIC KEY" {
+		return publicKey{}, fmt.Errorf("unsupported PEM type %q; want PUBLIC KEY", block.Type)
+	}
+	pub, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		return publicKey{}, err
 	}
 	switch k := pub.(type) {
 	case ed25519.PublicKey:

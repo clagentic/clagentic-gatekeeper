@@ -21,7 +21,7 @@ func TestRotationKeepsOldKidVerifiable(t *testing.T) {
 	oldKid := oldRing.Kid()
 
 	// Rotation: a new current key, the old one listed as retired.
-	newRing, err := LoadKeyring(writeKey(t, dir, "new.pem", true), "ES256", []string{oldPath})
+	newRing, err := LoadKeyring(writeKey(t, dir, "new.pem", true), "ES256", []string{writePublicOf(t, oldPath, dir, "old.pub")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,6 +53,22 @@ func TestMissingRetiredKeyRefuses(t *testing.T) {
 	dir := t.TempDir()
 	if _, err := LoadKeyring(writeKey(t, dir, "k.pem", false), "", []string{filepath.Join(dir, "missing.pem")}); err == nil {
 		t.Fatal("missing retired key accepted")
+	}
+}
+
+func TestPrivateKeyInRetiredKeysRefusesNamingTheFile(t *testing.T) {
+	dir := t.TempDir()
+	retiredPrivate := writeKey(t, dir, "retired-private.pem", false)
+	_, err := LoadKeyring(writeKey(t, dir, "k.pem", false), "", []string{retiredPrivate})
+	if err == nil || !strings.Contains(err.Error(), retiredPrivate) || !strings.Contains(err.Error(), "private key") {
+		t.Fatalf("private retired key was not refused by file: %v", err)
+	}
+	// A world-readable private copy is the case the missing mode check allowed.
+	if err := os.Chmod(retiredPrivate, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadKeyring(writeKey(t, dir, "k2.pem", false), "", []string{retiredPrivate}); err == nil {
+		t.Fatal("world-readable private retired key accepted")
 	}
 }
 

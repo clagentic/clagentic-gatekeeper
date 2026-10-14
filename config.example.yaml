@@ -319,7 +319,8 @@ roles:
 #   # The published key set is written here at start and served on the socket.
 #   jwks_path: /var/lib/gatekeeper/jwks.json
 #   # After a rotation, list the former key(s) here until every assertion they
-#   # signed has expired (at most 12 hours). PKCS#8 private or PKIX public PEM.
+#   # signed has expired (at most 12 hours). PKIX PUBLIC key PEM only; a private
+#   # key here is refused at load (openssl pkey -in old.pem -pubout -out old.pub).
 #   retired_keys: []
 #   # iss claim. Default: unix://<socket path>.
 #   issuer: unix:///run/clagentic-gatekeeper/identity.sock

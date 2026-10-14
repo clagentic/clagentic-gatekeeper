@@ -588,10 +588,19 @@ openssl genpkey -algorithm ed25519 -out identity-key.pem
 chmod 0600 identity-key.pem
 ```
 
-To rotate, generate a new key, point `identity.key_path` at it, list the old
-file under `identity.retired_keys`, and restart. The old `kid` stays in the
-published JWKS so assertions it signed keep verifying until they expire; remove
-it from `retired_keys` after 12 hours (the maximum lifetime).
+To rotate, generate a new key, point `identity.key_path` at it, extract the old
+key's public half, list that file under `identity.retired_keys`, and restart:
+
+```bash
+openssl pkey -in old-identity-key.pem -pubout -out old-identity-key.pub
+```
+
+`retired_keys` accepts PKIX **public** keys only. Retirement needs nothing but
+the public half, so a PKCS#8 private key listed there makes `serve` refuse to
+start and name the file; delete the private copy once the public half is
+extracted. The old `kid` stays in the published JWKS so assertions it signed
+keep verifying until they expire; remove it from `retired_keys` after 12 hours
+(the maximum lifetime).
 
 ### Issuer-only and combined configs
 
