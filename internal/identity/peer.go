@@ -31,27 +31,65 @@ type ProcInfo struct {
 // ProcReader reads ProcInfo for a pid; the default reads /proc.
 type ProcReader func(pid int32) (ProcInfo, error)
 
+// procFiles is the part of /proc ReadProc touches, so a test can make a
+// process change or vanish between two reads.
+type procFiles interface {
+	readlink(pid int32, name string) (string, error)
+	readFile(pid int32, name string) ([]byte, error)
+}
+
+type realProc struct{}
+
+func (realProc) path(pid int32, name string) string {
+	return filepath.Join("/proc", strconv.Itoa(int(pid)), name)
+}
+
+func (r realProc) readlink(pid int32, name string) (string, error) {
+	return os.Readlink(r.path(pid, name))
+}
+
+func (r realProc) readFile(pid int32, name string) ([]byte, error) {
+	return os.ReadFile(r.path(pid, name))
+}
+
 // ReadProc is the /proc based ProcReader.
-func ReadProc(pid int32) (ProcInfo, error) {
-	base := filepath.Join("/proc", strconv.Itoa(int(pid)))
-	exe, err := os.Readlink(filepath.Join(base, "exe"))
-	if err != nil {
-		return ProcInfo{}, fmt.Errorf("read exe of pid %d (the issuer needs ptrace access to peers of other uids): %w", pid, err)
-	}
-	cmdline, err := os.ReadFile(filepath.Join(base, "cmdline"))
-	if err != nil {
-		return ProcInfo{}, fmt.Errorf("read cmdline of pid %d: %w", pid, err)
-	}
-	stat, err := os.ReadFile(filepath.Join(base, "stat"))
-	if err != nil {
-		return ProcInfo{}, fmt.Errorf("read stat of pid %d: %w", pid, err)
-	}
-	start, err := parseStartTime(string(stat))
+func ReadProc(pid int32) (ProcInfo, error) { return readProcFrom(realProc{}, pid) }
+
+// readProcFrom reads the start time before and after exe and cmdline. The
+// separate /proc reads are not atomic, so a peer that exits mid-read and whose
+// pid is reused would otherwise yield an exe from one process and a start time
+// from another; the same start time on both sides proves one process answered
+// every read, and a vanished pid fails a read outright.
+func readProcFrom(fs procFiles, pid int32) (ProcInfo, error) {
+	before, err := startTimeOf(fs, pid)
 	if err != nil {
 		return ProcInfo{}, err
 	}
+	exe, err := fs.readlink(pid, "exe")
+	if err != nil {
+		return ProcInfo{}, fmt.Errorf("read exe of pid %d (the issuer needs ptrace access to peers of other uids): %w", pid, err)
+	}
+	cmdline, err := fs.readFile(pid, "cmdline")
+	if err != nil {
+		return ProcInfo{}, fmt.Errorf("read cmdline of pid %d: %w", pid, err)
+	}
+	after, err := startTimeOf(fs, pid)
+	if err != nil {
+		return ProcInfo{}, err
+	}
+	if before != after {
+		return ProcInfo{}, fmt.Errorf("pid %d changed process while it was being read (start time %d then %d)", pid, before, after)
+	}
 	args := strings.Split(strings.TrimRight(string(cmdline), "\x00"), "\x00")
-	return ProcInfo{Exe: strings.TrimSuffix(exe, " (deleted)"), Args: args, StartTime: start}, nil
+	return ProcInfo{Exe: strings.TrimSuffix(exe, " (deleted)"), Args: args, StartTime: before}, nil
+}
+
+func startTimeOf(fs procFiles, pid int32) (uint64, error) {
+	stat, err := fs.readFile(pid, "stat")
+	if err != nil {
+		return 0, fmt.Errorf("read stat of pid %d: %w", pid, err)
+	}
+	return parseStartTime(string(stat))
 }
 
 // parseStartTime extracts field 22 of /proc/<pid>/stat. The command name is

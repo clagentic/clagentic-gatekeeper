@@ -2,6 +2,7 @@ package identity
 
 import (
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -32,6 +33,67 @@ func TestParseStartTimeSurvivesParenthesesInName(t *testing.T) {
 	got, err := parseStartTime(stat)
 	if err != nil || got != 7777 {
 		t.Fatalf("got %d %v", got, err)
+	}
+}
+
+// scriptedProc answers each stat read from a list, so a test can make the
+// start time change, or the pid vanish, between the two reads.
+type scriptedProc struct {
+	stats    []string
+	statErrs []error
+	reads    int
+}
+
+func (s *scriptedProc) readlink(int32, string) (string, error) { return "/opt/example/runtime", nil }
+
+func (s *scriptedProc) readFile(_ int32, name string) ([]byte, error) {
+	if name == "cmdline" {
+		return []byte("runtime\x00"), nil
+	}
+	i := s.reads
+	s.reads++
+	if i < len(s.statErrs) && s.statErrs[i] != nil {
+		return nil, s.statErrs[i]
+	}
+	return []byte(s.stats[i]), nil
+}
+
+func statWithStart(start string) string {
+	return "9 (runtime) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 " + start + " 23 24"
+}
+
+func TestReadProcRefusesWhenStartTimeChangesBetweenReads(t *testing.T) {
+	fs := &scriptedProc{stats: []string{statWithStart("100"), statWithStart("200")}}
+	if _, err := readProcFrom(fs, 9); err == nil || !strings.Contains(err.Error(), "changed process") {
+		t.Fatalf("pid reuse mid-read accepted: %v", err)
+	}
+}
+
+func TestReadProcRefusesWhenPidVanishesBetweenReads(t *testing.T) {
+	fs := &scriptedProc{stats: []string{statWithStart("100"), ""}, statErrs: []error{nil, os.ErrNotExist}}
+	if _, err := readProcFrom(fs, 9); err == nil {
+		t.Fatal("a pid that vanished mid-read was accepted")
+	}
+}
+
+func TestReadProcReturnsStableStartTime(t *testing.T) {
+	fs := &scriptedProc{stats: []string{statWithStart("100"), statWithStart("100")}}
+	info, err := readProcFrom(fs, 9)
+	if err != nil || info.StartTime != 100 || info.Exe != "/opt/example/runtime" {
+		t.Fatalf("%+v %v", info, err)
+	}
+}
+
+func TestIssuedAssertionIsBoundToPeerStartTime(t *testing.T) {
+	f := newFixture(t, nil)
+	out, _ := mustSession(t, f, selfPeer(10), SessionRequest{})
+	claims, err := f.issuer.Keys.ParseOwn(out.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bound, ok := f.issuer.Registry.get(claims.Jti)
+	if !ok || bound.pid != 10 || bound.startTime != 100 {
+		t.Fatalf("registry entry %+v ok=%v", bound, ok)
 	}
 }
 
