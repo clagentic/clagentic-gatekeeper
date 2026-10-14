@@ -343,6 +343,23 @@ func TestSocketModeDefaultsToTheServingUidOnly(t *testing.T) {
 	}
 }
 
+// The listener reports the path clients connect to, not the temporary name the
+// socket was bound under.
+func TestListenReportsThePublishedPathAsItsAddress(t *testing.T) {
+	sock := filepath.Join(shortSocketDir(t), "s.sock")
+	l, err := Listen(sock, DefaultSocketMode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	if got := l.Addr().String(); got != sock {
+		t.Fatalf("Addr %q, want %q", got, sock)
+	}
+	if l.Addr().Network() != "unix" {
+		t.Fatalf("network %q", l.Addr().Network())
+	}
+}
+
 func TestSocketServesJWKS(t *testing.T) {
 	c, f := startServer(t, nil)
 	doc, err := c.FetchJWKS()
@@ -362,16 +379,12 @@ func runHelper(t *testing.T, sock, parentToken string) string {
 	return string(out)
 }
 
-// A peer running under a different uid is attested by the kernel, not by
-// anything it says. Needs root to switch uid; skipped otherwise.
-func TestSocketRealOtherUidGetsWorkloadAndOwnDirectory(t *testing.T) {
-	runOtherUidSession(t, true)
-}
-
-// The allow-list, not the socket mode, decides who may ask: a uid that can
-// connect (mode 0666) but is on no list is refused by the issuer.
-func TestSocketRealOtherUidOutsideTheAllowListIsRefusedAtMode0666(t *testing.T) {
-	runOtherUidSession(t, false)
+// The peer uid, not the socket mode, decides who is served: a different uid that
+// can connect (mode 0666) is refused with the constant message and nothing is
+// created for it. The uid is attested by the kernel, not by anything the peer
+// says. Needs root to switch uid; skipped otherwise.
+func TestSocketRealOtherUidIsRefusedAtMode0666(t *testing.T) {
+	runOtherUidSession(t)
 }
 
 // ancestorModes records mode and owner of every directory from dir up to /.
@@ -398,7 +411,7 @@ func TestOtherUidSessionLeavesEveryAncestorModeUnchanged(t *testing.T) {
 		t.Skip("needs root to run a peer under another uid")
 	}
 	before := ancestorModes(t, os.TempDir())
-	runOtherUidSession(t, true)
+	runOtherUidSession(t)
 	after := ancestorModes(t, os.TempDir())
 	for d, want := range before {
 		if after[d] != want {
@@ -412,7 +425,7 @@ func TestOtherUidSessionLeavesEveryAncestorModeUnchanged(t *testing.T) {
 // the helper binary and the socket are reached through a directory descriptor
 // the parent opened and passes down: the helper still does its own connect(),
 // and the kernel records its uid. No path the test did not create is touched.
-func runOtherUidSession(t *testing.T, allowed bool) {
+func runOtherUidSession(t *testing.T) {
 	t.Helper()
 	if os.Geteuid() != 0 {
 		t.Skip("needs root to run a peer under another uid")
@@ -427,12 +440,8 @@ func runOtherUidSession(t *testing.T, allowed bool) {
 		t.Fatal(err)
 	}
 	t.Setenv("TMPDIR", private)
-	// Mode 0666 lets the other uid connect, so the allow-list is what decides.
-	c, f := startServerMode(t, 0o666, func(s *Settings) {
-		if allowed {
-			s.AllowedUIDs = append(s.AllowedUIDs, otherUID)
-		}
-	})
+	// Mode 0666 lets the other uid connect, so the peer uid check is what decides.
+	c, f := startServerMode(t, 0o666, nil)
 	shared := filepath.Dir(c.Socket)
 	self, err := os.ReadFile(os.Args[0])
 	if err != nil {
@@ -462,28 +471,11 @@ func runOtherUidSession(t *testing.T, allowed bool) {
 	if err != nil {
 		t.Fatalf("helper under uid %d could not run or connect through /proc/self/fd/3 (the environment denies exec or connect through a descriptor path): %v; stderr: %s", otherUID, err, stderr.String())
 	}
-	if !allowed {
-		if !strings.Contains(string(out), "session:"+CodePeerNotAllowed) {
-			t.Fatalf("a uid on no list was not refused: %q", out)
-		}
-		if entries, err := os.ReadDir(f.root); err != nil || len(entries) != 0 {
-			t.Fatalf("a refused uid left spawn dirs: %v %v", entries, err)
-		}
-		return
+	if !strings.Contains(string(out), "session:"+CodePeerUIDRefused) {
+		t.Fatalf("a different uid was not refused: %q", out)
 	}
-	if !strings.Contains(string(out), "session:runtime:helper.test runtime:helper.test") {
-		t.Fatalf("got %q", out)
-	}
-	entries, err := os.ReadDir(f.root)
-	if err != nil || len(entries) != 1 {
-		t.Fatalf("spawn dirs: %v %v", entries, err)
-	}
-	fi, err := os.Stat(filepath.Join(f.root, entries[0].Name()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if uid, _ := ownerUID(fi); uid != otherUID || fi.Mode().Perm() != 0o700 {
-		t.Fatalf("spawn dir owner %d mode %v", uid, fi.Mode().Perm())
+	if entries, err := os.ReadDir(f.root); err != nil || len(entries) != 0 {
+		t.Fatalf("a refused uid left spawn dirs: %v %v", entries, err)
 	}
 }
 

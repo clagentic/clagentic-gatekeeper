@@ -72,14 +72,11 @@ func TestIssuedAssertionsPassConformance(t *testing.T) {
 		defer iss.Close()
 		pid := int32(os.Getpid())
 		peer := identity.Peer{UID: operator, GID: uint32(os.Getgid()), PID: pid}
-		// A non-operator peer is modelled by a second issuer with no operator, not
-		// by a peer under another uid: handing a spawn directory to a foreign uid
-		// needs root, which CI does not have.
+		// A non-operator peer is modelled by a second issuer with no operator: only
+		// the serving uid is served, so the peer cannot be a different uid.
 		guest, err := identity.NewIssuer(identity.Settings{
 			SocketPath: filepath.Join(dir, "run", "identity.sock"), KeyPath: keyPath,
-			OperatorRoles: []string{"reader"},
-			// This issuer has no operator, so the peer is admitted by the list.
-			AllowedUIDs:    []uint32{operator},
+			OperatorRoles:  []string{"reader"},
 			DefinitionsDir: defs, SpawnRoot: filepath.Join(dir, "spawn2"),
 		})
 		if err != nil {

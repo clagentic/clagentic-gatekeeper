@@ -29,7 +29,7 @@ const DeliveryFile = "identity.jwt"
 const (
 	CodeBadRequest        = "bad_request"
 	CodePeerUnattested    = "peer_unattested"
-	CodePeerNotAllowed    = "peer_not_allowed"
+	CodePeerUIDRefused    = "peer_uid_refused"
 	CodeRuntimeMismatch   = "runtime_mismatch"
 	CodeOriginForbidden   = "origin_forbidden"
 	CodeDefinitionUnknown = "definition_unknown"

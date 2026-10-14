@@ -8,7 +8,7 @@ package identity
 var publicMessages = map[string]string{
 	CodeBadRequest:        "the request is malformed or names a value the issuer does not accept",
 	CodePeerUnattested:    "the calling process could not be attested",
-	CodePeerNotAllowed:    "the calling user or group is not permitted to request an assertion",
+	CodePeerUIDRefused:    "this issuer serves only the user it runs as",
 	CodeRuntimeMismatch:   "the declared runtime does not match the attested runtime",
 	CodeOriginForbidden:   "the requested origin is not permitted for the calling user",
 	CodeDefinitionUnknown: "the requested definition is not available",

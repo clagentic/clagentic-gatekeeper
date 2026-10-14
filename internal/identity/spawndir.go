@@ -29,10 +29,6 @@ func randomID() (string, error) {
 // after creation, unlike the metadata of a directory its peer owns.
 var spawnNamePattern = regexp.MustCompile(`^([0-9a-f]{10})-[0-9a-f]{32}$`)
 
-// probeName is the scratch directory CheckRemovable uses; it does not match
-// spawnNamePattern, so Reap never mistakes it for a delivery directory.
-const probeName = ".probe"
-
 // SpawnDirs creates delivery directories under Root. It holds a handle on Root
 // opened at start, and creates, fills, hands over and removes everything
 // relative to that handle.
@@ -81,8 +77,8 @@ func (s *SpawnDirs) rm() func(int, string) error {
 }
 
 // Create makes a 0700 directory owned by the serving uid, named from now, and
-// returns its absolute path. The peer cannot enter it, so it cannot plant
-// anything in it, until Publish hands it over as the very last step.
+// returns its absolute path. Every peer runs as the serving uid, so the
+// directory is the peer's own; Publish fills it through the root handle.
 func (s *SpawnDirs) Create(now time.Time) (string, error) {
 	id, err := randomID()
 	if err != nil {
@@ -104,25 +100,20 @@ func (s *SpawnDirs) nameOf(dir string) (string, error) {
 	return filepath.Base(dir), nil
 }
 
-// Publish fills a directory made by Create and then hands it to the peer. The
-// privileged writer never follows a path the peer could own: the directory is
-// opened relative to the root handle with O_NOFOLLOW, every entry is created
-// relative to that descriptor with O_EXCL, and ownership moves to the peer only
-// after the content is written and synced.
+// Publish fills a directory made by Create for the peer. The writer never
+// follows a path the peer could control: the directory is opened relative to the
+// root handle with O_NOFOLLOW and every entry is created relative to that
+// descriptor with O_EXCL. A peer that is not the serving uid is refused, since
+// this package never changes ownership.
 func (s *SpawnDirs) Publish(dir string, peer Peer, token string) error {
+	if int(peer.UID) != os.Geteuid() {
+		return fmt.Errorf("refusing to deliver to uid %d: not the serving uid", peer.UID)
+	}
 	name, err := s.nameOf(dir)
 	if err != nil {
 		return err
 	}
-	return publishRelative(int(s.root.Fd()), name, peer, []byte(token+"\n"))
-}
-
-func needsChown(peer Peer) bool {
-	return int(peer.UID) != os.Geteuid() || int(peer.GID) != os.Getegid()
-}
-
-func handoverError(what string, peer Peer, err error) error {
-	return fmt.Errorf("hand %s to uid %d (serve needs root or CAP_CHOWN to serve another uid): %w", what, peer.UID, err)
+	return publishRelative(int(s.root.Fd()), name, []byte(token+"\n"))
 }
 
 // Discard removes a directory this package created, relative to the root
@@ -178,73 +169,4 @@ func (s *SpawnDirs) Reap(now time.Time, maxAge time.Duration) (int, error) {
 		removed++
 	}
 	return removed, errors.Join(failures...)
-}
-
-// CheckRemovable proves, before serve accepts a request, that it can remove
-// what it will hand to the given uids and gids: a directory owned by that uid
-// or gid, holding a nested subdirectory of mode 0000. Without that ability a
-// reaped or discarded delivery directory would stay behind, so serve refuses to
-// start instead. Nothing is probed for the serving uid and gid themselves.
-func (s *SpawnDirs) CheckRemovable(uids, gids []uint32) error {
-	type owner struct{ uid, gid int }
-	var targets []owner
-	for _, u := range uids {
-		if int(u) != os.Geteuid() {
-			targets = append(targets, owner{int(u), -1})
-		}
-	}
-	for _, g := range gids {
-		if int(g) != os.Getegid() {
-			targets = append(targets, owner{-1, int(g)})
-		}
-	}
-	for _, t := range targets {
-		if err := s.probe(t.uid, t.gid); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (s *SpawnDirs) probe(uid, gid int) error {
-	rootfd := int(s.root.Fd())
-	who := "uid " + strconv.Itoa(uid)
-	if uid < 0 {
-		who = "gid " + strconv.Itoa(gid)
-	}
-	if err := removeAt(rootfd, probeName); err != nil {
-		return fmt.Errorf("clear a leftover %s in the spawn root: %w", probeName, err)
-	}
-	if err := syscall.Mkdirat(rootfd, probeName, 0o700); err != nil {
-		return fmt.Errorf("probe the spawn root: %w", err)
-	}
-	defer removeAt(rootfd, probeName)
-	const flags = syscall.O_RDONLY | syscall.O_DIRECTORY | syscall.O_NOFOLLOW | syscall.O_CLOEXEC
-	pfd, err := syscall.Openat(rootfd, probeName, flags, 0)
-	if err != nil {
-		return err
-	}
-	defer syscall.Close(pfd)
-	if err := syscall.Mkdirat(pfd, "nested", 0o700); err != nil {
-		return err
-	}
-	nfd, err := syscall.Openat(pfd, "nested", flags, 0)
-	if err != nil {
-		return err
-	}
-	defer syscall.Close(nfd)
-	for _, fd := range []int{nfd, pfd} {
-		if err := syscall.Fchown(fd, uid, gid); err != nil {
-			return fmt.Errorf("hand a probe directory to %s (serve needs root or CAP_CHOWN to serve another uid or gid): %w", who, err)
-		}
-	}
-	// Locked last: a failed handover above must leave a tree the serving uid
-	// can still remove.
-	if err := syscall.Fchmod(nfd, 0); err != nil {
-		return err
-	}
-	if err := removeAt(rootfd, probeName); err != nil {
-		return fmt.Errorf("serve cannot remove a directory tree owned by %s (it needs root, or CAP_DAC_OVERRIDE and CAP_FOWNER): %w", who, err)
-	}
-	return nil
 }

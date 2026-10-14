@@ -56,10 +56,6 @@ func identityDeployment(t *testing.T) (dir, key, defs string) {
 	return dir, key, defs
 }
 
-// allowSelf is the allow-list line that admits the test process: with none,
-// only the operator uid may ask.
-func allowSelf() string { return fmt.Sprintf("  allowed_uids: [%d]\n", os.Getuid()) }
-
 func writeConfig(t *testing.T, dir, body string) string {
 	t.Helper()
 	p := filepath.Join(dir, "config.yaml")
@@ -103,7 +99,7 @@ func TestIdentityOnlyConfigServesAndMintReportsNotConfigured(t *testing.T) {
 	dir, key, defs := identityDeployment(t)
 	sock := filepath.Join(dir, "id.sock")
 	jwks := filepath.Join(dir, "jwks.json")
-	cfg := writeConfig(t, dir, "identity:\n  key_path: "+key+"\n  jwks_path: "+jwks+"\n  definitions_dir: "+defs+"\n  spawn_root: "+filepath.Join(dir, "spawn")+"\n"+allowSelf())
+	cfg := writeConfig(t, dir, "identity:\n  key_path: "+key+"\n  jwks_path: "+jwks+"\n  definitions_dir: "+defs+"\n  spawn_root: "+filepath.Join(dir, "spawn")+"\n")
 	startServe(t, cfg, sock)
 
 	c := identity.Client{Socket: sock}
@@ -173,7 +169,7 @@ identity:
   key_path: `+key+`
   definitions_dir: `+defs+`
   spawn_root: `+filepath.Join(dir, "spawn")+`
-`+allowSelf())
+`)
 	startServe(t, cfg, sock)
 	if _, err := (identity.Client{Socket: sock}).IssueSession(identity.SessionRequest{}); err != nil {
 		t.Fatal(err)
@@ -205,7 +201,7 @@ func TestServeRefusedAtOccupiedSocketPublishesNoJWKS(t *testing.T) {
 			if err := os.WriteFile(sock, []byte("occupied"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			cfg := writeConfig(t, dir, "identity:\n  key_path: "+key+"\n  jwks_path: "+jwks+"\n  definitions_dir: "+defs+"\n  spawn_root: "+filepath.Join(dir, "spawn")+"\n"+allowSelf())
+			cfg := writeConfig(t, dir, "identity:\n  key_path: "+key+"\n  jwks_path: "+jwks+"\n  definitions_dir: "+defs+"\n  spawn_root: "+filepath.Join(dir, "spawn")+"\n")
 			err := runServe([]string{"--config", cfg, "--socket", sock})
 			if err == nil || !strings.Contains(err.Error(), "already exists") {
 				t.Fatalf("serve at an occupied socket: %v", err)
@@ -250,7 +246,7 @@ func TestServeRefusesAtStartWhenATrustRootIsWritableByOthers(t *testing.T) {
 			if err := os.Chmod(loose, 0o775); err != nil {
 				t.Fatal(err)
 			}
-			cfg := writeConfig(t, t.TempDir(), "identity:\n  key_path: "+key+"\n  jwks_path: "+jwks+"\n  definitions_dir: "+defs+"\n  spawn_root: "+spawn+"\n"+allowSelf())
+			cfg := writeConfig(t, t.TempDir(), "identity:\n  key_path: "+key+"\n  jwks_path: "+jwks+"\n  definitions_dir: "+defs+"\n  spawn_root: "+spawn+"\n")
 			err := runServe([]string{"--config", cfg, "--socket", sock})
 			if err == nil || !strings.Contains(err.Error(), loose) {
 				t.Fatalf("got %v, want a refusal naming %s", err, loose)
@@ -265,27 +261,25 @@ func TestServeRefusesAtStartWhenATrustRootIsWritableByOthers(t *testing.T) {
 	}
 }
 
-// With no allow-list the operator uid alone may ask, whatever the socket mode.
-func TestServeWithNoAllowListAdmitsOnlyTheOperatorUid(t *testing.T) {
-	if os.Geteuid() != 0 {
-		t.Skip("an operator uid other than the serving uid needs root or CAP_CHOWN to be served; serve refuses to start without it")
-	}
+// Only the serving uid is served, so an operator uid that is not the serving uid
+// leaves every peer, which is the serving uid, a workload and never a human.
+func TestServeWithAnotherOperatorUidNeverIssuesHuman(t *testing.T) {
 	dir, key, defs := identityDeployment(t)
 	sock := filepath.Join(dir, "id.sock")
 	other := os.Getuid() + 1
 	cfg := writeConfig(t, dir, fmt.Sprintf("identity:\n  key_path: %s\n  definitions_dir: %s\n  spawn_root: %s\n  operator_uid: %d\n  operator_name: example-operator\n", key, defs, filepath.Join(dir, "spawn"), other))
 	startServe(t, cfg, sock)
-	_, err := identity.Client{Socket: sock}.IssueSession(identity.SessionRequest{})
-	if ie, ok := identity.IsIssueError(err); !ok || ie.Code != identity.CodePeerNotAllowed {
-		t.Fatalf("a uid that is not the operator and on no list: %v", err)
+	out, err := identity.Client{Socket: sock}.IssueSession(identity.SessionRequest{})
+	if err != nil || strings.HasPrefix(out.Subject, "human:") {
+		t.Fatalf("%+v %v", out, err)
 	}
 }
 
-func TestServeRefusesAConfigNobodyCouldUse(t *testing.T) {
-	dir, key, defs := identityDeployment(t)
-	cfg := writeConfig(t, dir, "identity:\n  key_path: "+key+"\n  definitions_dir: "+defs+"\n  spawn_root: "+filepath.Join(dir, "spawn")+"\n")
+func TestServeRefusesAnIdentitySectionWithoutKeyPath(t *testing.T) {
+	dir, _, defs := identityDeployment(t)
+	cfg := writeConfig(t, dir, "identity:\n  definitions_dir: "+defs+"\n")
 	err := runServe([]string{"--config", cfg, "--socket", filepath.Join(dir, "id.sock")})
-	if err == nil || !strings.Contains(err.Error(), "nobody may request issuance") {
+	if err == nil || !strings.Contains(err.Error(), "identity.key_path") {
 		t.Fatalf("got %v", err)
 	}
 }

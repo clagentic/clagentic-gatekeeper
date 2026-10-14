@@ -560,34 +560,38 @@ platforms the module still builds, the client commands (`issue-session`,
 Who may ask is decided in-process: see "Who may ask" below. The socket is
 created with `identity.socket_mode`, default `0600` (the serving uid only),
 which is a second layer behind that check: widening it lets more uids connect
-and never admits one the allow-list excludes. The path never exists with another
+and never gets one of them served. The path never exists with another
 mode: `serve` binds a private temporary name in the same directory, sets the
 mode there, and only then links it to the socket path.
 
 `serve` refuses to start when anything exists at the socket path (a socket, a
 file, a directory, a link) and names it. It never removes or replaces any path,
 including its own socket on shutdown: telling a stale socket from one a live
-server is about to use cannot be done without racing that server. Remove a
-leftover socket by hand, or have whatever starts `serve` clear it first.
+server is about to use cannot be done without racing that server. The service
+manager removes the socket after a stop (for a systemd unit,
+`RuntimeDirectory=` does this); otherwise remove a leftover socket by hand.
 
 ### Who may ask
 
-The `SO_PEERCRED` uid and primary gid of each connection are checked in-process
-against an explicit allow-list before anything is issued:
+This release serves callers that run as the serving uid, and only those. The
+`SO_PEERCRED` uid of each connection is compared in-process with the serving
+uid before anything is issued:
 
-- `identity.operator_uid` may always ask.
-- `identity.allowed_uids` and `identity.allowed_gids` admit further uids and
-  gids. A peer matches when its uid is in the first list or its primary gid is
-  in the second; supplementary groups are not consulted.
-- With no list and no operator, `serve` refuses to start. With no list, the
-  operator uid alone may ask.
-- A refused peer receives `peer_not_allowed` and nothing is created for it.
+- a peer with the serving uid is served;
+- any other uid receives `peer_uid_refused`, one constant message, and nothing
+  is created for it;
+- the peer's primary gid and supplementary groups are not consulted.
 
 Normatively, this check, not file permissions, is the access boundary. Socket
 mode, the socket directory and its ancestors are defense in depth only; a
 deployment must not rely on them to exclude a uid.
 
-A permitted uid may name any definition: a definition's roles are a ceiling,
+`identity.operator_uid` names the uid that receives a human subject. Because
+only the serving uid is served, it yields a human subject only when it equals the
+serving uid. Serving callers under other uids (allow-lists, handing delivery
+directories to a foreign uid) is tracked in lr-767925.
+
+A served peer may name any definition: a definition's roles are a ceiling,
 not a grant, and a consumer's own entitlement still decides what is granted.
 Per-definition authorization (limiting which uids may name which definition)
 is not implemented. Each definition's `trust_boundary` key is parsed and
@@ -613,21 +617,23 @@ refuses to start, naming the path, when any check fails:
 - only the final component of the spawn root and of the socket directory is
   created when missing; any other missing directory is an error.
 
-Everything `serve` later reads, writes, chmods, chowns or removes is reached
+Each directory on the way is opened as an `O_PATH` descriptor, so an ancestor
+that is traversable but not readable (mode `0711`) is accepted and the owner and
+mode checked are those of the inode actually opened.
+
+Everything `serve` later reads, writes, chmods or removes is reached
 through a handle opened from a verified directory. Stale delivery directories
 are aged by the creation time `serve` encoded in each directory's name, never
-by the metadata of a directory its peer owns, and are removed relative to the
-spawn root handle opened at start. Because that removal must work on trees the
-peer owns, `serve` proves at start (with a probe tree holding a nested
-mode-0000 directory) that it can remove trees owned by every uid and gid it
-will hand directories to, and otherwise refuses to start.
+by the metadata of a directory the peer can change, and are removed relative to
+the spawn root handle opened at start. Delivery directories belong to the
+serving uid, so removing them needs no extra privilege.
 
 ### Public errors
 
 Every refusal carries a stable `error` code and one constant message per code.
 No message includes a uid, pid, path, name the client sent, or parser text; the
 detail goes to the server log only. The codes are `bad_request`,
-`peer_unattested`, `peer_not_allowed`, `runtime_mismatch`, `origin_forbidden`,
+`peer_unattested`, `peer_uid_refused`, `runtime_mismatch`, `origin_forbidden`,
 `definition_unknown`, `parent_invalid`, `parent_expired`, `parent_unknown`,
 `uid_mismatch`, `parent_pid_mismatch`, `lifetime_empty`, `spawn_dir` and
 `internal`.
@@ -636,7 +642,7 @@ detail goes to the server log only. The codes are `bad_request`,
 
 - Peer uid equals `identity.operator_uid` and no runtime session is declared:
   subject `human:<operator_name>`, origin `human`.
-- Any other peer, or an operator that passes `--runtime`: grade `workload`;
+- Any other served peer, or an operator that passes `--runtime`: grade `workload`;
   `act.sub` is `agent:<definition>` when `--definition` is given, else
   `runtime:<id>`. The runtime id is read from the peer's executable (for an
   interpreter, its script name). Origin `human` is refused for any other uid.
@@ -652,12 +658,8 @@ detail goes to the server log only. The codes are `bad_request`,
   (`identity.delegable_roles`, `parent_token.roles`) with the roles each
   dropped.
 - Every assertion gets its own delivery directory under `identity.spawn_root`
-  (mode 0700, handed to the peer uid, with `identity.jwt` and `tmp/`), and the
-  `dir` claim is bound to it. Serving a uid other than its own needs root or
-  `CAP_CHOWN` plus the ability to remove trees that uid owns (`CAP_DAC_OVERRIDE`
-  and `CAP_FOWNER`), and reading `/proc/<pid>/exe` of another uid needs ptrace
-  access, so run the service as root or with those capabilities. `serve` checks
-  the first two at start.
+  (mode 0700, owned by the serving uid, which is the peer's uid, with
+  `identity.jwt` and `tmp/`), and the `dir` claim is bound to it.
 
 **The runtime id is self-asserted attribution within the peer uid.** It is
 derived from the peer's executable and command line, and any process can set
@@ -675,7 +677,8 @@ value alone.
 from `/proc`. Roles, grade, human versus workload, and the owner of the
 delivery directory follow the `SO_PEERCRED` uid and the definition file only.
 `issue-child` binds a parent token to the `SO_PEERCRED` uid and refuses with
-`uid_mismatch` when the asking uid differs; the pid and process start time are
+`uid_mismatch` when the asking uid differs (a case a peer-uid check already
+excludes while only the serving uid is served); the pid and process start time are
 compared as well, as defense in depth. `sub` and `act.sub` of the form
 `runtime:<rt>` are attribution-grade: self-asserted within the peer uid, and
 not a basis for any decision.

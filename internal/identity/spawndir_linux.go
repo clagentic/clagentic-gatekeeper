@@ -9,11 +9,9 @@ import (
 )
 
 // publishRelative writes identity.jwt and tmp/ into the delivery directory name,
-// opened relative to the spawn root handle without following links, then hands
-// file, tmp/ and the directory to the peer in that order. The directory stays
-// serving-uid owned, mode 0700, until the final chown, so no other uid can race
-// an entry into it.
-func publishRelative(rootfd int, name string, peer Peer, content []byte) error {
+// opened relative to the spawn root handle without following links. The
+// directory is serving-uid owned, mode 0700, and the peer is that uid.
+func publishRelative(rootfd int, name string, content []byte) error {
 	dfd, err := syscall.Openat(rootfd, name, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
 	if err != nil {
 		return fmt.Errorf("open delivery directory %s: %w", name, err)
@@ -45,26 +43,6 @@ func publishRelative(rootfd int, name string, peer Peer, content []byte) error {
 	// including a symlink rather than following it.
 	if err := syscall.Mkdirat(dfd, "tmp", 0o700); err != nil {
 		return fmt.Errorf("create tmp: %w", err)
-	}
-	tfd, err := syscall.Openat(dfd, "tmp", syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
-	if err != nil {
-		return fmt.Errorf("open tmp: %w", err)
-	}
-	defer syscall.Close(tfd)
-
-	if needsChown(peer) {
-		if err := syscall.Fchown(int(file.Fd()), int(peer.UID), int(peer.GID)); err != nil {
-			return handoverError(DeliveryFile, peer, err)
-		}
-		if err := syscall.Fchown(tfd, int(peer.UID), int(peer.GID)); err != nil {
-			return handoverError("tmp", peer, err)
-		}
-		if err := syscall.Fsync(dfd); err != nil {
-			return err
-		}
-		if err := syscall.Fchown(dfd, int(peer.UID), int(peer.GID)); err != nil {
-			return handoverError(name, peer, err)
-		}
 	}
 	return syscall.Fsync(dfd)
 }

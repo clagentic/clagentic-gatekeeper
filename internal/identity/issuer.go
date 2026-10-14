@@ -5,6 +5,7 @@ package identity
 import (
 	"fmt"
 	"net/http"
+	"os"
 	"path/filepath"
 	"regexp"
 	"time"
@@ -27,15 +28,10 @@ type Issuer struct {
 	Now      func() time.Time
 
 	// OperatorUID is the only uid that may receive a human subject; nil means
-	// none may. The operator uid may always request issuance.
+	// none may. Only peers running as the serving uid are served at all, so an
+	// operator uid other than the serving uid never receives anything.
 	OperatorUID  *uint32
 	OperatorName string
-	// AllowedUIDs and AllowedGIDs name who else may request issuance, matched
-	// in-process against the SO_PEERCRED uid and primary gid. A peer matching
-	// neither list, and not the operator uid, is refused whatever the socket
-	// mode lets through.
-	AllowedUIDs []uint32
-	AllowedGIDs []uint32
 	// OperatorRoles and RuntimeRoles are the role ceilings of sessions that
 	// name no definition.
 	OperatorRoles []string
@@ -77,28 +73,13 @@ func (n *Narrowing) add(policy string, dropped []string) *Narrowing {
 
 func (i *Issuer) isOperator(p Peer) bool { return i.OperatorUID != nil && *i.OperatorUID == p.UID }
 
-// permitted reports whether p may request issuance at all. It is decided from
-// the SO_PEERCRED uid and gid and nothing else: file modes on the socket are a
-// second layer, not this check.
-func (i *Issuer) permitted(p Peer) bool {
-	if i.isOperator(p) {
-		return true
-	}
-	for _, u := range i.AllowedUIDs {
-		if u == p.UID {
-			return true
-		}
-	}
-	for _, g := range i.AllowedGIDs {
-		if g == p.GID {
-			return true
-		}
-	}
-	return false
-}
+// permitted reports whether p may request issuance at all: only a peer running
+// as the serving uid. It is decided from the SO_PEERCRED uid and nothing else;
+// file modes on the socket are a second layer, not this check.
+func (i *Issuer) permitted(p Peer) bool { return int(p.UID) == os.Geteuid() }
 
 func (i *Issuer) refuseUnpermitted(p Peer) *IssueError {
-	return refuse(http.StatusForbidden, CodePeerNotAllowed, fmt.Errorf("uid %d gid %d pid %d is on no allow-list", p.UID, p.GID, p.PID))
+	return refuse(http.StatusForbidden, CodePeerUIDRefused, fmt.Errorf("uid %d pid %d is not the serving uid", p.UID, p.PID))
 }
 
 // IssueSession answers issue-session for an attested peer.

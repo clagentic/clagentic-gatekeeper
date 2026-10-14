@@ -45,29 +45,34 @@ func TestIdentityWrittenPathsMustBeAbsoluteAndNameTheKey(t *testing.T) {
 	loadIdentity(t, "identity:\n  key_path: /k\n  socket_path: /run/x.sock\n  jwks_path: /var/j.json\n  spawn_root: /run/spawn\n")
 }
 
-func TestIdentityAllowListParsesAndIsAbsentByDefault(t *testing.T) {
-	cfg := loadIdentity(t, "identity:\n  key_path: /k\n  allowed_uids: [1001, 1002]\n  allowed_gids: [2000]\n")
-	if got := cfg.Identity.AllowedUIDs; len(got) != 2 || got[0] != 1001 || got[1] != 1002 {
-		t.Fatalf("allowed_uids %v", got)
-	}
-	if got := cfg.Identity.AllowedGIDs; len(got) != 1 || got[0] != 2000 {
-		t.Fatalf("allowed_gids %v", got)
-	}
-	absent := loadIdentity(t, "identity:\n  key_path: /k\n")
-	if absent.Identity.AllowedUIDs != nil || absent.Identity.AllowedGIDs != nil {
-		t.Fatalf("an absent allow-list is not empty: %+v", absent.Identity)
-	}
-}
-
 func TestIdentityOnlyConfigLoads(t *testing.T) {
 	cfg := loadIdentity(t, "identity:\n  key_path: /k\n  operator_uid: 1000\n")
-	if !cfg.Identity.Enabled() || cfg.Identity.OperatorUID == nil || *cfg.Identity.OperatorUID != 1000 {
+	if !cfg.IdentityEnabled() || cfg.Identity.OperatorUID == nil || *cfg.Identity.OperatorUID != 1000 {
 		t.Fatalf("%+v", cfg.Identity)
 	}
 	if len(cfg.Roles) != 0 {
 		t.Fatalf("roles appeared from nowhere: %v", cfg.Roles)
 	}
-	if loadIdentity(t, "github:\n  owner: example-org\n").Identity.Enabled() {
+	if loadIdentity(t, "github:\n  owner: example-org\n").IdentityEnabled() {
 		t.Fatal("identity enabled without a section")
+	}
+}
+
+// Presence comes from the YAML key. A section with settings but no key, or an
+// empty one, is a configuration error that names key_path, never an absent
+// section.
+func TestIdentitySectionWithoutKeyPathIsAConfigError(t *testing.T) {
+	for _, body := range []string{
+		"identity:\n  operator_uid: 1000\n",
+		"identity:\n",
+		"identity: {}\n",
+	} {
+		p := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(p); err == nil || !strings.Contains(err.Error(), "identity.key_path") {
+			t.Errorf("%q: got %v", body, err)
+		}
 	}
 }

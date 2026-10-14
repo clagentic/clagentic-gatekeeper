@@ -39,7 +39,7 @@ func assertUntouched(t *testing.T, victim string) {
 	}
 }
 
-func TestPublishCreatesFileAndTmpInOrder(t *testing.T) {
+func TestPublishCreatesFileAndTmp(t *testing.T) {
 	s := newSpawnDirs(t)
 	dir, err := s.Create(time.Now())
 	if err != nil {
@@ -243,7 +243,7 @@ func TestReapLeavesEntriesItDidNotName(t *testing.T) {
 // needs the serving uid to override directory permissions, which root does.
 func TestReapRemovesANestedDirectoryOfModeZero(t *testing.T) {
 	if os.Geteuid() != 0 {
-		t.Skip("removing a mode 0000 directory needs root (DAC override); serve refuses to start without it when it serves other uids")
+		t.Skip("removing a mode 0000 directory needs root (DAC override)")
 	}
 	s := newSpawnDirs(t)
 	dir, err := s.Create(time.Now().Add(-48 * time.Hour))
@@ -353,27 +353,21 @@ func TestReapRemovesLinksWithoutFollowingThem(t *testing.T) {
 	}
 }
 
-// Serve must prove at start that it can remove what it hands to another uid.
-func TestCheckRemovableForAnotherUid(t *testing.T) {
+// Delivery never changes ownership, so a peer that is not the serving uid is
+// refused and the directory is left as created.
+func TestPublishRefusesAPeerThatIsNotTheServingUid(t *testing.T) {
 	s := newSpawnDirs(t)
-	other := uint32(os.Geteuid()) + 1
-	err := s.CheckRemovable([]uint32{other}, nil)
-	if os.Geteuid() == 0 {
-		if err != nil {
-			t.Fatalf("root could not prove it can serve uid %d: %v", other, err)
-		}
-	} else if err == nil || !strings.Contains(err.Error(), "CAP_CHOWN") {
-		t.Fatalf("an unprivileged serve accepted another uid: %v", err)
-	}
-	if entries, rerr := os.ReadDir(s.Root); rerr != nil || len(entries) != 0 {
-		t.Fatalf("the probe left entries behind: %v %v", entries, rerr)
-	}
-}
-
-func TestCheckRemovableSkipsTheServingIdentity(t *testing.T) {
-	s := newSpawnDirs(t)
-	if err := s.CheckRemovable([]uint32{uint32(os.Geteuid())}, []uint32{uint32(os.Getegid())}); err != nil {
+	dir, err := s.Create(time.Now())
+	if err != nil {
 		t.Fatal(err)
+	}
+	foreign := selfPeer(1)
+	foreign.UID++
+	if err := s.Publish(dir, foreign, "tok"); err == nil {
+		t.Fatal("publish delivered to another uid")
+	}
+	if entries, rerr := os.ReadDir(dir); rerr != nil || len(entries) != 0 {
+		t.Fatalf("a refused publish wrote entries: %v %v", entries, rerr)
 	}
 }
 

@@ -23,8 +23,6 @@ type Settings struct {
 	JWKSPath       string
 	OperatorUID    *uint32
 	OperatorName   string
-	AllowedUIDs    []uint32
-	AllowedGIDs    []uint32
 	OperatorRoles  []string
 	RuntimeRoles   []string
 	DefinitionsDir string
@@ -76,9 +74,6 @@ func NewIssuer(s Settings) (*Issuer, error) {
 	if !filepath.IsAbs(root) {
 		return nil, fmt.Errorf("identity.spawn_root %q must be absolute", root)
 	}
-	if s.OperatorUID == nil && len(s.AllowedUIDs) == 0 && len(s.AllowedGIDs) == 0 {
-		return nil, errors.New("nobody may request issuance: set identity.operator_uid, identity.allowed_uids or identity.allowed_gids")
-	}
 
 	keys, err := LoadKeyring(s.KeyPath, s.Alg)
 	if err != nil {
@@ -107,15 +102,6 @@ func NewIssuer(s Settings) (*Issuer, error) {
 		defs.Close()
 		return nil, err
 	}
-	uids := append([]uint32(nil), s.AllowedUIDs...)
-	if s.OperatorUID != nil {
-		uids = append(uids, *s.OperatorUID)
-	}
-	if err := dirs.CheckRemovable(uids, s.AllowedGIDs); err != nil {
-		defs.Close()
-		dirs.Close()
-		return nil, err
-	}
 	issuer := s.Issuer
 	if issuer == "" {
 		issuer = "unix://" + s.SocketPath
@@ -124,7 +110,6 @@ func NewIssuer(s Settings) (*Issuer, error) {
 		Issuer: issuer, Keys: keys, Defs: defs, Dirs: dirs,
 		Registry: NewRegistry(), Proc: ReadProc, Now: time.Now,
 		OperatorUID: s.OperatorUID, OperatorName: name,
-		AllowedUIDs: s.AllowedUIDs, AllowedGIDs: s.AllowedGIDs,
 		OperatorRoles: s.OperatorRoles, RuntimeRoles: s.RuntimeRoles,
 		DelegableRoles: s.DelegableRoles, SessionTTL: ttl,
 	}, nil

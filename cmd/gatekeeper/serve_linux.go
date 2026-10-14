@@ -28,8 +28,8 @@ func runServe(args []string) error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-	if !cfg.Identity.Enabled() {
-		return fmt.Errorf("config error: the identity section is not configured (identity.key_path is required); see config.example.yaml")
+	if !cfg.IdentityEnabled() {
+		return fmt.Errorf("config error: the identity section is not configured; see config.example.yaml")
 	}
 	mode, err := identity.ParseSocketMode(cfg.Identity.SocketMode)
 	if err != nil {
@@ -40,7 +40,6 @@ func runServe(args []string) error {
 	issuer, err := identity.NewIssuer(identity.Settings{
 		Issuer: ic.Issuer, SocketPath: sock, KeyPath: ic.KeyPath, Alg: ic.Alg,
 		JWKSPath: ic.JWKSPath, OperatorUID: ic.OperatorUID, OperatorName: ic.OperatorName,
-		AllowedUIDs: ic.AllowedUIDs, AllowedGIDs: ic.AllowedGIDs,
 		OperatorRoles: ic.OperatorRoles, RuntimeRoles: ic.RuntimeRoles, DefinitionsDir: ic.DefinitionsDir,
 		DelegableRoles: ic.DelegableRoles, SpawnRoot: ic.SpawnRoot,
 		SessionTTL: time.Duration(ic.SessionTTLSeconds) * time.Second,

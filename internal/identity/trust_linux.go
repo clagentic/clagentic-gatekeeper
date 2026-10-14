@@ -23,7 +23,8 @@ import (
 // cannot redirect it.
 
 const (
-	atRemoveDir = 0x200 // AT_REMOVEDIR
+	atRemoveDir = 0x200    // AT_REMOVEDIR
+	oPath       = 0x200000 // O_PATH, absent from package syscall; the value is the same on every architecture Go targets on linux
 	sticky      = 0o1000
 )
 
@@ -64,7 +65,12 @@ func openTrustedDir(path string, createMode os.FileMode) (*os.File, error) {
 		return nil, fmt.Errorf("%q must be an absolute path", path)
 	}
 	clean := filepath.Clean(path)
-	fd, err := syscall.Open("/", syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_CLOEXEC, 0)
+	// Every component is held as an O_PATH descriptor: it needs only search
+	// permission on its parent, so an ancestor that is traversable but not
+	// readable (mode 0711) is accepted, and fstat on the descriptor still reports
+	// the inode that was opened.
+	const pathFlags = oPath | syscall.O_DIRECTORY | syscall.O_NOFOLLOW | syscall.O_CLOEXEC
+	fd, err := syscall.Open("/", pathFlags, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -80,18 +86,17 @@ func openTrustedDir(path string, createMode os.FileMode) (*os.File, error) {
 		return fail(err)
 	}
 	cur := ""
+	created := false
 	for i, part := range parts {
 		cur += "/" + part
 		isRoot := i == len(parts)-1
-		const flags = syscall.O_RDONLY | syscall.O_DIRECTORY | syscall.O_NOFOLLOW | syscall.O_CLOEXEC
-		next, err := syscall.Openat(fd, part, flags, 0)
-		created := false
+		next, err := syscall.Openat(fd, part, pathFlags, 0)
 		if errors.Is(err, syscall.ENOENT) && isRoot && createMode != 0 {
 			if err := syscall.Mkdirat(fd, part, uint32(createMode.Perm())); err != nil {
 				return fail(fmt.Errorf("create %s: %w", cur, err))
 			}
 			created = true
-			next, err = syscall.Openat(fd, part, flags, 0)
+			next, err = syscall.Openat(fd, part, pathFlags, 0)
 		}
 		if err != nil {
 			if errors.Is(err, syscall.ENOTDIR) || errors.Is(err, syscall.ELOOP) {
@@ -101,14 +106,23 @@ func openTrustedDir(path string, createMode os.FileMode) (*os.File, error) {
 		}
 		syscall.Close(fd)
 		fd = next
-		if created {
-			// The mode given to mkdir is filtered by the umask.
-			if err := syscall.Fchmod(fd, uint32(createMode.Perm())); err != nil {
-				return fail(fmt.Errorf("set mode of %s: %w", cur, err))
-			}
-		}
 		if err := checkTrustedDir(fd, cur, isRoot); err != nil {
 			return fail(err)
+		}
+	}
+	// The trust root itself is reopened readable: serve lists it, and fchmod and
+	// the *at calls need a descriptor O_PATH cannot give. "." resolves against the
+	// descriptor just verified, not against a path.
+	rd, err := syscall.Openat(fd, ".", syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return fail(fmt.Errorf("open %s: %w", clean, err))
+	}
+	syscall.Close(fd)
+	fd = rd
+	if created {
+		// The mode given to mkdir is filtered by the umask.
+		if err := syscall.Fchmod(fd, uint32(createMode.Perm())); err != nil {
+			return fail(fmt.Errorf("set mode of %s: %w", clean, err))
 		}
 	}
 	return os.NewFile(uintptr(fd), clean), nil

@@ -54,7 +54,16 @@ type Config struct {
 	// valid issuer-only deployment: `gatekeeper serve` runs, `gatekeeper mint`
 	// reports that minting is not configured. Absent means serve refuses.
 	Identity IdentityConfig `yaml:"identity,omitempty"`
+
+	// identityPresent records that the YAML document has an identity key, which
+	// is what makes the section configured; no field inside it can stand in for
+	// that.
+	identityPresent bool
 }
+
+// IdentityEnabled reports whether the config has an identity section. Load has
+// already refused a section that lacks identity.key_path.
+func (c *Config) IdentityEnabled() bool { return c.identityPresent }
 
 // IdentityConfig configures `gatekeeper serve`, the Identity Assertion issuer.
 // Every field is deployment-specific and none has a baked-in identity; roles
@@ -66,9 +75,9 @@ type IdentityConfig struct {
 	// SocketPath is the unix socket serve listens on (flag --socket wins).
 	SocketPath string `yaml:"socket_path,omitempty" abspath:"true"`
 	// SocketMode is the octal permission of the socket, default "0600": the
-	// serving uid only. It is a second layer behind the in-process allow-list
-	// (OperatorUID, AllowedUIDs, AllowedGIDs), which decides who may ask; a
-	// wider mode lets more uids connect and never admits one the list excludes.
+	// serving uid only. It is a second layer behind the in-process check on the
+	// SO_PEERCRED uid, which admits the serving uid alone; a wider mode lets
+	// more uids connect and never gets one of them served.
 	SocketMode string `yaml:"socket_mode,omitempty"`
 	// KeyPath is the signing key: a PKCS#8 PEM, Ed25519 or P-256, mode 0600
 	// and owned by the serving uid. Required to serve.
@@ -78,16 +87,12 @@ type IdentityConfig struct {
 	// JWKSPath is where the published key set is written at start.
 	JWKSPath string `yaml:"jwks_path,omitempty" abspath:"true"`
 	// OperatorUID is the uid that may receive a human assertion. Unset means
-	// no peer ever does.
+	// no peer ever does. Only the serving uid is served, so a value other than
+	// the serving uid also means no peer ever does.
 	OperatorUID *uint32 `yaml:"operator_uid,omitempty"`
 	// OperatorName is the name in `human:<name>`; defaults to the account name
 	// of OperatorUID.
 	OperatorName string `yaml:"operator_name,omitempty"`
-	// AllowedUIDs and AllowedGIDs name who else may request issuance, checked
-	// in-process against the SO_PEERCRED uid and primary gid. Absent means the
-	// operator uid only. A permitted uid may name any definition.
-	AllowedUIDs []uint32 `yaml:"allowed_uids,omitempty"`
-	AllowedGIDs []uint32 `yaml:"allowed_gids,omitempty"`
 	// OperatorRoles is the role ceiling of a human session that names no
 	// definition. RuntimeRoles is the same for a runtime session with none; it
 	// is one list for all runtime sessions, never keyed by the argv-derived
@@ -108,9 +113,6 @@ type IdentityConfig struct {
 	// maximum 43200.
 	SessionTTLSeconds int `yaml:"session_ttl_seconds,omitempty"`
 }
-
-// Enabled reports whether the identity section is present at all.
-func (c IdentityConfig) Enabled() bool { return c.KeyPath != "" }
 
 // absPathTag marks an IdentityConfig field whose value is a filesystem path.
 // validate checks every tagged field, so a path key is covered by tagging it
@@ -435,12 +437,41 @@ func Load(path string) (*Config, error) {
 	if err := cfg.Attestation.validate(); err != nil {
 		return nil, fmt.Errorf("config %s: %w", path, err)
 	}
-	if err := cfg.Identity.validate(); err != nil {
-		return nil, fmt.Errorf("config %s: %w", path, err)
+	present, err := hasTopLevelKey(data, "identity")
+	if err != nil {
+		return nil, fmt.Errorf("parse config %s: %w", path, err)
+	}
+	cfg.identityPresent = present
+	if present {
+		if err := cfg.Identity.validate(); err != nil {
+			return nil, fmt.Errorf("config %s: %w", path, err)
+		}
+		if cfg.Identity.KeyPath == "" {
+			return nil, fmt.Errorf("config %s: the identity section is present but identity.key_path is not set", path)
+		}
 	}
 
 	applyDefaults(&cfg)
 	return &cfg, nil
+}
+
+// hasTopLevelKey reports whether the YAML document's root mapping has key,
+// whatever its value, including an empty one.
+func hasTopLevelKey(data []byte, key string) (bool, error) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return false, err
+	}
+	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
+		return false, nil
+	}
+	m := doc.Content[0].Content
+	for i := 0; i+1 < len(m); i += 2 {
+		if m[i].Value == key {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // applyDefaults fills in zero-value fields with their documented defaults.

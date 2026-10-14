@@ -283,25 +283,10 @@ func TestChildFromOtherPidRefusesNamingMismatch(t *testing.T) {
 	}
 }
 
-func TestChildFromOtherUidWithMatchingPidRefuses(t *testing.T) {
-	other := selfPeer(10)
-	other.UID++
-	f, parent := childSetup(t, nil)
-	// Widened on the issuer itself: NewIssuer would (rightly) probe that it can
-	// serve the extra uid, which an unprivileged run cannot.
-	f.issuer.AllowedUIDs = append(f.issuer.AllowedUIDs, other.UID)
-	_, err := f.issuer.IssueChild(other, ChildRequest{ParentToken: parent.Token, AgentType: "example-builder", AgentID: "a1"})
-	ie, ok := IsIssueError(err)
-	if !ok || ie.Code != "uid_mismatch" {
-		t.Fatalf("got %v", err)
-	}
-}
-
 // Nothing /proc reports may move a grant: roles, grade, human versus workload
 // and the delivery directory owner follow the SO_PEERCRED uid. The fake /proc
 // describes a process of a different, privileged-looking identity.
 func TestGrantsFollowPeerCredentialsNotProcData(t *testing.T) {
-	foreign := uint32(os.Getuid()) + 4242
 	for _, operator := range []bool{false, true} {
 		op := uint32(os.Getuid()) + 1
 		peer := selfPeer(10)
@@ -333,22 +318,6 @@ func TestGrantsFollowPeerCredentialsNotProcData(t *testing.T) {
 		}
 	}
 
-	// A foreign peer uid needs CAP_CHOWN to be served, which only root has here.
-	if os.Geteuid() == 0 {
-		f := newFixture(t, func(s *Settings) { s.AllowedUIDs = append(s.AllowedUIDs, foreign) })
-		peer := Peer{UID: foreign, GID: foreign, PID: 10}
-		out, c := mustSession(t, f, peer, SessionRequest{})
-		if strings.HasPrefix(c.Sub, "human:") {
-			t.Errorf("foreign uid got %s", c.Sub)
-		}
-		fi, err := os.Stat(out.Dir)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if uid, ok := ownerUID(fi); !ok || uid != foreign {
-			t.Errorf("delivery directory not owned by the peer uid %d", foreign)
-		}
-	}
 }
 
 func TestUnreadableProcAndUnderivableRuntimeRefuseInsteadOfGranting(t *testing.T) {
@@ -465,19 +434,23 @@ func TestIssuingRefusesAnAssertionThatExpiresNoLaterThanItIsIssued(t *testing.T)
 	}
 }
 
-// Who may ask is decided from the SO_PEERCRED uid and gid against an explicit
-// list; absent means the operator uid only.
-func TestPeerOutsideTheAllowListIsRefusedForBothOperations(t *testing.T) {
+// Only a peer running as the serving uid is served, whatever uid is named the
+// operator; every other uid gets one constant refusal for both operations.
+func TestPeerOtherThanTheServingUidIsRefusedForBothOperations(t *testing.T) {
 	f := newFixture(t, nil)
 	stranger := selfPeer(10)
 	stranger.UID, stranger.GID = stranger.UID+1000, stranger.GID+1000
 	_, err := f.issuer.IssueSession(stranger, SessionRequest{Definition: "example-builder"})
-	if ie, ok := IsIssueError(err); !ok || ie.Code != CodePeerNotAllowed || ie.Status != 403 {
+	ie, ok := IsIssueError(err)
+	if !ok || ie.Code != CodePeerUIDRefused || ie.Status != 403 {
 		t.Fatalf("issue-session: got %v", err)
+	}
+	if strings.ContainsAny(ie.Message, "0123456789") {
+		t.Fatalf("the public message carries a number: %q", ie.Message)
 	}
 	parent, _ := mustSession(t, f, selfPeer(10), SessionRequest{})
 	_, err = f.issuer.IssueChild(stranger, ChildRequest{ParentToken: parent.Token, AgentType: "example-builder", AgentID: "a1"})
-	if ie, ok := IsIssueError(err); !ok || ie.Code != CodePeerNotAllowed {
+	if ie, ok := IsIssueError(err); !ok || ie.Code != CodePeerUIDRefused {
 		t.Fatalf("issue-child: got %v", err)
 	}
 	if entries, rerr := os.ReadDir(f.root); rerr != nil || len(entries) != 1 {
@@ -485,35 +458,14 @@ func TestPeerOutsideTheAllowListIsRefusedForBothOperations(t *testing.T) {
 	}
 }
 
-func TestAbsentAllowListAdmitsTheOperatorUidOnly(t *testing.T) {
-	uid := uint32(os.Getuid())
-	f := newFixture(t, func(s *Settings) { s.OperatorUID = &uid; s.AllowedUIDs, s.AllowedGIDs = nil, nil })
-	if _, err := f.issuer.IssueSession(selfPeer(10), SessionRequest{}); err != nil {
-		t.Fatalf("operator uid: %v", err)
-	}
-	other := selfPeer(10)
-	other.UID++
-	if _, err := f.issuer.IssueSession(other, SessionRequest{}); err == nil {
-		t.Fatal("a uid on no list was served")
-	}
-}
-
-func TestAllowedGidAdmitsAPeerWhoseUidIsNotListed(t *testing.T) {
-	f := newFixture(t, func(s *Settings) { s.AllowedUIDs = nil; s.AllowedGIDs = []uint32{uint32(os.Getgid())} })
-	if _, err := f.issuer.IssueSession(selfPeer(10), SessionRequest{}); err != nil {
+// A peer with the serving uid is served even when its primary gid differs: the
+// decision rests on the uid alone.
+func TestServingUidIsServedRegardlessOfGid(t *testing.T) {
+	f := newFixture(t, nil)
+	peer := selfPeer(10)
+	peer.GID++
+	if _, err := f.issuer.IssueSession(peer, SessionRequest{}); err != nil {
 		t.Fatal(err)
-	}
-	other := selfPeer(10)
-	other.GID++
-	if _, err := f.issuer.IssueSession(other, SessionRequest{}); err == nil {
-		t.Fatal("a gid on no list was served")
-	}
-}
-
-func TestNewIssuerRefusesAConfigNobodyCouldUse(t *testing.T) {
-	_, err := NewIssuer(Settings{KeyPath: "/k", SocketPath: "/run/x.sock", SpawnRoot: "/run/spawn"})
-	if err == nil || !strings.Contains(err.Error(), "nobody may request issuance") {
-		t.Fatalf("got %v", err)
 	}
 }
 

@@ -188,7 +188,8 @@ var listenAfterBind func(privateDir, tempSocket string)
 //     the listener is not asked to unlink on Close. The only names this function
 //     removes are the temporary socket and the private directory it created.
 //
-// Cleanup of a leftover socket belongs to the operator or the service manager.
+// Cleanup of a leftover socket, including after a graceful stop, belongs to the
+// operator or the service manager.
 //
 // bind(2), chmod and link(2) take a path and AF_UNIX has no *at form. The
 // paths used for them are built from the verified directory plus a name this
@@ -256,8 +257,17 @@ func Listen(path string, mode os.FileMode) (net.Listener, error) {
 	if err := removeAt(dfd, privName); err != nil {
 		fmt.Fprintf(os.Stderr, "identity: could not remove temporary socket directory %s: %v\n", private, err)
 	}
-	return l, nil
+	return publishedListener{UnixListener: l, addr: &net.UnixAddr{Name: path, Net: "unix"}}, nil
 }
+
+// publishedListener reports the path the socket was published at. The
+// embedded listener is bound to a temporary name that no longer exists.
+type publishedListener struct {
+	*net.UnixListener
+	addr net.Addr
+}
+
+func (p publishedListener) Addr() net.Addr { return p.addr }
 
 // Serve answers on l until ctx is done. It reaps stale delivery directories
 // on start and hourly.
@@ -316,9 +326,9 @@ func (s *Server) reapLoop(ctx context.Context) {
 }
 
 // DefaultSocketMode is the socket mode when identity.socket_mode is unset: the
-// serving uid only. Who may ask is decided in-process from SO_PEERCRED against
-// the allow-list; the mode is a second layer, and widening it never admits a
-// uid the allow-list excludes.
+// serving uid only. Who may ask is decided in-process from SO_PEERCRED, which
+// admits the serving uid alone; the mode is a second layer, and widening it
+// never admits another uid.
 const DefaultSocketMode os.FileMode = 0o600
 
 // ParseSocketMode parses an octal permission string such as "0660".
