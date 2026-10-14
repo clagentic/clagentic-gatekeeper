@@ -90,6 +90,18 @@ func TestEveryPublicCodeHasOneConstantMessage(t *testing.T) {
 	}
 }
 
+// A public message names the operation and the recovery; words for the
+// mechanism behind it would tell a client how the issuer is built.
+func TestPublicMessagesNameNoMechanism(t *testing.T) {
+	for code, msg := range publicMessages {
+		for _, word := range []string{"serve process", "registry", "directory", "jti", "socket", "/"} {
+			if strings.Contains(strings.ToLower(msg), word) {
+				t.Errorf("%s: %q names the mechanism (%q)", code, msg, word)
+			}
+		}
+	}
+}
+
 // The class guard: refuse takes (status, code constant, detail) and nothing
 // else, and an IssueError is only ever built inside refuse, so no call site can
 // put request or host data into a message.
