@@ -533,6 +533,96 @@ covering `a2a_mapping` entry for the resolved identity/audience pair.
 `--json` emits `{"token", "expires_at", "subject"}`; the default output is
 the bare token string, matching `gatekeeper mint`'s own contract.
 
+## Identity Assertion issuer (`gatekeeper serve`)
+
+`gatekeeper serve` is a long-running service that issues the Identity
+Assertion defined in [`identity-contract.md`](identity-contract.md). It
+listens on a unix socket, reads each peer's uid and pid from the kernel
+(`SO_PEERCRED`) and its executable and command line from `/proc`, and signs
+what it finds. Nothing a client sends can change who the kernel says it is.
+
+### Commands
+
+| Command | Purpose |
+|---------|---------|
+| `gatekeeper serve [--socket <path>] [--config <path>]` | Run the issuer. Socket: `--socket`, else `identity.socket_path`, else `/run/clagentic-gatekeeper/identity.sock`. |
+| `gatekeeper issue-session [--socket <path>] [--definition <name>] [--origin <origin>] [--runtime] [--runtime-id <id>] [--runtime-version <v>] [--json]` | Ask for a session assertion. Prints the token, or the full response with `--json`. |
+| `gatekeeper issue-child [--socket <path>] [--parent-token-file <path>] --agent-type <name> --agent-id <id> [--json]` | Ask for a child assertion. The parent token defaults to `$CLAGENTIC_IDENTITY_DIR/identity.jwt`. |
+| `gatekeeper self-check [--socket <path>] [--config <path>] [--max-age <duration>] [--json]` | Report socket reachability and whether `identity.jwks_path` still matches the key set the server publishes. Exits non-zero on any failure. |
+
+The socket also answers `GET /.well-known/jwks.json` (HTTP/1.1), so a
+verifier trusting `iss = unix:///path/to/socket` finds the keys with no extra
+configuration.
+
+### Who gets what
+
+- Peer uid equals `identity.operator_uid` and no runtime session is declared:
+  subject `human:<operator_name>`, origin `human`.
+- Any other peer, or an operator that passes `--runtime`: grade `workload`;
+  `act.sub` is `agent:<definition>` when `--definition` is given, else
+  `runtime:<id>`. The runtime id is read from the peer's executable (for an
+  interpreter, its script name). Origin `human` is refused for any other uid.
+- A definition must exist in `identity.definitions_dir`; its roles are the
+  ceiling. Adding a file is enough; no gatekeeper config edit and no roster.
+- `issue-child` requires a parent token this server issued, still unexpired,
+  to the very process (pid and start time) now asking. The child is grade
+  `harness`, its roles are the definition's roles intersected with
+  `identity.delegable_roles`, its `exp` never exceeds the parent's, and the
+  response names `identity.delegable_roles` and the dropped roles when the
+  policy narrowed them.
+- Every assertion gets its own delivery directory under `identity.spawn_root`
+  (mode 0700, handed to the peer uid, with `identity.jwt` and `tmp/`), and the
+  `dir` claim is bound to it. Serving a uid other than its own needs root or
+  `CAP_CHOWN`, and reading `/proc/<pid>/exe` of another uid needs ptrace
+  access, so run the service as root or with those capabilities.
+
+Any local uid able to open the socket may ask for a definition's roles; roles
+are a ceiling and a consumer's own entitlement still decides what is granted.
+Narrow `identity.socket_mode`, or the socket directory, to restrict who may
+ask at all.
+
+### Keys and rotation
+
+```bash
+openssl genpkey -algorithm ed25519 -out identity-key.pem
+chmod 0600 identity-key.pem
+```
+
+To rotate, generate a new key, point `identity.key_path` at it, list the old
+file under `identity.retired_keys`, and restart. The old `kid` stays in the
+published JWKS so assertions it signed keep verifying until they expire; remove
+it from `retired_keys` after 12 hours (the maximum lifetime).
+
+### Issuer-only and combined configs
+
+A config with only the `identity:` section starts `serve` without any
+`github`, `broker` or `roles` section; `gatekeeper mint` then reports that
+minting is not configured. A config with both runs both, and `mint` behaves as
+it did before.
+
+### systemd
+
+```ini
+[Unit]
+Description=Clagentic Gatekeeper identity issuer
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/gatekeeper serve --config /etc/gatekeeper/config.yaml
+RuntimeDirectory=clagentic-gatekeeper
+RuntimeDirectoryMode=0755
+Restart=on-failure
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/run/clagentic-gatekeeper /var/lib/gatekeeper
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Check it with `gatekeeper self-check --config /etc/gatekeeper/config.yaml`.
+
 ## Summary
 
 | Layer | What it answers | Config | Fails closed? |
