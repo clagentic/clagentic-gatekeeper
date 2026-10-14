@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/clagentic/clagentic-gatekeeper/internal/config"
@@ -49,11 +50,13 @@ func explicitSocket(flagValue, cfgPath string) (string, error) {
 }
 
 // runHook dispatches `gatekeeper hook <adapter> ...`. It returns the process
-// exit code.
+// exit code. No path here exits 2: in a runtime's hook protocol 2 is a blocking
+// verdict, and a verdict is not gatekeeper's to give. A command that is not a
+// usable hook invocation exits 1, which a runtime reports without blocking.
 func runHook(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, "usage: gatekeeper hook claude-code <event> [flags] | gatekeeper hook process [flags]")
-		return 2
+		return 1
 	}
 	switch args[0] {
 	case "claude-code":
@@ -66,17 +69,56 @@ func runHook(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 0
 	}
 	fmt.Fprintf(stderr, "unknown hook adapter %q\n", args[0])
-	return 2
+	return 1
 }
 
-// runHookClaudeCode serves one Claude Code event. Past flag parsing it never
-// fails the runtime: whatever goes wrong, the exit code is 0 and the tool call
-// proceeds unchanged. The one exception is a composed upstream hook whose own
-// verdict is passed through.
+// hookWatchdog bounds a hook process whatever it is waiting for. When the
+// deadline passes it emits what the composed upstream already said, if it said
+// anything, and exits with the upstream's own exit code; otherwise it exits 0
+// with no output. emit is the one place the process writes its reply, so the
+// watchdog and the normal path cannot both write.
+type hookWatchdog struct {
+	once   sync.Once
+	stdout io.Writer
+	stderr io.Writer
+}
+
+func (w *hookWatchdog) emit(res hook.Result, log hook.Log, event string) int {
+	code := 0
+	w.once.Do(func() {
+		if len(res.Stderr) > 0 {
+			_, _ = w.stderr.Write(res.Stderr)
+		}
+		if len(res.Stdout) > 0 {
+			if _, err := w.stdout.Write(res.Stdout); err != nil {
+				log.Printf("%s: write reply: %v", event, err)
+				return
+			}
+		}
+		code = res.ExitCode
+	})
+	return code
+}
+
+// failOpen records why a hook is doing nothing and yields the outcome of a hook
+// that has no opinion: exit 0 and no output. The reason goes to the hook log when
+// the state directory is usable and always to stderr, which a runtime shows only
+// for a failing hook and ignores at exit 0.
+func failOpen(stderr io.Writer, log hook.Log, event, format string, args ...any) int {
+	msg := fmt.Sprintf(format, args...)
+	log.Printf("%s: %s", event, msg)
+	fmt.Fprintf(stderr, "gatekeeper hook %s: %s\n", event, msg)
+	return 0
+}
+
+// runHookClaudeCode serves one Claude Code event. It never blocks the runtime:
+// whatever goes wrong inside gatekeeper, including a bad flag, an unknown event
+// or a panic, the exit code is 0, nothing is printed on stdout, and the reason is
+// logged. The only non-zero exit is a composed upstream hook's own, passed
+// through unchanged.
 func runHookClaudeCode(args []string, stdin io.Reader, stdout, stderr io.Writer) (code int) {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: gatekeeper hook claude-code <event> [flags]")
-		return 2
+		return failOpen(stderr, hook.Log{}, "claude-code", "no event named")
 	}
 	event := args[0]
 	fs := flag.NewFlagSet("hook claude-code "+event, flag.ContinueOnError)
@@ -88,70 +130,93 @@ func runHookClaudeCode(args []string, stdin io.Reader, stdout, stderr io.Writer)
 	origin := fs.String("origin", "", "origin sent with issue-session: scheduled, loop, trigger or agent")
 	refresh := fs.Duration("refresh-below", 0, "user-prompt-submit: ask for a new session assertion below this remaining lifetime (0 disables)")
 	compose := fs.String("compose", "", "pre-tool-use-bash: absolute path of another Bash-rewriting hook to run first")
+	upstreamTimeout := fs.Duration("upstream-timeout", hook.DefaultUpstreamTimeout, "pre-tool-use-bash with --compose: the budget of the composed hook, equal to the timeout it has when registered alone")
 	timeout := fs.Duration("timeout", hookCallTimeout, "bound on each call to the issuer")
+	wd := &hookWatchdog{stdout: stdout, stderr: stderr}
+	composing := func() bool { return *compose != "" && event == hook.EventPreToolUseBash }
+	// degrade ends a hook that cannot do its own work. It yields no decision and no
+	// output, except that a composed upstream still gets to speak: gatekeeper
+	// failing must not cost the other hook its verdict.
+	degrade := func(log hook.Log, format string, a ...any) int {
+		failOpen(stderr, log, event, format, a...)
+		if !composing() {
+			return 0
+		}
+		return wd.emit(hook.PassThrough(*compose, stdin, *upstreamTimeout, log), log, event)
+	}
+
 	if err := fs.Parse(args[1:]); err != nil {
-		return 2
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return degrade(hook.Log{}, "flags: %v", err)
+	}
+	// Paths derived from the state directory exist only when it is absolute, so a
+	// bad value writes nothing relative to wherever the runtime happened to run.
+	log, capture := hook.Log{}, hook.Capture{}
+	if filepath.IsAbs(*stateDir) {
+		log = hook.Log{Path: filepath.Join(*stateDir, "hook.log")}
+		capture = hook.Capture{Path: filepath.Join(*stateDir, "shapes.jsonl")}
 	}
 	if !knownEvent(event) {
-		fmt.Fprintf(stderr, "unknown claude-code event %q\n", event)
-		return 2
+		return degrade(log, "unknown claude-code event")
 	}
+	if *timeout <= 0 || *upstreamTimeout <= 0 {
+		return degrade(log, "--timeout and --upstream-timeout must be positive")
+	}
+	// A mode that cannot be read becomes warn, which rewrites nothing.
 	mode, err := hook.ParseMode(*modeName)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
-		return 2
-	}
-	if *origin == "human" {
-		fmt.Fprintln(stderr, "origin human is never requested by the adapter")
-		return 2
+		failOpen(stderr, log, event, "%v; running as warn", err)
+		mode = hook.ModeWarn
 	}
 	if !filepath.IsAbs(*stateDir) {
-		fmt.Fprintln(stderr, "--state-dir must be an absolute path")
-		return 2
+		failOpen(stderr, log, event, "--state-dir must be an absolute path; keeping no state")
 	}
-	log := hook.Log{Path: filepath.Join(*stateDir, "hook.log")}
 
-	// Everything below fails open.
+	h := &hook.ClaudeCode{
+		Store: hook.Store{Root: *stateDir},
+		Mode:  mode, Origin: *origin, RefreshBelow: *refresh, Compose: *compose, UpstreamTimeout: *upstreamTimeout,
+		Log: log, Capture: capture,
+		HookPID: os.Getpid(),
+	}
+
+	// Everything below fails open. The watchdog never fires before the composed
+	// hook's budget is spent, and then leaves time for the issuer call that
+	// follows it.
+	deadline := *timeout + hookWatchdogSlack
+	if *compose != "" && event == hook.EventPreToolUseBash {
+		deadline += *upstreamTimeout
+	}
 	done := make(chan struct{})
 	defer close(done)
 	go func() {
 		select {
 		case <-done:
-		case <-time.After(*timeout + hookWatchdogSlack):
-			log.Printf("%s: exceeded %s; exiting without a rewrite", event, *timeout+hookWatchdogSlack)
-			os.Exit(0)
+		case <-time.After(deadline):
+			log.Printf("%s: exceeded %s; emitting only what the composed hook said", event, deadline)
+			held, _ := h.Held()
+			os.Exit(wd.emit(held, log, event))
 		}
 	}()
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("%s: panic: %v", event, r)
-			code = 0
+			held, _ := h.Held()
+			code = wd.emit(held, log, event)
 		}
 	}()
 
+	// An issuer that cannot be named is an issuer that always refuses: the event
+	// still runs, so a composed upstream still speaks, and the reason is logged
+	// with every failed issue.
 	sock, err := explicitSocket(*socket, *cfgPath)
 	if err != nil {
-		log.Printf("%s: %v", event, err)
-		return 0
+		h.Issuer = hook.UnavailableIssuer{Err: err}
+	} else {
+		h.Issuer = identity.Client{Socket: sock, Timeout: *timeout}
 	}
-	h := &hook.ClaudeCode{
-		Issuer: identity.Client{Socket: sock, Timeout: *timeout},
-		Store:  hook.Store{Root: *stateDir},
-		Mode:   mode, Origin: *origin, RefreshBelow: *refresh, Compose: *compose,
-		Log: log, Capture: hook.Capture{Path: filepath.Join(*stateDir, "shapes.jsonl")},
-		HookPID: os.Getpid(),
-	}
-	res := h.Handle(event, stdin)
-	if len(res.Stderr) > 0 {
-		_, _ = stderr.Write(res.Stderr)
-	}
-	if len(res.Stdout) > 0 {
-		if _, err := stdout.Write(res.Stdout); err != nil {
-			log.Printf("%s: write reply: %v", event, err)
-			return 0
-		}
-	}
-	return res.ExitCode
+	return wd.emit(h.Handle(event, stdin), log, event)
 }
 
 func knownEvent(event string) bool {
@@ -178,7 +243,7 @@ func runHookProcess(args []string, stdout io.Writer) error {
 		return err
 	}
 	if *origin == "human" {
-		return errors.New("origin human is never requested by the adapter")
+		return hook.ErrOriginHuman
 	}
 	sock, err := explicitSocket(*socket, *cfgPath)
 	if err != nil {
@@ -219,7 +284,7 @@ func runHooksInstall(args []string, stdout io.Writer) error {
 	refresh := fs.Duration("refresh-below", defaultRefreshBelow, "refresh the session assertion below this remaining lifetime (0 disables)")
 	compose := fs.String("compose", "", "absolute path of another Bash-rewriting hook to compose on pre-tool-use-bash")
 	binary := fs.String("binary", "", "absolute path of the gatekeeper binary (default: this binary)")
-	timeoutSeconds := fs.Int("timeout", defaultHookTimeoutSeconds, "runtime-side timeout in seconds for each hook")
+	timeoutSeconds := fs.Int("timeout", defaultHookTimeoutSeconds, "runtime-side timeout in seconds for each hook; with --compose it is the budget of the composed hook (the timeout it has registered alone), and the composed entry's own timeout is that plus allowance for gatekeeper's part")
 	remove := fs.Bool("remove", false, "unregister the hooks (the rollback); other settings are untouched")
 	dryRun := fs.Bool("dry-run", false, "print the resulting settings instead of writing them")
 	if err := fs.Parse(args); err != nil {
@@ -259,6 +324,11 @@ func runHooksInstall(args []string, stdout io.Writer) error {
 		}
 		if err := in.Validate(); err != nil {
 			return err
+		}
+		if in.Compose != "" {
+			if err := hook.CheckUpstream(in.Compose); err != nil {
+				return err
+			}
 		}
 	}
 	changed, content, err := hook.ApplySettingsFile(*settings, in, *remove, *dryRun)

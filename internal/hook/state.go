@@ -79,15 +79,20 @@ func (s Store) sessionDir(sessionID string) (string, error) {
 // recordPath returns where the record of an agent (or the session when agentID
 // is empty) lives.
 func (s Store) recordPath(sessionID, agentID string) (string, error) {
+	// Both keys are checked here, before anything touches the filesystem, so no
+	// call site can skip the check and a bad agent id creates no directory.
+	if !safeName.MatchString(sessionID) {
+		return "", errors.New("session id is not a plain name")
+	}
+	if agentID != "" && !safeName.MatchString(agentID) {
+		return "", errors.New("agent id is not a plain name")
+	}
 	dir, err := s.sessionDir(sessionID)
 	if err != nil {
 		return "", err
 	}
 	if agentID == "" {
 		return filepath.Join(dir, sessionFile), nil
-	}
-	if !safeName.MatchString(agentID) {
-		return "", errors.New("agent id is not a plain name")
 	}
 	return filepath.Join(dir, agentFile(agentID)), nil
 }

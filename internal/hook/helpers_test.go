@@ -137,6 +137,20 @@ func (f *fakeIssuer) deliveryDirs() []string {
 	return out
 }
 
+// sessionRequests and childRequests return copies taken under the lock, so a
+// test never reads what a handler goroutine is still appending to.
+func (f *fakeIssuer) sessionRequests() []identity.SessionRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]identity.SessionRequest(nil), f.sessions...)
+}
+
+func (f *fakeIssuer) childRequests() []identity.ChildRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]identity.ChildRequest(nil), f.children...)
+}
+
 func (f *fakeIssuer) counts() (sessions, children int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -171,7 +185,9 @@ func (h *harness) fire(event string, payload map[string]any) Result {
 	h.t.Helper()
 	raw, err := json.Marshal(payload)
 	if err != nil {
-		h.t.Fatal(err)
+		// Errorf, not Fatal: fire is also called from goroutines.
+		h.t.Errorf("marshal payload: %v", err)
+		return Result{}
 	}
 	return h.hook.Handle(event, strings.NewReader(string(raw)))
 }
@@ -194,26 +210,56 @@ func bashPayload(agentID, agentType, command string) map[string]any {
 	return p
 }
 
-// rewrittenCommand extracts updatedInput.command from a hook reply.
-func rewrittenCommand(t *testing.T, res Result) (command string, out map[string]any) {
-	t.Helper()
+// commandOf extracts updatedInput.command from a hook reply. It reports instead
+// of failing, so a goroutine can use it.
+func commandOf(res Result) (command string, out map[string]any, err error) {
 	if err := json.Unmarshal(res.Stdout, &out); err != nil {
-		t.Fatalf("reply %q: %v", res.Stdout, err)
+		return "", nil, fmt.Errorf("reply %q: %w", res.Stdout, err)
 	}
-	hso := out["hookSpecificOutput"].(map[string]any)
-	updated := hso["updatedInput"].(map[string]any)
-	return updated["command"].(string), out
+	hso, ok := out["hookSpecificOutput"].(map[string]any)
+	if !ok {
+		return "", nil, fmt.Errorf("reply %q has no hookSpecificOutput", res.Stdout)
+	}
+	updated, ok := hso["updatedInput"].(map[string]any)
+	if !ok {
+		return "", nil, fmt.Errorf("reply %q has no updatedInput", res.Stdout)
+	}
+	command, ok = updated["command"].(string)
+	if !ok {
+		return "", nil, fmt.Errorf("reply %q has no command", res.Stdout)
+	}
+	return command, out, nil
 }
 
-func dirOf(t *testing.T, command string) string {
-	t.Helper()
+// dirIn extracts the delivery directory from a rewritten command.
+func dirIn(command string) (string, error) {
 	rest, ok := strings.CutPrefix(command, exportPrefix)
 	if !ok {
-		t.Fatalf("command does not start with the delivery statement: %q", command)
+		return "", fmt.Errorf("command does not start with the delivery statement: %q", command)
 	}
 	dir, _, ok := strings.Cut(rest, "; ")
 	if !ok {
-		t.Fatalf("no statement terminator: %q", command)
+		return "", fmt.Errorf("no statement terminator: %q", command)
+	}
+	return dir, nil
+}
+
+// rewrittenCommand is commandOf for the test goroutine.
+func rewrittenCommand(t *testing.T, res Result) (command string, out map[string]any) {
+	t.Helper()
+	command, out, err := commandOf(res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return command, out
+}
+
+// dirOf is dirIn for the test goroutine.
+func dirOf(t *testing.T, command string) string {
+	t.Helper()
+	dir, err := dirIn(command)
+	if err != nil {
+		t.Fatal(err)
 	}
 	return dir
 }

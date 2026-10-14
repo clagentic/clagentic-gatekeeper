@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"os"
@@ -76,7 +77,11 @@ type hookRun struct {
 
 func runBinary(t *testing.T, stdin string, name string, args ...string) hookRun {
 	t.Helper()
-	cmd := exec.Command(name, args...)
+	// A bound, so a hook that hangs (for example after serve exited early) fails
+	// the test instead of stalling the suite.
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Stdin = strings.NewReader(stdin)
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
@@ -269,12 +274,76 @@ func TestHookRefusesNoSocketAndHumanOrigin(t *testing.T) {
 	} {
 		out.Reset()
 		errb.Reset()
-		if code := runHook(args, strings.NewReader("{}"), &out, &errb); code == 0 || !strings.Contains(errb.String(), "human") {
-			t.Errorf("%v: code %d stderr %q", args, code, errb.String())
+		code := runHook(args, strings.NewReader(`{"session_id":"s1"}`), &out, &errb)
+		if args[0] == "process" {
+			// The launcher adapter fails loudly, with a non-blocking code.
+			if code == 0 || code == 2 || !strings.Contains(errb.String(), "human") {
+				t.Errorf("%v: code %d stderr %q", args, code, errb.String())
+			}
+			continue
+		}
+		// An event hook never blocks: it exits 0 and logs the constant message.
+		raw, _ := os.ReadFile(filepath.Join(state, "hook.log"))
+		if code != 0 || out.Len() != 0 || !strings.Contains(string(raw), "origin human is never requested") {
+			t.Errorf("%v: code %d out %q log %q", args, code, out.String(), raw)
 		}
 	}
-	if code := runHook([]string{"claude-code", "session-start", "--socket", "/x", "--state-dir", "relative"}, strings.NewReader("{}"), &out, &errb); code == 0 {
-		t.Error("a relative state dir was accepted")
+}
+
+// Every early-return path of a registered hook exits 0 with no decision; nothing
+// gatekeeper decides on its own exits 2.
+func TestEveryHookReturnPathFailsOpen(t *testing.T) {
+	state := t.TempDir()
+	cases := map[string][]string{
+		"no event":            {"claude-code"},
+		"unknown event":       {"claude-code", "no-such-event", "--state-dir", state, "--socket", "/x"},
+		"bad flag":            {"claude-code", "session-start", "--bogus"},
+		"help":                {"claude-code", "session-start", "-h"},
+		"bad mode":            {"claude-code", "session-start", "--state-dir", state, "--socket", "/x", "--mode", "loud"},
+		"relative state dir":  {"claude-code", "session-start", "--state-dir", "relative", "--socket", "/x"},
+		"missing state dir":   {"claude-code", "session-start", "--socket", "/x"},
+		"origin human":        {"claude-code", "session-start", "--state-dir", state, "--socket", "/x", "--origin", "human"},
+		"no socket":           {"claude-code", "pre-tool-use-bash", "--state-dir", state},
+		"bad config":          {"claude-code", "pre-tool-use-bash", "--state-dir", state, "--config", filepath.Join(state, "absent.yaml")},
+		"non-positive budget": {"claude-code", "pre-tool-use-bash", "--state-dir", state, "--socket", "/x", "--timeout", "0s"},
+		"issuer absent":       {"claude-code", "subagent-start", "--state-dir", state, "--socket", filepath.Join(state, "absent.sock")},
+	}
+	for name, args := range cases {
+		for _, stdin := range []string{`{"session_id":"s1","tool_name":"Bash","tool_input":{"command":"ls"}}`, "not json", ""} {
+			var out, errb bytes.Buffer
+			if code := runHook(args, strings.NewReader(stdin), &out, &errb); code != 0 || out.Len() != 0 {
+				t.Errorf("%s (stdin %q): code %d stdout %q", name, stdin, code, out.String())
+			}
+		}
+	}
+	// The dispatcher itself never answers 2 either.
+	for _, args := range [][]string{nil, {"nope"}, {"process", "--bogus"}} {
+		var out, errb bytes.Buffer
+		if code := runHook(args, strings.NewReader(""), &out, &errb); code == 2 || code == 0 {
+			t.Errorf("%v: code %d", args, code)
+		}
+	}
+}
+
+// With a composed upstream registered, a gatekeeper failure still lets the
+// upstream's verdict through byte for byte.
+func TestComposedUpstreamSpeaksWhenGatekeeperCannotDoItsPart(t *testing.T) {
+	up := filepath.Join(t.TempDir(), "up.sh")
+	reply := `{"hookSpecificOutput":{"permissionDecision":"allow","updatedInput":{"command":"export STAMP=1; ls"}}}`
+	if err := os.WriteFile(up, []byte("#!/bin/sh\ncat >/dev/null\nprintf '%s' '"+reply+"'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, args := range map[string][]string{
+		"no socket":      {"claude-code", "pre-tool-use-bash", "--state-dir", t.TempDir(), "--compose", up, "--mode", "enforce"},
+		"bad mode":       {"claude-code", "pre-tool-use-bash", "--state-dir", t.TempDir(), "--socket", "/x", "--compose", up, "--mode", "loud"},
+		"relative state": {"claude-code", "pre-tool-use-bash", "--state-dir", "rel", "--socket", "/x", "--compose", up, "--mode", "enforce"},
+		"bad timeout":    {"claude-code", "pre-tool-use-bash", "--socket", "/x", "--compose", up, "--timeout", "0s"},
+	} {
+		var out, errb bytes.Buffer
+		code := runHook(args, strings.NewReader(`{"session_id":"s1","tool_name":"Bash","tool_input":{"command":"ls"}}`), &out, &errb)
+		if code != 0 || out.String() != reply {
+			t.Errorf("%s: code %d stdout %q", name, code, out.String())
+		}
 	}
 }
 

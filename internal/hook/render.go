@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -27,14 +26,9 @@ func ReadDefinition(dir, arg string) ([]byte, error) {
 		}
 		path = filepath.Join(dir, arg+".md")
 	}
-	fi, err := os.Lstat(path)
-	if err != nil {
-		return nil, err
-	}
-	if !fi.Mode().IsRegular() {
-		return nil, fmt.Errorf("%s is not a regular file", path)
-	}
-	f, err := os.Open(path)
+	// One handle for the check and the read: a path swapped for a FIFO or a link
+	// between a separate check and open cannot stall or redirect the command.
+	f, _, err := identity.OpenRegularFile(path)
 	if err != nil {
 		return nil, err
 	}
@@ -85,7 +79,11 @@ func RenderClaudeCode(raw []byte) ([]byte, error) {
 
 	m := &yaml.Node{Kind: yaml.MappingNode}
 	add := func(k, v string) {
-		m.Content = append(m.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: k}, &yaml.Node{Kind: yaml.ScalarNode, Value: v})
+		// An explicit string tag makes the encoder quote a value the runtime would
+		// otherwise read back as a bool, null or number ("true", "null", "1.5").
+		m.Content = append(m.Content,
+			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: k},
+			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: v})
 	}
 	add("name", c.Name)
 	add("description", c.Description)

@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 const canonicalDefinition = `---
@@ -35,8 +37,14 @@ func TestRenderClaudeCodeKeepsNativeMembersAndDropsIssuerOnes(t *testing.T) {
 }
 
 func TestRenderIsStableAndRefusesWhatItCannotRender(t *testing.T) {
-	a, _ := RenderClaudeCode([]byte(canonicalDefinition))
-	b, _ := RenderClaudeCode(a)
+	a, err := RenderClaudeCode([]byte(canonicalDefinition))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := RenderClaudeCode(a)
+	if err != nil {
+		t.Fatalf("a rendered agent does not render again: %v", err)
+	}
 	if string(a) != string(b) {
 		t.Fatalf("rendering a rendered agent changed it:\n%s\n%s", a, b)
 	}
@@ -63,6 +71,31 @@ func TestRenderQuotesADescriptionThatNeedsIt(t *testing.T) {
 	front, _, err := splitForTest(out)
 	if err != nil || !strings.Contains(front, `description: 'a: b # c'`) && !strings.Contains(front, `description: "a: b # c"`) {
 		t.Fatalf("%q %v", out, err)
+	}
+}
+
+// A scalar that YAML would read back as another type must come back as the same
+// string: the runtime re-reads the rendered file with a YAML parser.
+func TestRenderScalarsRoundTripAsStrings(t *testing.T) {
+	for _, value := range []string{"true", "false", "null", "yes", "no", "1.5", "0x1F", "2026-10-14", "~", "007", "1e3"} {
+		in := "---\nname: x\ndescription: \"" + value + "\"\nmodel: \"" + value + "\"\n---\nbody\n"
+		out, err := RenderClaudeCode([]byte(in))
+		if err != nil {
+			t.Fatalf("%s: %v", value, err)
+		}
+		front, _, err := splitForTest(out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var back map[string]any
+		if err := yaml.Unmarshal([]byte(front), &back); err != nil {
+			t.Fatalf("%s: %v", value, err)
+		}
+		for _, key := range []string{"description", "model"} {
+			if got, ok := back[key].(string); !ok || got != value {
+				t.Errorf("%s %s came back as %#v", key, value, back[key])
+			}
+		}
 	}
 }
 

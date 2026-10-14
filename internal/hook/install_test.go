@@ -264,6 +264,222 @@ func TestInstallRefusesMalformedAndUnsafeInput(t *testing.T) {
 	}
 }
 
+// Input that is not exactly one JSON object is refused with an error, never a
+// panic, and the file is left as it was.
+func TestInstallRefusesNullAndAnyTrailingContent(t *testing.T) {
+	in := testInstall(t)
+	for name, body := range map[string]string{
+		"null":                 `null`,
+		"null padded":          " null\n",
+		"number":               `7`,
+		"string":               `"x"`,
+		"array":                `[]`,
+		"empty":                ``,
+		"whitespace":           " \n",
+		"valid trailing":       `{} {}`,
+		"invalid trailing":     `{} xyz`,
+		"invalid trailing key": `{"a":1} }`,
+		"trailing comma":       `{"a":1},`,
+		"truncated":            `{"hooks":`,
+	} {
+		for _, remove := range []bool{false, true} {
+			path := writeSettings(t, body)
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						t.Errorf("%s (remove=%v) panicked: %v", name, remove, r)
+					}
+				}()
+				var arg *Install
+				if !remove {
+					arg = &in
+				}
+				if _, _, err := ApplySettingsFile(path, arg, remove, false); err == nil {
+					t.Errorf("%s (remove=%v) was accepted", name, remove)
+				}
+			}()
+			if raw, _ := os.ReadFile(path); string(raw) != body {
+				t.Errorf("%s: the file was modified", name)
+			}
+		}
+	}
+}
+
+func TestInstallThroughASymlinkEditsTheTargetAndKeepsTheLink(t *testing.T) {
+	in := testInstall(t)
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(real), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(real, []byte(foreignSettings), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "settings.json")
+	if err := os.Symlink(filepath.Join("real", "settings.json"), link); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ApplySettingsFile(link, &in, false, false); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Lstat(link); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("the link was replaced by a file: %v %v", fi, err)
+	}
+	raw, err := os.ReadFile(real)
+	if err != nil || !strings.Contains(string(raw), "hook claude-code session-start") {
+		t.Fatalf("the target was not edited: %v", err)
+	}
+	if fi, _ := os.Stat(real); fi.Mode().Perm() != 0o640 {
+		t.Fatalf("mode %v", fi.Mode())
+	}
+}
+
+// A link to a file that does not exist yet gets the file created at its target.
+func TestInstallThroughADanglingSymlinkCreatesTheTarget(t *testing.T) {
+	in := testInstall(t)
+	dir := t.TempDir()
+	real := filepath.Join(dir, "target.json")
+	link := filepath.Join(dir, "settings.json")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ApplySettingsFile(link, &in, false, false); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Lstat(link); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("the dangling link was replaced: %v %v", fi, err)
+	}
+	if raw, err := os.ReadFile(real); err != nil || !strings.Contains(string(raw), "hook claude-code session-start") {
+		t.Fatalf("the target was not created: %v", err)
+	}
+	// A loop is an error, not a hang.
+	a, b := filepath.Join(dir, "a.json"), filepath.Join(dir, "b.json")
+	if err := os.Symlink(b, a); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(a, b); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ApplySettingsFile(a, &in, false, false); err == nil {
+		t.Fatal("a symlink loop was accepted")
+	}
+}
+
+func TestInstallLeavesNoTemporaryFilesAndKeepsTheMode(t *testing.T) {
+	in := testInstall(t)
+	path := writeSettings(t, foreignSettings)
+	if err := os.Chmod(path, 0o604); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ApplySettingsFile(path, &in, false, false); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("temporary files left: %v", entries)
+	}
+	if fi, _ := os.Stat(path); fi.Mode().Perm() != 0o604 {
+		t.Fatalf("mode %v", fi.Mode())
+	}
+}
+
+// Dropping a duplicate must not leave behind a group with nothing in it.
+func TestInstallLeavesNoEmptyGroups(t *testing.T) {
+	in := testInstall(t)
+	dup := `{"hooks":{"SubagentStop":[{"hooks":[{"type":"command","command":"` + in.Command(EventSubagentStop) + `","timeout":5}]},{"matcher":"x","hooks":[{"type":"command","command":"` + in.Command(EventSubagentStop) + `","timeout":5}]},{"hooks":[{"type":"command","command":"/opt/other.sh"}]},{"hooks":[]}]}}`
+	path := writeSettings(t, dup)
+	if _, _, err := ApplySettingsFile(path, &in, false, false); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(path)
+	groups := decode(t, raw)["hooks"].(map[string]any)["SubagentStop"].([]any)
+	for _, g := range groups {
+		entries := g.(map[string]any)["hooks"].([]any)
+		// A foreign group that was empty before is not ours to remove.
+		if len(entries) == 0 {
+			continue
+		}
+		if g.(map[string]any)["matcher"] == "x" {
+			t.Fatalf("the emptied duplicate group survived: %s", raw)
+		}
+	}
+	if len(groups) != 3 {
+		t.Fatalf("%d groups: %s", len(groups), raw)
+	}
+	// And removing everything leaves no empty hooks object behind.
+	only := writeSettings(t, `{"theme":"dark"}`)
+	if _, _, err := ApplySettingsFile(only, &in, false, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ApplySettingsFile(only, nil, true, false); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ = os.ReadFile(only)
+	if _, present := decode(t, raw)["hooks"]; present {
+		t.Fatalf("an empty hooks object was left: %s", raw)
+	}
+}
+
+// The composed entry's runtime timeout is the upstream's budget plus the
+// allowance, the budget is written into the command, and nothing else differs.
+func TestComposedRegistrationCarriesTheUpstreamBudget(t *testing.T) {
+	in := testInstall(t)
+	in.Compose = "/opt/crew/inject-spawn-agent-env.py"
+	in.TimeoutSeconds = 10
+	cmd := in.Command(EventPreToolUseBash)
+	if !strings.Contains(cmd, "--compose /opt/crew/inject-spawn-agent-env.py --upstream-timeout 10s") {
+		t.Fatalf("%q", cmd)
+	}
+	if in.timeoutFor(EventPreToolUseBash) != 10+composeAllowanceSeconds || in.timeoutFor(EventSessionStart) != 10 {
+		t.Fatalf("timeouts %d %d", in.timeoutFor(EventPreToolUseBash), in.timeoutFor(EventSessionStart))
+	}
+	path := writeSettings(t, foreignSettings)
+	if _, _, err := ApplySettingsFile(path, &in, false, false); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(path)
+	pre := decode(t, raw)["hooks"].(map[string]any)["PreToolUse"].([]any)
+	entry := pre[len(pre)-1].(map[string]any)["hooks"].([]any)[0].(map[string]any)
+	if entry["timeout"] != float64(10+composeAllowanceSeconds) {
+		t.Fatalf("entry %+v", entry)
+	}
+	if changed, _, err := ApplySettingsFile(path, &in, false, false); err != nil || changed {
+		t.Fatalf("second run: changed=%v err=%v", changed, err)
+	}
+}
+
+// Reverting a composed registration is registration only: unregistering the
+// gatekeeper entries and restoring the crew's direct entry leaves the settings
+// exactly as the crew registered them, with nothing else to undo.
+func TestRevertingAComposedRegistrationIsRegistrationOnly(t *testing.T) {
+	direct := `{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"/opt/crew/inject-spawn-agent-env.py","timeout":5}]}]}}`
+	in := testInstall(t)
+	in.Compose = "/opt/crew/inject-spawn-agent-env.py"
+	path := writeSettings(t, direct)
+	if _, _, err := ApplySettingsFile(path, &in, false, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ApplySettingsFile(path, nil, true, false); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(path)
+	var want, got any
+	if err := json.Unmarshal([]byte(direct), &want); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	wb, _ := json.Marshal(want)
+	gb, _ := json.Marshal(got)
+	if string(wb) != string(gb) {
+		t.Fatalf("reverting left a difference\nwant %s\n got %s", wb, gb)
+	}
+}
+
 func TestShellQuoteKeepsAPathWithSpacesOneWord(t *testing.T) {
 	if got := shellQuote("/a b/it's"); got != `'/a b/it'\''s'` {
 		t.Fatalf("%q", got)

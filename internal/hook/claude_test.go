@@ -37,16 +37,14 @@ func TestSessionStartIssuesForTheHarnessAgentNameOnly(t *testing.T) {
 	h := newHarness(t, ModeEnforce)
 	h.hook.Origin = "agent"
 	startSession(t, h, "example-builder")
-	h.fake.mu.Lock()
-	got := h.fake.sessions
-	h.fake.mu.Unlock()
+	got := h.fake.sessionRequests()
 	if len(got) != 1 || got[0].Definition != "example-builder" || got[0].Origin != "agent" || got[0].Runtime != nil {
 		t.Fatalf("session requests %+v", got)
 	}
 
 	h2 := newHarness(t, ModeEnforce)
 	startSession(t, h2, "")
-	if s := h2.fake.sessions; len(s) != 1 || s[0].Definition != "" || s[0].Origin != "" {
+	if s := h2.fake.sessionRequests(); len(s) != 1 || s[0].Definition != "" || s[0].Origin != "" {
 		t.Fatalf("no harness agent name: %+v", s)
 	}
 }
@@ -56,12 +54,30 @@ func TestAdapterNeverRequestsAHumanGrade(t *testing.T) {
 	startSession(t, h, "example-builder")
 	startAgent(t, h, "a1", "example-builder")
 	h.fire(EventUserPromptSubmit, map[string]any{"session_id": testSession})
-	h.fake.mu.Lock()
-	defer h.fake.mu.Unlock()
-	for _, s := range h.fake.sessions {
+	for _, s := range h.fake.sessionRequests() {
 		if s.Origin == "human" {
 			t.Fatalf("a request asked for origin human: %+v", s)
 		}
+	}
+}
+
+// A hook configured with origin human sends nothing and logs the one constant
+// message; the process adapter refuses before it opens a connection.
+func TestOriginHumanIsRefusedLocallyAndNeverSent(t *testing.T) {
+	h := newHarness(t, ModeEnforce)
+	h.hook.Origin = "human"
+	startSession(t, h, "")
+	if n := len(h.fake.sessionRequests()); n != 0 {
+		t.Fatalf("%d requests left the process", n)
+	}
+	if !strings.Contains(h.log(), ErrOriginHuman.Error()) {
+		t.Fatalf("log %q", h.log())
+	}
+	if _, err := ProcessAssignment(h.hook.Issuer, "example-builder", "human"); err == nil || err.Error() != ErrOriginHuman.Error() {
+		t.Fatalf("got %v", err)
+	}
+	if n := len(h.fake.sessionRequests()); n != 0 {
+		t.Fatalf("the process adapter sent a request: %d", n)
 	}
 }
 
@@ -69,10 +85,11 @@ func TestSubagentGetsAChildOfTheSessionAndItsOwnDirectory(t *testing.T) {
 	h := newHarness(t, ModeEnforce)
 	startSession(t, h, "")
 	startAgent(t, h, "agent-one", "example-builder")
-	if len(h.fake.children) != 1 {
-		t.Fatalf("children %+v", h.fake.children)
+	children := h.fake.childRequests()
+	if len(children) != 1 {
+		t.Fatalf("children %+v", children)
 	}
-	c := h.fake.children[0]
+	c := children[0]
 	if c.AgentID != "agent-one" || c.AgentType != "example-builder" || !strings.HasPrefix(c.ParentToken, "session-token-") {
 		t.Fatalf("child request %+v", c)
 	}
@@ -179,9 +196,18 @@ func TestTwoConcurrentSubagentsEachGetTheirOwnDirectory(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			res := h.fire(EventPreToolUseBash, bashPayload(a.id, a.typ, "echo hi"))
-			command, _ := rewrittenCommand(t, res)
+			command, _, err := commandOf(res)
+			if err != nil {
+				t.Errorf("agent %q: %v", a.id, err)
+				return
+			}
+			dir, err := dirIn(command)
+			if err != nil {
+				t.Errorf("agent %q: %v", a.id, err)
+				return
+			}
 			mu.Lock()
-			dirs[a.id] = dirOf(t, command)
+			dirs[a.id] = dir
 			mu.Unlock()
 		}()
 	}
@@ -197,7 +223,7 @@ func TestTwoConcurrentSubagentsEachGetTheirOwnDirectory(t *testing.T) {
 		}
 	}
 	types := map[string]string{}
-	for _, c := range h.fake.children {
+	for _, c := range h.fake.childRequests() {
 		types[c.AgentID] = c.AgentType
 	}
 	if types["agent-a"] != "example-builder" || types["agent-b"] != "example-merger" {
@@ -212,14 +238,73 @@ func TestFirstBashCallIssuesTheChildWhenStartWasMissed(t *testing.T) {
 	startSession(t, h, "")
 	res := h.fire(EventPreToolUseBash, bashPayload("late-agent", "example-builder", "ls"))
 	command, _ := rewrittenCommand(t, res)
-	if dirOf(t, command) == "" || len(h.fake.children) != 1 {
-		t.Fatalf("children %+v", h.fake.children)
+	if dirOf(t, command) == "" || len(h.fake.childRequests()) != 1 {
+		t.Fatalf("children %+v", h.fake.childRequests())
 	}
 	// A second call reuses the directory.
 	res = h.fire(EventPreToolUseBash, bashPayload("late-agent", "example-builder", "ls"))
 	again, _ := rewrittenCommand(t, res)
-	if dirOf(t, again) != dirOf(t, command) || len(h.fake.children) != 1 {
-		t.Fatalf("a second call issued again: %d children", len(h.fake.children))
+	if dirOf(t, again) != dirOf(t, command) || len(h.fake.childRequests()) != 1 {
+		t.Fatalf("a second call issued again: %d children", len(h.fake.childRequests()))
+	}
+}
+
+// The delivery lookup is keyed by the agent id alone: the type is needed only to
+// issue, so a call that carries just the id finds the directory issued at start.
+func TestPreToolUseWithOnlyAnAgentIDFindsTheDirectoryIssuedAtStart(t *testing.T) {
+	h := newHarness(t, ModeEnforce)
+	startSession(t, h, "")
+	startAgent(t, h, "agent-one", "example-builder")
+	issued, ok, err := h.hook.Store.Get(testSession, "agent-one")
+	if err != nil || !ok {
+		t.Fatalf("no record after start: %v", err)
+	}
+	res := h.fire(EventPreToolUseBash, map[string]any{
+		"session_id": testSession, "tool_name": "Bash", "agent_id": "agent-one",
+		"tool_input": map[string]any{"command": "ls"},
+	})
+	command, _ := rewrittenCommand(t, res)
+	if dirOf(t, command) != issued.Dir {
+		t.Fatalf("delivered %q, issued %q", dirOf(t, command), issued.Dir)
+	}
+	if n := len(h.fake.childRequests()); n != 1 {
+		t.Fatalf("a second child was issued: %d", n)
+	}
+}
+
+// Payload-derived keys are refused by the Store itself, so no call site can skip
+// the check, and a refused key creates nothing on disk.
+func TestStoreRefusesUnsafeKeysItself(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state")
+	s := Store{Root: root}
+	rec := Record{Dir: "/x", ExpiresAt: 1}
+	bad := []string{"", ".", "..", "../x", "a/b", `a\b`, "a\x00b", ".hidden", "-x", strings.Repeat("a", 129), "a b", "a\nb"}
+	for _, key := range bad {
+		pairs := [][2]string{{key, ""}, {key, "agent-ok"}}
+		// An empty agent id names the session record, which is valid.
+		if key != "" {
+			pairs = append(pairs, [2]string{testSession, key})
+		}
+		for _, pair := range pairs {
+			if _, _, err := s.Get(pair[0], pair[1]); err == nil {
+				t.Errorf("Get(%q,%q) accepted", pair[0], pair[1])
+			}
+			if err := s.Put(pair[0], pair[1], rec); err == nil {
+				t.Errorf("Put(%q,%q) accepted", pair[0], pair[1])
+			}
+			if _, err := s.PutNew(pair[0], pair[1], rec); err == nil {
+				t.Errorf("PutNew(%q,%q) accepted", pair[0], pair[1])
+			}
+			if err := s.Delete(pair[0], pair[1]); err == nil {
+				t.Errorf("Delete(%q,%q) accepted", pair[0], pair[1])
+			}
+		}
+	}
+	if entries, err := os.ReadDir(root); err == nil && len(entries) != 0 {
+		t.Fatalf("a refused key left %v", entries)
+	}
+	if err := s.Put(testSession, "agent-ok", rec); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -236,9 +321,18 @@ func TestRacingCallsOfOneAgentConvergeOnOneDirectory(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			res := h.fire(EventPreToolUseBash, bashPayload("racer", "example-builder", "ls"))
-			command, _ := rewrittenCommand(t, res)
+			command, _, err := commandOf(res)
+			if err != nil {
+				t.Errorf("racer: %v", err)
+				return
+			}
+			dir, err := dirIn(command)
+			if err != nil {
+				t.Errorf("racer: %v", err)
+				return
+			}
 			mu.Lock()
-			seen[dirOf(t, command)] = true
+			seen[dir] = true
 			mu.Unlock()
 		}()
 	}

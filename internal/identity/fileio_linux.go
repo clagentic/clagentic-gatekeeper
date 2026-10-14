@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 )
@@ -46,6 +47,20 @@ func openRegularAt(dir *os.File, name string) (*os.File, os.FileInfo, error) {
 		return nil, nil, fmt.Errorf("%s: %w", name, errNotRegular)
 	}
 	return f, fi, nil
+}
+
+// OpenRegularFile opens the file at path through one handle that is never
+// followed through a link and never blocks, and returns it with the fstat of
+// that same handle. A swap of the path for a FIFO or symlink after this call
+// cannot change what is read. Directory components of path are resolved
+// normally; only the final component is held to the rule.
+func OpenRegularFile(path string) (*os.File, os.FileInfo, error) {
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return nil, nil, err
+	}
+	defer dir.Close()
+	return openRegularAt(dir, filepath.Base(path))
 }
 
 func ownerUID(fi os.FileInfo) (uint32, bool) {

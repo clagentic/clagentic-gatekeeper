@@ -45,6 +45,13 @@ func isCommandWrapper(p ProcInfo) bool {
 	return false
 }
 
+// IsCommandWrapper reports whether a process with this executable and argument
+// vector is a shell running a command string, by the same rule serve applies
+// when it climbs to the runtime.
+func IsCommandWrapper(exe string, args []string) bool {
+	return isCommandWrapper(ProcInfo{Exe: exe, Args: args})
+}
+
 func baseName(p string) string {
 	if i := strings.LastIndexByte(p, '/'); i >= 0 {
 		return p[i+1:]

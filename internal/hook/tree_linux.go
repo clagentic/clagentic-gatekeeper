@@ -3,21 +3,31 @@
 package hook
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
+
+	"github.com/clagentic/clagentic-gatekeeper/internal/identity"
 )
 
-// ProcNode describes one process in the hook's ancestry. Only names and option
-// flags are recorded, never an argument value, because arguments can carry
-// secrets.
+// ProcNode describes one process in the hook's ancestry. It records what the
+// binding rule decides on and nothing else: the executable's identity, the
+// basename of argv[0] and whether serve would treat the process as a command
+// wrapper. No argument, option or value is ever recorded, because arguments can
+// carry secrets.
 type ProcNode struct {
-	PID   int      `json:"pid"`
-	PPID  int      `json:"ppid"`
-	Comm  string   `json:"comm"`
-	Exe   string   `json:"exe,omitempty"`
-	Flags []string `json:"flags,omitempty"`
+	PID  int    `json:"pid"`
+	PPID int    `json:"ppid"`
+	Comm string `json:"comm"`
+	// Exe is the basename of the executable file; ExeID is its device and inode.
+	Exe   string `json:"exe,omitempty"`
+	ExeID string `json:"exe_id,omitempty"`
+	// Argv0 is the basename of the first argument.
+	Argv0   string `json:"argv0,omitempty"`
+	Wrapper bool   `json:"wrapper,omitempty"`
 }
 
 const maxAncestry = 8
@@ -45,20 +55,22 @@ func Ancestry(pid int) []ProcNode {
 			break
 		}
 		node := ProcNode{PID: pid, PPID: ppid, Comm: s[open+1 : closing]}
+		exePath := ""
 		if exe, err := os.Readlink("/proc/" + strconv.Itoa(pid) + "/exe"); err == nil {
-			node.Exe = filepath.Base(strings.TrimSuffix(exe, " (deleted)"))
+			exePath = strings.TrimSuffix(exe, " (deleted)")
+			node.Exe = filepath.Base(exePath)
+		}
+		if fi, err := os.Stat("/proc/" + strconv.Itoa(pid) + "/exe"); err == nil {
+			if st, ok := fi.Sys().(*syscall.Stat_t); ok {
+				node.ExeID = fmt.Sprintf("%d:%d", uint64(st.Dev), st.Ino)
+			}
 		}
 		if cmdline, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/cmdline"); err == nil {
 			args := strings.Split(strings.TrimRight(string(cmdline), "\x00"), "\x00")
-			for _, a := range args[min(1, len(args)):] {
-				if !strings.HasPrefix(a, "-") || len(node.Flags) == 4 {
-					break
-				}
-				if strings.Contains(a, "=") {
-					a = a[:strings.IndexByte(a, '=')]
-				}
-				node.Flags = append(node.Flags, a)
-			}
+			node.Argv0 = filepath.Base(args[0])
+			// The arguments are read only to classify the process; the
+			// classification is all that is kept.
+			node.Wrapper = identity.IsCommandWrapper(exePath, args)
 		}
 		out = append(out, node)
 		pid = ppid

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/clagentic/clagentic-gatekeeper/internal/identity"
@@ -41,6 +42,21 @@ type Issuer interface {
 	IssueChild(identity.ChildRequest) (*identity.Issued, error)
 }
 
+// UnavailableIssuer is the issuer of a hook whose socket could not be resolved:
+// every request fails with Err, so the event runs, logs the reason and changes
+// nothing.
+type UnavailableIssuer struct{ Err error }
+
+// IssueSession always fails with the configured error.
+func (u UnavailableIssuer) IssueSession(identity.SessionRequest) (*identity.Issued, error) {
+	return nil, u.Err
+}
+
+// IssueChild always fails with the configured error.
+func (u UnavailableIssuer) IssueChild(identity.ChildRequest) (*identity.Issued, error) {
+	return nil, u.Err
+}
+
 // Event names the registered hook subcommands accept.
 const (
 	EventSessionStart     = "session-start"
@@ -67,13 +83,43 @@ type ClaudeCode struct {
 	// RefreshBelow is the remaining lifetime under which user-prompt-submit
 	// asks for a new session assertion; zero disables refresh.
 	RefreshBelow time.Duration
-	// Compose names an executable run first on pre-tool-use-bash; see composeUpstream.
+	// Compose names an executable run first on pre-tool-use-bash; see
+	// composedPreToolUse. It is fixed at registration, never read from a payload.
 	Compose string
-	Log     Log
-	Capture Capture
-	Now     func() time.Time
+	// UpstreamTimeout is the budget the composed hook gets: the timeout the
+	// registration gives it, so a slow upstream is cut off exactly where the
+	// runtime would have cut it off alone. Zero means DefaultUpstreamTimeout.
+	UpstreamTimeout time.Duration
+	Log             Log
+	Capture         Capture
+	Now             func() time.Time
 	// HookPID is the pid whose ancestry is captured.
 	HookPID int
+
+	heldMu  sync.Mutex
+	held    Result
+	hasHeld bool
+}
+
+// ErrOriginHuman is the one message for a request that names origin human. The
+// adapter never asks for, or synthesises, a human grade; it refuses before any
+// request leaves the process.
+var ErrOriginHuman = errors.New("origin human is never requested by the adapter")
+
+// hold records the composed hook's verdict as soon as it is known, so a hook
+// that is later cut short (watchdog, panic) can still emit exactly what the
+// upstream said instead of losing it.
+func (h *ClaudeCode) hold(r Result) {
+	h.heldMu.Lock()
+	defer h.heldMu.Unlock()
+	h.held, h.hasHeld = r, true
+}
+
+// Held returns the composed hook's verdict when one was obtained.
+func (h *ClaudeCode) Held() (Result, bool) {
+	h.heldMu.Lock()
+	defer h.heldMu.Unlock()
+	return h.held, h.hasHeld
 }
 
 func (h *ClaudeCode) now() time.Time {
@@ -136,6 +182,9 @@ func (h *ClaudeCode) Handle(event string, in io.Reader) Result {
 // request asks the issuer for a session, always without a human grade: the
 // adapter never requests or synthesises one.
 func (h *ClaudeCode) requestSession(definition string) (*identity.Issued, error) {
+	if h.Origin == "human" {
+		return nil, ErrOriginHuman
+	}
 	req := identity.SessionRequest{Origin: h.Origin}
 	if definition != "" {
 		req.Definition = definition
@@ -200,19 +249,24 @@ func (h *ClaudeCode) subagentStart(p Payload) (string, error) {
 
 // ensureAgent returns the record of the payload's agent, issuing the child
 // assertion when none exists. A payload without a usable agent_id is not an
-// agent. The same path serves subagent-start and, as a fallback for a spawn whose
-// start event never delivered an id, pre-tool-use-bash.
+// agent. The lookup is keyed by session and agent id alone: the agent type is
+// needed only to issue, so a call that carries only an agent_id still finds the
+// directory issued at subagent-start. The same path serves subagent-start and,
+// as a fallback for a spawn whose start event never arrived, pre-tool-use-bash.
 func (h *ClaudeCode) ensureAgent(p Payload) (Record, string, error) {
 	if !safeName.MatchString(p.SessionID) {
 		return Record{}, "skipped", errors.New("no usable session_id")
 	}
-	if !safeName.MatchString(p.AgentID) || !safeName.MatchString(p.AgentType) {
-		return Record{}, "skipped", errors.New("no usable agent_id and agent_type")
+	if !safeName.MatchString(p.AgentID) {
+		return Record{}, "skipped", errors.New("no usable agent_id")
 	}
 	if rec, ok, err := h.Store.Get(p.SessionID, p.AgentID); err != nil {
 		return Record{}, "state-failed", err
 	} else if ok {
 		return rec, "agent-known", nil
+	}
+	if !safeName.MatchString(p.AgentType) {
+		return Record{}, "skipped", errors.New("no usable agent_type to issue a child with")
 	}
 	parent, ok, err := h.Store.Get(p.SessionID, "")
 	if err != nil {
@@ -323,18 +377,21 @@ func (h *ClaudeCode) prefix(p Payload, command string) (rewritten, decision stri
 	return stmt + command, "delivered", nil
 }
 
-type updatedOutput struct {
-	HookSpecificOutput map[string]json.RawMessage `json:"hookSpecificOutput"`
-}
+const rewriteReason = "gatekeeper: prefixed " + EnvDir + " for this call"
 
-// rewriteOutput builds the PreToolUse reply for a rewritten call. toolInput is
+// mergeRewrite builds the PreToolUse reply for a rewritten call from reply, the
+// members of an upstream reply (empty when standalone), specific, its
+// hookSpecificOutput, and base, the tool input the rewrite starts from. base is
 // copied whole so members other than the command (timeout, description,
-// run_in_background) survive. Allow is the only decision this hook returns, and
-// only here: the harness re-checks a rewritten command, so without it every
-// rewritten call would fall into the operator's permission flow.
-func rewriteOutput(toolInput map[string]json.RawMessage, command string) ([]byte, error) {
-	updated := make(map[string]json.RawMessage, len(toolInput)+1)
-	for k, v := range toolInput {
+// run_in_background) survive, and every other member of reply is kept.
+//
+// Allow is the only decision this hook ever adds, and only here, tied to the
+// rewrite it makes: the harness re-checks a rewritten command, so without it a
+// rewritten call would fall into the operator's permission flow. A decision the
+// upstream already gave is never replaced.
+func mergeRewrite(reply, specific, base map[string]json.RawMessage, command string) ([]byte, error) {
+	updated := make(map[string]json.RawMessage, len(base)+1)
+	for k, v := range base {
 		updated[k] = v
 	}
 	cmd, err := json.Marshal(command)
@@ -342,11 +399,34 @@ func rewriteOutput(toolInput map[string]json.RawMessage, command string) ([]byte
 		return nil, err
 	}
 	updated["command"] = cmd
-	body := map[string]any{
-		"hookEventName":            "PreToolUse",
-		"permissionDecision":       "allow",
-		"permissionDecisionReason": "gatekeeper: prefixed " + EnvDir + " for this call",
-		"updatedInput":             updated,
+	set := func(m map[string]json.RawMessage, k string, v any) error {
+		b, err := json.Marshal(v)
+		if err != nil {
+			return err
+		}
+		m[k] = b
+		return nil
 	}
-	return json.Marshal(map[string]any{"hookSpecificOutput": body})
+	if err := set(specific, "updatedInput", updated); err != nil {
+		return nil, err
+	}
+	if _, ok := specific["hookEventName"]; !ok {
+		if err := set(specific, "hookEventName", "PreToolUse"); err != nil {
+			return nil, err
+		}
+	}
+	if stringMember(specific, "permissionDecision") == "" {
+		if err := set(specific, "permissionDecision", "allow"); err != nil {
+			return nil, err
+		}
+		if _, ok := specific["permissionDecisionReason"]; !ok {
+			if err := set(specific, "permissionDecisionReason", rewriteReason); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if err := set(reply, "hookSpecificOutput", specific); err != nil {
+		return nil, err
+	}
+	return json.Marshal(reply)
 }

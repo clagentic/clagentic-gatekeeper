@@ -138,7 +138,9 @@ func TestSpoofedArgvCannotChangeRolesOrGrade(t *testing.T) {
 	f := newFixture(t, func(s *Settings) { s.RuntimeRoles = []string{"reader"} })
 	for _, sp := range spoofs {
 		exe, args := sp.exe, sp.args
-		f.issuer.Proc = func(int32) (ProcInfo, error) { return ProcInfo{Exe: exe, Args: args, StartTime: 100, UID: uint32(os.Getuid()), HasUID: true}, nil }
+		f.issuer.Proc = func(int32) (ProcInfo, error) {
+			return ProcInfo{Exe: exe, Args: args, StartTime: 100, UID: uint32(os.Getuid()), HasUID: true}, nil
+		}
 		for _, req := range []SessionRequest{{}, {Runtime: &RuntimeDecl{}}} {
 			_, c := mustSession(t, f, selfPeer(10), req)
 			if strings.Join(c.Roles, ",") != "reader" {

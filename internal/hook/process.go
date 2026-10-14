@@ -15,6 +15,9 @@ import (
 // process, which for a launcher is the launcher itself. The adapter never
 // requests a human grade.
 func ProcessAssignment(is Issuer, definition, origin string) (string, error) {
+	if origin == "human" {
+		return "", ErrOriginHuman
+	}
 	req := identity.SessionRequest{Origin: origin}
 	if definition != "" {
 		if !safeName.MatchString(definition) {

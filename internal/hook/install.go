@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -28,8 +29,24 @@ type Install struct {
 	// Compose is passed to pre-tool-use-bash when set.
 	Compose string
 	// TimeoutSeconds is the runtime-side timeout of every hook; the hook itself
-	// gives up sooner.
+	// gives up sooner. For the composed pre-tool-use-bash entry it is the budget
+	// the composed hook gets, the timeout it had when registered alone, and the
+	// entry's own runtime timeout is that plus composeAllowanceSeconds.
 	TimeoutSeconds int
+}
+
+// composeAllowanceSeconds is the time the runtime gives the composed entry on
+// top of the upstream's budget: room for this hook's own issuer call and its
+// watchdog, so the runtime never cuts the hook off while the upstream is still
+// within its budget or before the upstream's verdict can be emitted.
+const composeAllowanceSeconds = 8
+
+// timeoutFor is the runtime-side timeout registered for event.
+func (in Install) timeoutFor(event string) int {
+	if event == EventPreToolUseBash && in.Compose != "" {
+		return in.TimeoutSeconds + composeAllowanceSeconds
+	}
+	return in.TimeoutSeconds
 }
 
 // registration maps each event to the runtime's event name and matcher.
@@ -66,7 +83,7 @@ func (in Install) Validate() error {
 	case in.Compose != "" && !filepath.IsAbs(in.Compose):
 		return errors.New("--compose must be an absolute path")
 	case in.Origin == "human":
-		return errors.New("origin human is never requested by the adapter")
+		return ErrOriginHuman
 	}
 	if _, err := ParseMode(string(in.Mode)); err != nil {
 		return err
@@ -91,7 +108,8 @@ func (in Install) Command(event string) string {
 		}
 	case EventPreToolUseBash:
 		if in.Compose != "" {
-			parts = append(parts, "--compose", shellQuote(in.Compose))
+			parts = append(parts, "--compose", shellQuote(in.Compose),
+				"--upstream-timeout", strconv.Itoa(in.TimeoutSeconds)+"s")
 		}
 	}
 	return strings.Join(parts, " ")
@@ -187,7 +205,9 @@ func (in Install) Apply(root settings) (bool, error) {
 			return false, err
 		}
 		found := false
-		for gi, group := range groups {
+		timeout := json.Number(strconv.Itoa(in.timeoutFor(r.event)))
+		keptGroups := make([]any, 0, len(groups))
+		for _, group := range groups {
 			g, entries := entriesOf(group)
 			kept := make([]any, 0, len(entries))
 			for _, entry := range entries {
@@ -205,20 +225,26 @@ func (in Install) Apply(root settings) (bool, error) {
 					e["command"] = want
 					changed = true
 				}
-				if got, _ := e["timeout"].(json.Number); got.String() != strconv.Itoa(in.TimeoutSeconds) {
-					e["timeout"] = json.Number(strconv.Itoa(in.TimeoutSeconds))
+				if got, _ := e["timeout"].(json.Number); got != timeout {
+					e["timeout"] = timeout
 					changed = true
 				}
 				kept = append(kept, e)
 			}
 			if len(kept) != len(entries) {
 				g["hooks"] = kept
-				groups[gi] = g
 			}
+			// A group that dropping a duplicate emptied would stay behind as a
+			// matcher with nothing to run.
+			if g != nil && len(entries) > 0 && len(kept) == 0 {
+				continue
+			}
+			keptGroups = append(keptGroups, group)
 		}
+		groups = keptGroups
 		if !found {
 			group := map[string]any{"hooks": []any{map[string]any{
-				"type": "command", "command": want, "timeout": json.Number(strconv.Itoa(in.TimeoutSeconds)),
+				"type": "command", "command": want, "timeout": timeout,
 			}}}
 			if r.matcher != "" {
 				group["matcher"] = r.matcher
@@ -272,6 +298,10 @@ func Remove(root settings) (bool, error) {
 			h[r.runtime] = keptGroups
 		}
 	}
+	// A hooks object this removal emptied is dropped with it.
+	if changed && len(h) == 0 {
+		delete(root, "hooks")
+	}
 	return changed, nil
 }
 
@@ -279,25 +309,20 @@ func Remove(root settings) (bool, error) {
 // unregistration instead of registration. When nothing would change the file is
 // not touched. With dryRun the new content is returned and nothing is written.
 func ApplySettingsFile(path string, in *Install, remove, dryRun bool) (changed bool, content []byte, err error) {
-	target := path
-	if resolved, rerr := filepath.EvalSymlinks(path); rerr == nil {
-		target = resolved
+	target, err := resolveTarget(path)
+	if err != nil {
+		return false, nil, err
 	}
-	mode := os.FileMode(0o600)
+	var existing os.FileInfo
 	root := settings{}
 	raw, err := os.ReadFile(target)
 	switch {
 	case err == nil:
-		if fi, serr := os.Stat(target); serr == nil {
-			mode = fi.Mode().Perm()
+		if existing, err = os.Stat(target); err != nil {
+			return false, nil, err
 		}
-		dec := json.NewDecoder(bytes.NewReader(raw))
-		dec.UseNumber()
-		if err := dec.Decode(&root); err != nil {
-			return false, nil, fmt.Errorf("%s is not a JSON object: %w", path, err)
-		}
-		if _, err := dec.Token(); err == nil {
-			return false, nil, fmt.Errorf("%s has content after the JSON object", path)
+		if root, err = decodeSettings(raw); err != nil {
+			return false, nil, fmt.Errorf("%s: %w", path, err)
 		}
 	case errors.Is(err, os.ErrNotExist):
 		if remove {
@@ -325,10 +350,64 @@ func ApplySettingsFile(path string, in *Install, remove, dryRun bool) (changed b
 	if dryRun {
 		return true, content, nil
 	}
-	return true, content, writeAtomic(target, content, mode)
+	return true, content, writeAtomic(target, content, existing)
 }
 
-func writeAtomic(path string, content []byte, mode os.FileMode) error {
+// maxLinkHops bounds how many symbolic links resolveTarget follows.
+const maxLinkHops = 40
+
+// resolveTarget follows symbolic links at the final component of path to the
+// file that is really edited, including a link whose target does not exist yet:
+// the file is then created at the target, and the link stays a link.
+func resolveTarget(path string) (string, error) {
+	p := path
+	for hops := 0; hops < maxLinkHops; hops++ {
+		fi, err := os.Lstat(p)
+		if errors.Is(err, os.ErrNotExist) {
+			return p, nil
+		}
+		if err != nil {
+			return "", err
+		}
+		if fi.Mode()&os.ModeSymlink == 0 {
+			return p, nil
+		}
+		dest, err := os.Readlink(p)
+		if err != nil {
+			return "", err
+		}
+		if !filepath.IsAbs(dest) {
+			dest = filepath.Join(filepath.Dir(p), dest)
+		}
+		p = dest
+	}
+	return "", fmt.Errorf("%s: too many levels of symbolic links", path)
+}
+
+// decodeSettings parses exactly one JSON object. null, any other value, an
+// empty input and anything after the object, valid JSON or not, are refused.
+func decodeSettings(raw []byte) (settings, error) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var root settings
+	if err := dec.Decode(&root); err != nil {
+		return nil, fmt.Errorf("not a JSON object: %w", err)
+	}
+	if root == nil {
+		return nil, errors.New("not a JSON object: the value is null")
+	}
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return nil, errors.New("has content after the JSON object")
+	}
+	return root, nil
+}
+
+// writeAtomic replaces the file at path with content. The new content is
+// written to a temporary file in the same directory, given the owner and mode of
+// the file it replaces, and flushed to disk before the rename makes it visible;
+// the directory is flushed after, so a crash leaves the old file or the new
+// one and never a truncated one. existing is nil for a file being created.
+func writeAtomic(path string, content []byte, existing os.FileInfo) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".settings-*.tmp")
 	if err != nil {
 		return err
@@ -339,10 +418,20 @@ func writeAtomic(path string, content []byte, mode os.FileMode) error {
 		_ = os.Remove(name)
 		return err
 	}
+	mode := os.FileMode(0o600)
+	if existing != nil {
+		mode = existing.Mode().Perm()
+		if err := chownLike(tmp, existing); err != nil {
+			return fail(fmt.Errorf("keep the owner of %s: %w", path, err))
+		}
+	}
+	if err := tmp.Chmod(mode); err != nil {
+		return fail(err)
+	}
 	if _, err := tmp.Write(content); err != nil {
 		return fail(err)
 	}
-	if err := tmp.Chmod(mode); err != nil {
+	if err := tmp.Sync(); err != nil {
 		return fail(err)
 	}
 	if err := tmp.Close(); err != nil {
@@ -353,5 +442,5 @@ func writeAtomic(path string, content []byte, mode os.FileMode) error {
 		_ = os.Remove(name)
 		return err
 	}
-	return nil
+	return syncDir(filepath.Dir(path))
 }
