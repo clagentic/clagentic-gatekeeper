@@ -63,14 +63,20 @@ func runServe(args []string) error {
 	if err != nil {
 		return fmt.Errorf("identity: %w", err)
 	}
-	if ic.JWKSPath != "" {
-		if err := issuer.Keys.WriteJWKS(ic.JWKSPath); err != nil {
-			return fmt.Errorf("identity: write jwks_path: %w", err)
-		}
-	}
+	// Nothing is published until this process owns the socket: a second serve
+	// that Listen refuses must not overwrite the key set the live one published.
 	l, err := identity.Listen(sock, mode)
 	if err != nil {
 		return fmt.Errorf("identity: listen: %w", err)
+	}
+	if ic.JWKSPath != "" {
+		if err := issuer.Keys.WriteJWKS(ic.JWKSPath); err != nil {
+			// Listen does not unlink on Close, and this process created the
+			// socket, so it removes it rather than leave a name nobody serves.
+			l.Close()
+			os.Remove(sock)
+			return fmt.Errorf("identity: write jwks_path: %w", err)
+		}
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

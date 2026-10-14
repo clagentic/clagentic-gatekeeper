@@ -179,6 +179,44 @@ identity:
 	}
 }
 
+// serve publishes nothing until it owns the socket: a second serve that Listen
+// refuses leaves the live server's key set byte-identical, or absent if absent.
+func TestServeRefusedAtOccupiedSocketPublishesNoJWKS(t *testing.T) {
+	for name, existing := range map[string][]byte{
+		"existing key set is untouched": []byte(`{"keys":["live"]}`),
+		"absent key set stays absent":   nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir, key, defs := identityDeployment(t)
+			sock := filepath.Join(dir, "id.sock")
+			jwks := filepath.Join(dir, "jwks.json")
+			if existing != nil {
+				if err := os.WriteFile(jwks, existing, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(sock, []byte("occupied"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg := writeConfig(t, dir, "identity:\n  key_path: "+key+"\n  jwks_path: "+jwks+"\n  definitions_dir: "+defs+"\n  spawn_root: "+filepath.Join(dir, "spawn")+"\n")
+			err := runServe([]string{"--config", cfg, "--socket", sock})
+			if err == nil || !strings.Contains(err.Error(), "already exists") {
+				t.Fatalf("serve at an occupied socket: %v", err)
+			}
+			got, readErr := os.ReadFile(jwks)
+			if existing == nil {
+				if !os.IsNotExist(readErr) {
+					t.Fatalf("jwks_path was created by a refused serve: %v", readErr)
+				}
+				return
+			}
+			if readErr != nil || string(got) != string(existing) {
+				t.Fatalf("jwks_path changed by a refused serve: %q %v", got, readErr)
+			}
+		})
+	}
+}
+
 func TestServeRefusesConfigWithoutIdentitySection(t *testing.T) {
 	dir, _, _ := identityDeployment(t)
 	cfg := writeConfig(t, dir, "github:\n  owner: example-org\n")
