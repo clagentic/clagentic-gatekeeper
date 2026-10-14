@@ -179,8 +179,57 @@ func TestSessionDeliveryDirectory(t *testing.T) {
 
 func childSetup(t *testing.T, mutate func(*Settings)) (*fixture, *Issued) {
 	f := newFixture(t, mutate)
-	out, _ := mustSession(t, f, selfPeer(10), SessionRequest{})
+	// The parent holds every role the fixture definitions carry, so a child's
+	// roles are bounded by delegable_roles and its definition, not by an empty
+	// parent.
+	out, _ := mustSession(t, f, selfPeer(10), SessionRequest{Definition: "example-merger"})
 	return f, out
+}
+
+func TestChildNeverHoldsARoleItsParentLacks(t *testing.T) {
+	f := newFixture(t, nil)
+	parent, _ := mustSession(t, f, selfPeer(10), SessionRequest{Definition: "example-builder"})
+	out, err := f.issuer.IssueChild(selfPeer(10), ChildRequest{ParentToken: parent.Token, AgentType: "example-merger", AgentID: "a1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(out.Roles, ",") != "builder" {
+		t.Fatalf("child roles %v, want only builder", out.Roles)
+	}
+	n := out.Narrowed
+	if n == nil || n.Policy != PolicyParentRoles || len(n.Steps) != 1 || n.Steps[0].Policy != PolicyParentRoles || strings.Join(n.Steps[0].Dropped, ",") != "merger" {
+		t.Fatalf("narrowing %+v", n)
+	}
+	claims, err := f.issuer.Keys.ParseOwn(out.Token)
+	if err != nil || strings.Join(claims.Roles, ",") != "builder" {
+		t.Fatalf("signed roles %v %v", claims, err)
+	}
+}
+
+func TestChildNamesEveryPolicyThatDroppedARole(t *testing.T) {
+	f := newFixture(t, func(s *Settings) { s.DelegableRoles = []string{"builder", "merger"} })
+	parent, _ := mustSession(t, f, selfPeer(10), SessionRequest{Definition: "example-builder"})
+	writeDefinition(t, f.defs, "example-wide", "builder, merger, reader")
+	out, err := f.issuer.IssueChild(selfPeer(10), ChildRequest{ParentToken: parent.Token, AgentType: "example-wide", AgentID: "a1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := out.Narrowed
+	if n == nil || len(n.Steps) != 2 || n.Steps[0].Policy != PolicyDelegableRoles || n.Steps[1].Policy != PolicyParentRoles {
+		t.Fatalf("narrowing %+v", n)
+	}
+	if strings.Join(n.Steps[0].Dropped, ",") != "reader" || strings.Join(n.Steps[1].Dropped, ",") != "merger" || strings.Join(out.Roles, ",") != "builder" {
+		t.Fatalf("narrowing %+v roles %v", n, out.Roles)
+	}
+}
+
+func TestChildOfARolelessParentHoldsNoRole(t *testing.T) {
+	f := newFixture(t, nil)
+	parent, _ := mustSession(t, f, selfPeer(10), SessionRequest{})
+	out, err := f.issuer.IssueChild(selfPeer(10), ChildRequest{ParentToken: parent.Token, AgentType: "example-builder", AgentID: "a1"})
+	if err != nil || len(out.Roles) != 0 {
+		t.Fatalf("out=%+v err=%v", out, err)
+	}
 }
 
 func TestChildDropsRoleOutsideDelegableAndNamesPolicy(t *testing.T) {

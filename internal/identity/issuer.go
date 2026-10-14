@@ -96,10 +96,42 @@ type ChildRequest struct {
 	AgentID     string `json:"agent_id"`
 }
 
-// Narrowing reports roles a policy removed from a requested set.
-type Narrowing struct {
+// Policy names reported in a Narrowing.
+const (
+	PolicyDelegableRoles = "identity.delegable_roles"
+	PolicyParentRoles    = "parent_token.roles"
+)
+
+// PolicyStep is the roles one policy removed.
+type PolicyStep struct {
 	Policy  string   `json:"policy"`
 	Dropped []string `json:"dropped"`
+}
+
+// Narrowing reports every policy that removed roles from a requested set.
+// Policy and Dropped summarise all steps (policy names joined by a comma,
+// dropped roles in order); Steps lists each policy with its own drops.
+type Narrowing struct {
+	Policy  string       `json:"policy"`
+	Dropped []string     `json:"dropped"`
+	Steps   []PolicyStep `json:"steps"`
+}
+
+// add records a policy's drops; it returns n unchanged when nothing was
+// dropped and allocates on first use, so a nil Narrowing means no narrowing.
+func (n *Narrowing) add(policy string, dropped []string) *Narrowing {
+	if len(dropped) == 0 {
+		return n
+	}
+	if n == nil {
+		n = &Narrowing{Dropped: []string{}}
+	} else {
+		n.Policy += ","
+	}
+	n.Policy += policy
+	n.Dropped = append(n.Dropped, dropped...)
+	n.Steps = append(n.Steps, PolicyStep{Policy: policy, Dropped: dropped})
+	return n
 }
 
 // Issued is the response of both operations.
@@ -216,10 +248,25 @@ func (i *Issuer) IssueChild(peer Peer, req ChildRequest) (*Issued, error) {
 		return nil, unknownDefinition(req.AgentType, err)
 	}
 
-	roles, dropped := intersect(def.Roles, i.DelegableRoles)
-	var narrowed *Narrowing
-	if len(dropped) > 0 {
-		narrowed = &Narrowing{Policy: "identity.delegable_roles", Dropped: dropped}
+	// Delegation never widens: the child holds the definition's roles that the
+	// deployment allows to be delegated and that the parent itself holds. The
+	// parent bound is always applied; an empty parent set is a policy, not an
+	// absent one.
+	parentRoles := parent.Roles
+	if parentRoles == nil {
+		parentRoles = []string{}
+	}
+	roles, narrowed := def.Roles, (*Narrowing)(nil)
+	for _, step := range []struct {
+		policy string
+		allow  []string
+	}{
+		{PolicyDelegableRoles, i.DelegableRoles},
+		{PolicyParentRoles, parentRoles},
+	} {
+		var dropped []string
+		roles, dropped = intersect(roles, step.allow)
+		narrowed = narrowed.add(step.policy, dropped)
 	}
 	child := Claims{
 		Iss: i.Issuer, Sub: parent.Sub, Roles: roles, Grade: "harness", RT: parent.RT,

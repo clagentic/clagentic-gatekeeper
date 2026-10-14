@@ -573,9 +573,12 @@ lose its socket to a second issuer.
 - `issue-child` requires a parent token this server issued, still unexpired,
   to the very process (pid and start time) now asking. The child is grade
   `harness`, its roles are the definition's roles intersected with
-  `identity.delegable_roles`, its `exp` never exceeds the parent's, and the
-  response names `identity.delegable_roles` and the dropped roles when the
-  policy narrowed them.
+  `identity.delegable_roles` and with the roles of the parent token, so
+  delegation never widens: a child can never hold a role its parent lacks,
+  whatever the definition or `delegable_roles` allow. Its `exp` never exceeds
+  the parent's. The response lists every policy that dropped a role
+  (`identity.delegable_roles`, `parent_token.roles`) with the roles each
+  dropped.
 - Every assertion gets its own delivery directory under `identity.spawn_root`
   (mode 0700, handed to the peer uid, with `identity.jwt` and `tmp/`), and the
   `dir` claim is bound to it. Serving a uid other than its own needs root or

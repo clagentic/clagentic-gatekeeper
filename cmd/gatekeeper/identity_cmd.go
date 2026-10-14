@@ -91,8 +91,11 @@ func printIssued(out *identity.Issued, asJSON bool) error {
 
 // reportNarrowing makes a policy-narrowed child visible without --json.
 func reportNarrowing(out *identity.Issued) {
-	if out.Narrowed != nil {
-		fmt.Fprintf(os.Stderr, "narrowed by %s: dropped roles %s\n", out.Narrowed.Policy, strings.Join(out.Narrowed.Dropped, ","))
+	if out.Narrowed == nil {
+		return
+	}
+	for _, step := range out.Narrowed.Steps {
+		fmt.Fprintf(os.Stderr, "narrowed by %s: dropped roles %s\n", step.Policy, strings.Join(step.Dropped, ","))
 	}
 }
 
