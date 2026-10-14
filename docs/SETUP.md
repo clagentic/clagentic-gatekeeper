@@ -697,9 +697,12 @@ semantics).
 ### Signing key
 
 ```bash
-openssl genpkey -algorithm ed25519 -out identity-key.pem
-chmod 0600 identity-key.pem
+(umask 077 && openssl genpkey -algorithm ed25519 -out identity-key.pem)
 ```
+
+The umask is set before the file exists, so it is created mode 0600 and is never
+readable by anyone but its owner, at any instant. A `chmod` after the write
+would leave a window in which a permissive umask exposes the private key.
 
 The published key set holds the current signing key only.
 
