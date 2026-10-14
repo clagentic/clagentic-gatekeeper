@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -284,7 +283,8 @@ func ancestorModes(t *testing.T, dir string) map[string]string {
 		if err != nil {
 			t.Fatal(err)
 		}
-		modes[d] = fmt.Sprintf("%v uid=%d", fi.Mode(), fi.Sys().(*syscall.Stat_t).Uid)
+		uid, _ := ownerUID(fi)
+		modes[d] = fmt.Sprintf("%v uid=%d", fi.Mode(), uid)
 		if filepath.Dir(d) == d {
 			return modes
 		}
@@ -350,7 +350,7 @@ func runOtherUidSession(t *testing.T) {
 	cmd := exec.Command(viaFD+"/helper.test", "-test.run=^TestHelperProcess$")
 	cmd.ExtraFiles = []*os.File{dirFD}
 	cmd.Env = append(os.Environ(), helperEnvSocket+"="+viaFD+"/"+filepath.Base(c.Socket))
-	cmd.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: otherUID, Gid: otherUID}}
+	runAsUID(cmd, otherUID)
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -368,8 +368,8 @@ func runOtherUidSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st := fi.Sys().(*syscall.Stat_t); st.Uid != otherUID || fi.Mode().Perm() != 0o700 {
-		t.Fatalf("spawn dir owner %d mode %v", st.Uid, fi.Mode().Perm())
+	if uid, _ := ownerUID(fi); uid != otherUID || fi.Mode().Perm() != 0o700 {
+		t.Fatalf("spawn dir owner %d mode %v", uid, fi.Mode().Perm())
 	}
 }
 

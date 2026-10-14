@@ -185,7 +185,7 @@ func Listen(path string, mode os.FileMode) (net.Listener, error) {
 		if fi.Mode()&os.ModeSocket == 0 {
 			return nil, fmt.Errorf("%s exists and is not a socket", path)
 		}
-		if st, ok := fi.Sys().(*syscall.Stat_t); !ok || int(st.Uid) != os.Geteuid() {
+		if uid, ok := ownerUID(fi); !ok || int(uid) != os.Geteuid() {
 			return nil, fmt.Errorf("%s exists and is not owned by the serving uid; remove it by hand if it is stale", path)
 		}
 		perr := probeSocket(path)

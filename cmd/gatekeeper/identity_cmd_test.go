@@ -83,7 +83,9 @@ func startServe(t *testing.T, cfgPath, sock string) {
 	}
 	t.Cleanup(func() {
 		// runServe handles SIGTERM itself; the signal never reaches the test runner.
-		_ = syscall.Kill(os.Getpid(), syscall.SIGTERM)
+		if self, err := os.FindProcess(os.Getpid()); err == nil {
+			_ = self.Signal(syscall.SIGTERM)
+		}
 		if err := <-done; err != nil {
 			t.Errorf("serve: %v", err)
 		}

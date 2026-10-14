@@ -4,7 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -315,8 +314,8 @@ func TestGrantsFollowPeerCredentialsNotProcData(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if st, ok := fi.Sys().(*syscall.Stat_t); ok && st.Uid != peer.UID {
-			t.Errorf("delivery directory owned by %d, want peer uid %d", st.Uid, peer.UID)
+		if uid, ok := ownerUID(fi); ok && uid != peer.UID {
+			t.Errorf("delivery directory owned by %d, want peer uid %d", uid, peer.UID)
 		}
 	}
 
@@ -332,7 +331,7 @@ func TestGrantsFollowPeerCredentialsNotProcData(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if st, ok := fi.Sys().(*syscall.Stat_t); !ok || st.Uid != foreign {
+		if uid, ok := ownerUID(fi); !ok || uid != foreign {
 			t.Errorf("delivery directory not owned by the peer uid %d", foreign)
 		}
 	}
