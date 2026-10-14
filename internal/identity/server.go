@@ -3,8 +3,6 @@ package identity
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -180,16 +178,23 @@ func (s *Server) writeRefusal(w http.ResponseWriter, e *IssueError) {
 	_ = json.NewEncoder(w).Encode(e)
 }
 
+// listenAfterBind, when set by a test, runs once the temporary socket exists and
+// before it is chmodded or linked, which is the only window in which a name
+// bound to the listener is not yet at its final mode.
+var listenAfterBind func(privateDir, tempSocket string)
+
 // Listen binds the socket and refuses to start when anything already exists at
-// path, whatever it is. Two invariants hold for every caller:
+// path, whatever it is. Invariants, for every caller and under any process umask:
 //
-//   - path is never connectable with a mode other than mode. The socket is bound
-//     at a private temporary name in the same directory, given mode there, and
-//     only then linked to path, so path does not exist until it carries mode.
+//   - no name bound to the listener is ever connectable by a uid that mode
+//     excludes. The socket is first bound inside a fresh directory created by
+//     this call and chmodded to 0700 explicitly (so umask cannot widen it); only
+//     the serving uid can reach anything inside it. The socket is given mode
+//     there, then linked to path, so path does not exist until it carries mode.
 //   - nothing at path is ever unlinked. The link step fails if path exists
 //     (link(2) never replaces), so two issuers can never both own the path, and
-//     the listener is not asked to unlink on Close. The only name this function
-//     removes is the temporary one it created itself.
+//     the listener is not asked to unlink on Close. The only names this function
+//     removes are the temporary socket and the private directory it created.
 //
 // Cleanup of a leftover socket belongs to the operator or the service manager.
 func Listen(path string, mode os.FileMode) (net.Listener, error) {
@@ -197,21 +202,30 @@ func Listen(path string, mode os.FileMode) (net.Listener, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
-	var suffix [6]byte
-	if _, err := rand.Read(suffix[:]); err != nil {
-		return nil, err
-	}
-	tmp := filepath.Join(dir, ".gk-"+hex.EncodeToString(suffix[:]))
-	l, err := net.ListenUnix("unix", &net.UnixAddr{Name: tmp, Net: "unix"})
+	private, err := os.MkdirTemp(dir, ".gk-")
 	if err != nil {
 		return nil, err
 	}
+	// cleanup removes only the directory this call created and its contents.
+	cleanup := func() { os.RemoveAll(private) }
+	if err := os.Chmod(private, 0o700); err != nil {
+		cleanup()
+		return nil, err
+	}
+	tmp := filepath.Join(private, "s")
+	l, err := net.ListenUnix("unix", &net.UnixAddr{Name: tmp, Net: "unix"})
+	if err != nil {
+		cleanup()
+		return nil, err
+	}
 	l.SetUnlinkOnClose(false)
-	// discard releases the listener and removes only the temporary name.
 	discard := func(cause error) (net.Listener, error) {
 		l.Close()
-		os.Remove(tmp)
+		cleanup()
 		return nil, cause
+	}
+	if listenAfterBind != nil {
+		listenAfterBind(private, tmp)
 	}
 	if err := os.Chmod(tmp, mode); err != nil {
 		return discard(err)
@@ -222,10 +236,10 @@ func Listen(path string, mode os.FileMode) (net.Listener, error) {
 		}
 		return discard(fmt.Errorf("publish socket at %s: %w", path, err))
 	}
-	if err := os.Remove(tmp); err != nil {
-		// The socket is already published with its mode; a leftover temporary
-		// name is the same inode and is harmless to leave, but report it.
-		fmt.Fprintf(os.Stderr, "identity: could not remove temporary socket name %s: %v\n", tmp, err)
+	// The socket is already published with its mode; a leftover private
+	// directory is unreachable to other uids, but report it.
+	if err := os.RemoveAll(private); err != nil {
+		fmt.Fprintf(os.Stderr, "identity: could not remove temporary socket directory %s: %v\n", private, err)
 	}
 	return l, nil
 }
