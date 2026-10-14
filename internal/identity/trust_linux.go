@@ -65,6 +65,11 @@ func openTrustedDir(path string, createMode os.FileMode) (*os.File, error) {
 		return nil, fmt.Errorf("%q must be an absolute path", path)
 	}
 	clean := filepath.Clean(path)
+	// A mode the check would refuse is rejected before anything is created, so a
+	// refused start leaves no directory behind.
+	if createMode.Perm()&0o022 != 0 {
+		return nil, fmt.Errorf("%s: create mode %#o is writable by group or other", clean, createMode.Perm())
+	}
 	// Every component is held as an O_PATH descriptor: it needs only search
 	// permission on its parent, so an ancestor that is traversable but not
 	// readable (mode 0711) is accepted, and fstat on the descriptor still reports
@@ -120,9 +125,14 @@ func openTrustedDir(path string, createMode os.FileMode) (*os.File, error) {
 	syscall.Close(fd)
 	fd = rd
 	if created {
-		// The mode given to mkdir is filtered by the umask.
+		// The mode given to mkdir is filtered by the umask, so the check in the
+		// loop judged the filtered mode; fchmod sets the real one and the check
+		// runs again on the final state.
 		if err := syscall.Fchmod(fd, uint32(createMode.Perm())); err != nil {
 			return fail(fmt.Errorf("set mode of %s: %w", clean, err))
+		}
+		if err := checkTrustedDir(fd, clean, true); err != nil {
+			return fail(err)
 		}
 	}
 	return os.NewFile(uintptr(fd), clean), nil
