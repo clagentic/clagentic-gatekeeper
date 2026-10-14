@@ -301,3 +301,46 @@ roles:
 #     peer-reviewer:
 #       auth_role: a2a-role
 #       oidc_role: a2a-oidc-role
+
+# ---------------------------------------------------------------------------
+# Identity Assertion issuer (OPTIONAL) — `gatekeeper serve`
+# ---------------------------------------------------------------------------
+# Issues the signed Identity Assertion of docs/identity-contract.md. A config
+# holding ONLY this section is a valid issuer-only deployment: `serve` runs,
+# `mint` reports that minting is not configured. A config with this section
+# and github/broker/roles runs both. See docs/SETUP.md.
+#
+# identity:
+#   # Signing key: PKCS#8 PEM, Ed25519 (default) or P-256, mode 0600, owned by
+#   # the serving uid. Required.
+#   key_path: /etc/gatekeeper/identity-key.pem
+#   # EdDSA (default) or ES256; must agree with the key type.
+#   alg: EdDSA
+#   # The published key set is written here at start and served on the socket.
+#   jwks_path: /var/lib/gatekeeper/jwks.json
+#   # iss claim. Default: unix://<socket path>.
+#   issuer: unix:///run/clagentic-gatekeeper/identity.sock
+#   # Default /run/clagentic-gatekeeper/identity.sock; `serve --socket` wins.
+#   socket_path: /run/clagentic-gatekeeper/identity.sock
+#   # Default "0600" (serving uid only). A second layer: serve answers only a
+#   # peer whose SO_PEERCRED uid is the serving uid, whatever the mode.
+#   socket_mode: "0600"
+#   # Role ceiling for sessions that name no definition. serve issues no human
+#   # assertions, so there is no operator uid or operator ceiling. runtime_roles
+#   # is one list for every such session: it is never keyed by runtime name,
+#   # because the runtime id comes from the peer's argv and is self-asserted
+#   # attribution within the peer uid (docs/SETUP.md).
+#   runtime_roles: []
+#   # One <name>.md per agent, frontmatter keys name, roles, trust_boundary
+#   # (trust_boundary is parsed and not yet enforced). The directory, each file
+#   # and every ancestor must be owned by root or the serving uid and not
+#   # writable by group or other, or serve refuses to start.
+#   definitions_dir: /etc/gatekeeper/definitions
+#   # What issue-child may hand a child. Absent: every role. [] : none. A child
+#   # also never holds a role its parent token lacks.
+#   delegable_roles: [builder, reviewer]
+#   # socket_path, jwks_path and spawn_root must be absolute paths; a relative
+#   # one is refused at load. spawn_root defaults to <socket dir>/spawn.
+#   spawn_root: /run/clagentic-gatekeeper/spawn
+#   # Default and maximum 43200.
+#   session_ttl_seconds: 43200

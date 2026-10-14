@@ -263,6 +263,9 @@ optional explicit `jwks` locator (section 5).
 - A child assertion is issued with `exp` no later than its parent's `exp`. The
   verifier cannot see the parent, so this bound is an issuer obligation; the
   12-hour cap is what a verifier enforces.
+- A child assertion's `roles` are a subset of its parent's `roles`: delegation
+  never widens. The verifier cannot see the parent, so this too is an issuer
+  obligation.
 - A holder refreshes by asking its issuer for a new assertion. The previous one
   stays valid until its own `exp`; there is no revocation list. Short lifetimes
   are the revocation mechanism.

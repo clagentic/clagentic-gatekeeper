@@ -6,6 +6,9 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -46,6 +49,91 @@ type Config struct {
 	// GitHub-domain mint (internal/mint) is entirely unaffected. Additive,
 	// off by default.
 	A2AProvider A2AProviderConfig `yaml:"a2a_provider,omitempty"`
+	// Identity is the OPTIONAL Identity Assertion issuer section
+	// (docs/identity-contract.md). A config holding only this section is a
+	// valid issuer-only deployment: `gatekeeper serve` runs, `gatekeeper mint`
+	// reports that minting is not configured. Absent means serve refuses.
+	Identity IdentityConfig `yaml:"identity,omitempty"`
+
+	// identityPresent records that the YAML document has an identity key, which
+	// is what makes the section configured; no field inside it can stand in for
+	// that.
+	identityPresent bool
+
+	// removedIdentityKeys are the removed identity keys the document still
+	// carries; see RemovedIdentityKeysWarning.
+	removedIdentityKeys []string
+}
+
+// IdentityEnabled reports whether the config has an identity section. Load has
+// already refused a section that lacks identity.key_path.
+func (c *Config) IdentityEnabled() bool { return c.identityPresent }
+
+// IdentityConfig configures `gatekeeper serve`, the Identity Assertion issuer.
+// Every field is deployment-specific and none has a baked-in identity; roles
+// are a vocabulary the deployment defines, never names this code knows.
+type IdentityConfig struct {
+	// Issuer is the `iss` claim. Defaults to unix://<socket path>, which is
+	// the form verifiers discover keys from without extra configuration.
+	Issuer string `yaml:"issuer,omitempty"`
+	// SocketPath is the unix socket serve listens on (flag --socket wins).
+	SocketPath string `yaml:"socket_path,omitempty" abspath:"true"`
+	// SocketMode is the octal permission of the socket, default "0600": the
+	// serving uid only. It is a second layer behind the in-process check on the
+	// SO_PEERCRED uid, which admits the serving uid alone; a wider mode lets
+	// more uids connect and never gets one of them served.
+	SocketMode string `yaml:"socket_mode,omitempty"`
+	// KeyPath is the signing key: a PKCS#8 PEM, Ed25519 or P-256, mode 0600
+	// and owned by the serving uid. Required to serve.
+	KeyPath string `yaml:"key_path,omitempty" abspath:"true"`
+	// Alg is "EdDSA" (default) or "ES256" and must agree with the key type.
+	Alg string `yaml:"alg,omitempty"`
+	// JWKSPath is where the published key set is written at start.
+	JWKSPath string `yaml:"jwks_path,omitempty" abspath:"true"`
+	// RuntimeRoles is the role ceiling of a session that names no definition.
+	// It is one list for all such sessions, never keyed by the argv-derived
+	// runtime id, which is self-asserted attribution within the peer uid.
+	// serve issues no human assertions, so there is no operator ceiling.
+	RuntimeRoles []string `yaml:"runtime_roles,omitempty"`
+	// DefinitionsDir holds one <name>.md per agent definition (YAML
+	// frontmatter keys name, roles, trust_boundary; trust_boundary is parsed
+	// and not yet enforced).
+	DefinitionsDir string `yaml:"definitions_dir,omitempty" abspath:"true"`
+	// DelegableRoles narrows what issue-child may hand a child. Absent means
+	// every role is delegable; an explicit empty list means none is.
+	DelegableRoles []string `yaml:"delegable_roles,omitempty"`
+	// SpawnRoot is the parent of the per-assertion delivery directories.
+	// Defaults to <socket dir>/spawn.
+	SpawnRoot string `yaml:"spawn_root,omitempty" abspath:"true"`
+	// SessionTTLSeconds is the session assertion lifetime, default and
+	// maximum 43200.
+	SessionTTLSeconds int `yaml:"session_ttl_seconds,omitempty"`
+}
+
+// absPathTag marks an IdentityConfig field whose value is a filesystem path.
+// validate checks every tagged field, so a path key is covered by tagging it
+// and by nothing else; a test fails for any path-named field left untagged.
+const absPathTag = "abspath"
+
+// validate refuses a relative value for every tagged path key. Such a path
+// would resolve against whatever directory the service manager started serve
+// in: it would pick the signing key and the role ceilings, and name the
+// delivery directories handed to other uids.
+func (c IdentityConfig) validate() error {
+	v := reflect.ValueOf(c)
+	t := v.Type()
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if f.Tag.Get(absPathTag) != "true" {
+			continue
+		}
+		value := v.Field(i).String()
+		if value != "" && !filepath.IsAbs(value) {
+			key, _, _ := strings.Cut(f.Tag.Get("yaml"), ",")
+			return fmt.Errorf("identity.%s %q must be an absolute path", key, value)
+		}
+	}
+	return nil
 }
 
 // GitHubConfig holds GitHub connectivity settings.
@@ -345,9 +433,44 @@ func Load(path string) (*Config, error) {
 	if err := cfg.Attestation.validate(); err != nil {
 		return nil, fmt.Errorf("config %s: %w", path, err)
 	}
+	present, err := hasTopLevelKey(data, "identity")
+	if err != nil {
+		return nil, fmt.Errorf("parse config %s: %w", path, err)
+	}
+	cfg.identityPresent = present
+	if cfg.removedIdentityKeys, err = removedKeysPresent(data); err != nil {
+		return nil, fmt.Errorf("parse config %s: %w", path, err)
+	}
+	if present {
+		if err := cfg.Identity.validate(); err != nil {
+			return nil, fmt.Errorf("config %s: %w", path, err)
+		}
+		if cfg.Identity.KeyPath == "" {
+			return nil, fmt.Errorf("config %s: the identity section is present but identity.key_path is not set", path)
+		}
+	}
 
 	applyDefaults(&cfg)
 	return &cfg, nil
+}
+
+// hasTopLevelKey reports whether the YAML document's root mapping has key,
+// whatever its value, including an empty one.
+func hasTopLevelKey(data []byte, key string) (bool, error) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return false, err
+	}
+	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
+		return false, nil
+	}
+	m := doc.Content[0].Content
+	for i := 0; i+1 < len(m); i += 2 {
+		if m[i].Value == key {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // applyDefaults fills in zero-value fields with their documented defaults.

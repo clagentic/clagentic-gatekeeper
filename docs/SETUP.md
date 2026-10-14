@@ -533,6 +533,189 @@ covering `a2a_mapping` entry for the resolved identity/audience pair.
 `--json` emits `{"token", "expires_at", "subject"}`; the default output is
 the bare token string, matching `gatekeeper mint`'s own contract.
 
+## Identity Assertion issuer (`gatekeeper serve`)
+
+`gatekeeper serve` is a long-running service that issues the Identity
+Assertion defined in [`identity-contract.md`](identity-contract.md). It
+listens on a unix socket, reads each peer's uid and pid from the kernel
+(`SO_PEERCRED`) and its executable and command line from `/proc`, and signs
+what it finds. Nothing a client sends can change who the kernel says it is.
+
+### Commands
+
+| Command | Purpose |
+|---------|---------|
+| `gatekeeper serve [--socket <path>] [--config <path>]` | Run the issuer. Socket: `--socket`, else `identity.socket_path`, else `/run/clagentic-gatekeeper/identity.sock`. |
+| `gatekeeper issue-session [--socket <path>] [--definition <name>] [--origin <origin>] [--runtime] [--runtime-id <id>] [--runtime-version <v>] [--json]` | Ask for a session assertion. Prints the token, or the full response with `--json`. |
+| `gatekeeper issue-child [--socket <path>] [--parent-token-file <path>] --agent-type <name> --agent-id <id> [--json]` | Ask for a child assertion. The parent token defaults to `$CLAGENTIC_IDENTITY_DIR/identity.jwt`. |
+
+The socket also answers `GET /.well-known/jwks.json` (HTTP/1.1), so a
+verifier trusting `iss = unix:///path/to/socket` finds the keys with no extra
+configuration.
+
+`serve` runs on linux only (it needs `SO_PEERCRED` and `/proc`). On other
+platforms the module still builds, the client commands (`issue-session`,
+`issue-child`) and `mint` work, and `serve` reports that it is linux-only.
+
+Who may ask is decided in-process: see "Who may ask" below. The socket is
+created with `identity.socket_mode`, default `0600` (the serving uid only),
+which is a second layer behind that check: widening it lets more uids connect
+and never gets one of them served. The path never exists with another
+mode: `serve` binds a private temporary name in the same directory, sets the
+mode there, and only then links it to the socket path.
+
+`serve` refuses to start when anything exists at the socket path (a socket, a
+file, a directory, a link) and names it. It never removes or replaces any path,
+including its own socket on shutdown: telling a stale socket from one a live
+server is about to use cannot be done without racing that server. The service
+manager removes the socket after a stop (for a systemd unit,
+`RuntimeDirectory=` does this); otherwise remove a leftover socket by hand.
+
+### Who may ask
+
+This release serves callers that run as the serving uid, and only those. The
+`SO_PEERCRED` uid of each connection is compared in-process with the serving
+uid before anything is issued:
+
+- a peer with the serving uid is served;
+- any other uid receives `peer_uid_refused`, one constant message, and nothing
+  is created for it;
+- the peer's primary gid and supplementary groups are not consulted.
+
+Normatively, this check, not file permissions, is the access boundary. Socket
+mode, the socket directory and its ancestors are defense in depth only; a
+deployment must not rely on them to exclude a uid.
+
+`serve` issues no human assertions at all. Human requires a positive signal
+that a same-uid process cannot produce by omitting or setting a request field
+or its own argv, and this release has no such signal: every agent on a host
+runs as the serving uid. The former `identity.operator_uid`,
+`identity.operator_name` and `identity.operator_roles` keys are removed; a
+config that still carries them has them ignored, and `serve` logs one
+deprecation line at start naming each such key, saying it has no effect and
+that `serve` issues no human assertions. Origin `human` is refused with
+`origin_forbidden`. Serving callers under other uids (allow-lists, handing
+delivery directories to a foreign uid) is tracked in lr-767925.
+
+A served peer may name any definition: a definition's roles are a ceiling,
+not a grant, and a consumer's own entitlement still decides what is granted.
+Per-definition authorization (limiting which uids may name which definition)
+is not implemented. Each definition's `trust_boundary` key is parsed and
+carried but **not yet enforced**: no decision reads it. Enforcing it as a
+per-definition allow-list is tracked as follow-up work.
+
+### Trust roots
+
+`serve` acts on, and decides from, only filesystem state that no uid other than
+the serving uid and root can write. At start it verifies each trust root and
+refuses to start, naming the path, when any check fails:
+
+- the signing key's directory, `identity.definitions_dir`, `identity.spawn_root`,
+  the socket's directory and the directory of `identity.jwks_path`;
+- each must be owned by root or the serving uid, and neither it nor any
+  ancestor may be writable by group or other. An ancestor with the sticky bit
+  (a shared temporary directory) is accepted; the root itself never is;
+- every regular `*.md` file in `identity.definitions_dir` must likewise be owned
+  by root or the serving uid and not writable by group or other, because
+  whoever can edit a definition chooses the roles it grants (a definition that
+  changes after start is re-checked when it is loaded);
+- a path with a symbolic link anywhere on it is refused: configure the real path;
+- only the final component of the spawn root and of the socket directory is
+  created when missing; any other missing directory is an error.
+
+Each directory on the way is opened as an `O_PATH` descriptor, so an ancestor
+that is traversable but not readable (mode `0711`) is accepted and the owner and
+mode checked are those of the inode actually opened.
+
+Everything `serve` later reads, writes, chmods or removes is reached
+through a handle opened from a verified directory. Stale delivery directories
+are aged by the creation time `serve` encoded in each directory's name, never
+by the metadata of a directory the peer can change, and are removed relative to
+the spawn root handle opened at start. Delivery directories belong to the
+serving uid, so removing them needs no extra privilege.
+
+### Public errors
+
+Every refusal carries a stable `error` code and one constant message per code.
+No message includes a uid, pid, path, name the client sent, or parser text; the
+detail goes to the server log only. The codes are `bad_request`,
+`peer_unattested`, `peer_uid_refused`, `runtime_mismatch`, `origin_forbidden`,
+`definition_unknown`, `parent_invalid`, `parent_expired`, `parent_unknown`,
+`uid_mismatch`, `parent_pid_mismatch`, `parent_exe_mismatch`, `lifetime_empty`, `spawn_dir` and
+`internal`.
+
+### Who gets what
+
+- Every served peer, whatever fields its request carries or omits: grade
+  `workload`, subject `runtime:<id>`; `act.sub` is `agent:<definition>` when
+  `--definition` is given, else `runtime:<id>`. Roles are the definition's, else
+  `identity.runtime_roles`. The default origin is `trigger`. The runtime id is
+  read from the peer's executable (for an interpreter, its script name). Origin
+  `human` is refused for every uid, and a child is never human: it inherits its
+  parent's subject, and no parent is human.
+- A definition must exist in `identity.definitions_dir`; its roles are the
+  ceiling. Adding a file is enough; no gatekeeper config edit and no roster.
+- `issue-child` requires a parent token this server issued, still unexpired,
+  to the very process (pid and start time) now asking. The child is grade
+  `harness`, its roles are the definition's roles intersected with
+  `identity.delegable_roles` and with the roles of the parent token, so
+  delegation never widens: a child can never hold a role its parent lacks,
+  whatever the definition or `delegable_roles` allow. Its `exp` never exceeds
+  the parent's. The response lists every policy that dropped a role
+  (`identity.delegable_roles`, `parent_token.roles`) with the roles each
+  dropped.
+- Every assertion gets its own delivery directory under `identity.spawn_root`
+  (mode 0700, owned by the serving uid, which is the peer's uid, with
+  `identity.jwt` and `tmp/`), and the `dir` claim is bound to it.
+
+**The runtime id is self-asserted attribution within the peer uid.** It is
+derived from the peer's executable and command line, and any process can set
+its own argv, so a same-uid process can always present any runtime id it
+likes. The uid is the trust boundary, not the runtime id. Therefore, and
+normatively: no role, role ceiling, or human-versus-workload decision may
+depend on the runtime id or on any other argv-derived field or request field; it appears only
+in `rt.id` and in the `runtime:<id>` subject or actor of a workload assertion
+for attribution and audit. `identity.runtime_roles` is one list applied to
+every runtime session regardless of its id and is never keyed by a runtime
+name. Consumers must not grant anything on the strength of a `runtime:<id>`
+value alone.
+
+**What a grant rests on.** Normatively, no grant depends on a value derived
+from `/proc`. Roles, grade, human versus workload, and the owner of the
+delivery directory follow the `SO_PEERCRED` uid and the definition file only.
+`issue-child` binds a parent token to the `SO_PEERCRED` uid and refuses with
+`uid_mismatch` when the asking uid differs (a case a peer-uid check already
+excludes while only the serving uid is served); the pid and process start time are
+compared as well, as defense in depth. `sub` and `act.sub` of the form
+`runtime:<rt>` are attribution-grade: self-asserted within the peer uid, and
+not a basis for any decision.
+
+`/proc` failures are fail-closed. If `/proc` cannot be read for a peer, if no
+runtime id can be derived from it, or if a declared runtime id differs from
+the derived one (`runtime_mismatch`), the request is refused and nothing is
+granted. Accepted residual: a pid reused before the first `/proc` read can make
+the derived runtime id describe the wrong process. That affects attribution
+only, never roles, grade or ownership, because those do not read `/proc`.
+
+### Signing key
+
+```bash
+(umask 077 && openssl genpkey -algorithm ed25519 -out identity-key.pem)
+```
+
+The umask is set before the file exists, so it is created mode 0600 and is never
+readable by anyone but its owner, at any instant. A `chmod` after the write
+would leave a window in which a permissive umask exposes the private key.
+
+The published key set holds the current signing key only.
+
+### Issuer-only and combined configs
+
+A config with only the `identity:` section starts `serve` without any
+`github`, `broker` or `roles` section; `gatekeeper mint` then reports that
+minting is not configured. A config with both runs both, and `mint` behaves as
+it did before.
+
 ## Summary
 
 | Layer | What it answers | Config | Fails closed? |
