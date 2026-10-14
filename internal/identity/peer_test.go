@@ -44,9 +44,12 @@ type scriptedProc struct {
 	stats    []string
 	statErrs []error
 	reads    int
+	exeErr   error
 }
 
 func (s *scriptedProc) readlink(int32, string) (string, error) { return "/opt/example/runtime", nil }
+
+func (s *scriptedProc) exeIdentity(int32) (uint64, uint64, error) { return 3, 77, s.exeErr }
 
 func (s *scriptedProc) readFile(_ int32, name string) ([]byte, error) {
 	if name == "cmdline" {
@@ -81,7 +84,21 @@ func TestReadProcRefusesWhenPidVanishesBetweenReads(t *testing.T) {
 func TestReadProcReturnsStableStartTime(t *testing.T) {
 	fs := &scriptedProc{stats: []string{statWithStart("100"), statWithStart("100")}}
 	info, err := readProcFrom(fs, 9)
-	if err != nil || info.StartTime != 100 || info.Exe != "/opt/example/runtime" {
+	if err != nil || info.StartTime != 100 || info.Exe != "/opt/example/runtime" || info.ExeDev != 3 || info.ExeIno != 77 {
+		t.Fatalf("%+v %v", info, err)
+	}
+}
+
+func TestReadProcRefusesWhenExeIdentityCannotBeRead(t *testing.T) {
+	fs := &scriptedProc{stats: []string{statWithStart("100"), statWithStart("100")}, exeErr: os.ErrPermission}
+	if _, err := readProcFrom(fs, 9); err == nil {
+		t.Fatal("an unreadable exe identity was accepted")
+	}
+}
+
+func TestReadProcOfSelfReportsExeIdentity(t *testing.T) {
+	info, err := ReadProc(int32(os.Getpid()))
+	if err != nil || info.ExeIno == 0 {
 		t.Fatalf("%+v %v", info, err)
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 // Peer is the kernel-attested identity of the process on the other end of the
@@ -28,6 +29,10 @@ type ProcInfo struct {
 	// StartTime is the process start in clock ticks since boot. Together with
 	// the pid it identifies one process even after the pid is reused.
 	StartTime uint64
+	// ExeDev and ExeIno identify the executable file the process is running.
+	// A process that exec-replaces itself keeps its pid and start time but gets
+	// a different file here.
+	ExeDev, ExeIno uint64
 }
 
 // ProcReader reads ProcInfo for a pid; the default reads /proc.
@@ -38,6 +43,9 @@ type ProcReader func(pid int32) (ProcInfo, error)
 type procFiles interface {
 	readlink(pid int32, name string) (string, error)
 	readFile(pid int32, name string) ([]byte, error)
+	// exeIdentity returns the device and inode of the file /proc/<pid>/exe
+	// resolves to.
+	exeIdentity(pid int32) (dev, ino uint64, err error)
 }
 
 type realProc struct{}
@@ -52,6 +60,18 @@ func (r realProc) readlink(pid int32, name string) (string, error) {
 
 func (r realProc) readFile(pid int32, name string) ([]byte, error) {
 	return os.ReadFile(r.path(pid, name))
+}
+
+func (r realProc) exeIdentity(pid int32) (uint64, uint64, error) {
+	fi, err := os.Stat(r.path(pid, "exe"))
+	if err != nil {
+		return 0, 0, err
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, 0, errors.New("no device and inode for the executable")
+	}
+	return uint64(st.Dev), st.Ino, nil
 }
 
 // ReadProc is the /proc based ProcReader.
@@ -76,6 +96,10 @@ func readProcFrom(fs procFiles, pid int32) (ProcInfo, error) {
 	if err != nil {
 		return ProcInfo{}, fmt.Errorf("read exe of pid %d (the issuer needs ptrace access to peers of other uids): %w", pid, err)
 	}
+	dev, ino, err := fs.exeIdentity(pid)
+	if err != nil {
+		return ProcInfo{}, fmt.Errorf("identify exe of pid %d: %w", pid, err)
+	}
 	cmdline, err := fs.readFile(pid, "cmdline")
 	if err != nil {
 		return ProcInfo{}, fmt.Errorf("read cmdline of pid %d: %w", pid, err)
@@ -88,7 +112,7 @@ func readProcFrom(fs procFiles, pid int32) (ProcInfo, error) {
 		return ProcInfo{}, fmt.Errorf("pid %d changed process while it was being read (start time %d then %d)", pid, before, after)
 	}
 	args := strings.Split(strings.TrimRight(string(cmdline), "\x00"), "\x00")
-	return ProcInfo{Exe: strings.TrimSuffix(exe, " (deleted)"), Args: args, StartTime: before}, nil
+	return ProcInfo{Exe: strings.TrimSuffix(exe, " (deleted)"), Args: args, StartTime: before, ExeDev: dev, ExeIno: ino}, nil
 }
 
 func startTimeOf(fs procFiles, pid int32) (uint64, error) {

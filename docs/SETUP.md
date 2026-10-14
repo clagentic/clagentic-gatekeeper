@@ -635,7 +635,7 @@ No message includes a uid, pid, path, name the client sent, or parser text; the
 detail goes to the server log only. The codes are `bad_request`,
 `peer_unattested`, `peer_uid_refused`, `runtime_mismatch`, `origin_forbidden`,
 `definition_unknown`, `parent_invalid`, `parent_expired`, `parent_unknown`,
-`uid_mismatch`, `parent_pid_mismatch`, `lifetime_empty`, `spawn_dir` and
+`uid_mismatch`, `parent_pid_mismatch`, `parent_exe_mismatch`, `lifetime_empty`, `spawn_dir` and
 `internal`.
 
 ### Who gets what

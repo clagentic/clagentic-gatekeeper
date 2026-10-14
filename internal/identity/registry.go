@@ -14,7 +14,10 @@ type issuedTo struct {
 	uid       uint32
 	pid       int32
 	startTime uint64
-	exp       int64
+	// exeDev and exeIno pin the executable file, so an exec that keeps pid and
+	// start time still ends the binding.
+	exeDev, exeIno uint64
+	exp            int64
 }
 
 // Registry remembers, in memory, the process each live assertion went to, so

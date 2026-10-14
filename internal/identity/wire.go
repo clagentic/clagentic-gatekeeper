@@ -38,6 +38,7 @@ const (
 	CodeParentUnknown     = "parent_unknown"
 	CodeUIDMismatch       = "uid_mismatch"
 	CodePIDMismatch       = "parent_pid_mismatch"
+	CodeExeMismatch       = "parent_exe_mismatch"
 	CodeLifetimeEmpty     = "lifetime_empty"
 	CodeSpawnDir          = "spawn_dir"
 	CodeInternal          = "internal"

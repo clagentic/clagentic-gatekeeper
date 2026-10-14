@@ -183,6 +183,9 @@ func (i *Issuer) IssueChild(peer Peer, req ChildRequest) (*Issued, error) {
 	if proc.StartTime != issued.startTime {
 		return nil, refuse(http.StatusForbidden, CodePIDMismatch, fmt.Errorf("pid %d is no longer the process the parent token was issued to (start time differs)", peer.PID))
 	}
+	if proc.ExeDev != issued.exeDev || proc.ExeIno != issued.exeIno {
+		return nil, refuse(http.StatusForbidden, CodeExeMismatch, fmt.Errorf("pid %d runs a different executable file than at issue time (dev/inode %d/%d, was %d/%d)", peer.PID, proc.ExeDev, proc.ExeIno, issued.exeDev, issued.exeIno))
+	}
 	def, err := i.Defs.Load(req.AgentType)
 	if err != nil {
 		return nil, refuse(http.StatusNotFound, CodeDefinitionUnknown, err)
@@ -255,7 +258,7 @@ func (i *Issuer) finish(peer Peer, proc ProcInfo, c Claims, now, exp time.Time, 
 		_ = i.Dirs.Discard(dir)
 		return nil, refuse(http.StatusInternalServerError, CodeInternal, err)
 	}
-	i.Registry.put(jti, issuedTo{uid: peer.UID, pid: peer.PID, startTime: proc.StartTime, exp: c.Exp}, now)
+	i.Registry.put(jti, issuedTo{uid: peer.UID, pid: peer.PID, startTime: proc.StartTime, exeDev: proc.ExeDev, exeIno: proc.ExeIno, exp: c.Exp}, now)
 
 	actor := c.Sub
 	if c.Act != nil {

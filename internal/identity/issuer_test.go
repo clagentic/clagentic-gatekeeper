@@ -344,6 +344,28 @@ func TestChildRefusesWhenPidWasReused(t *testing.T) {
 	}
 }
 
+// An exec keeps the pid and the start time but runs another file; the child
+// request must not ride on a token issued to the previous executable.
+func TestChildRefusesWhenExeIdentityChangedWithSamePidAndStartTime(t *testing.T) {
+	f, parent := childSetup(t, nil)
+	f.issuer.Proc = func(int32) (ProcInfo, error) {
+		return ProcInfo{Exe: "/opt/example/example-runtime", Args: []string{"example-runtime"}, StartTime: 100, ExeDev: 1, ExeIno: 4242}, nil
+	}
+	_, err := f.issuer.IssueChild(selfPeer(10), ChildRequest{ParentToken: parent.Token, AgentType: "example-builder", AgentID: "a1"})
+	if ie, ok := IsIssueError(err); !ok || ie.Code != CodeExeMismatch {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestChildRefusesWhenProcCannotBeReadAtChildTime(t *testing.T) {
+	f, parent := childSetup(t, nil)
+	f.issuer.Proc = func(int32) (ProcInfo, error) { return ProcInfo{}, os.ErrPermission }
+	_, err := f.issuer.IssueChild(selfPeer(10), ChildRequest{ParentToken: parent.Token, AgentType: "example-builder", AgentID: "a1"})
+	if ie, ok := IsIssueError(err); !ok || ie.Code != CodePeerUnattested {
+		t.Fatalf("got %v", err)
+	}
+}
+
 func TestChildRefusesExpiredAndForgedParents(t *testing.T) {
 	f, parent := childSetup(t, nil)
 	later := testNow.Add(f.issuer.SessionTTL)
