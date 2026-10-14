@@ -244,11 +244,19 @@ func (s *Server) Serve(ctx context.Context, l net.Listener) error {
 			return ctx
 		},
 	}
+	// A context that is already done must not leave Serve running: Shutdown can
+	// win the race against Serve registering the listener, so the listener is
+	// also closed here, which unblocks Accept whichever side ran first.
+	if ctx.Err() != nil {
+		l.Close()
+		return nil
+	}
 	go func() {
 		<-ctx.Done()
 		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(shutdown)
+		_ = l.Close()
 	}()
 	go s.reapLoop(ctx)
 	err := srv.Serve(peerListener{l})

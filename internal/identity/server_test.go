@@ -293,6 +293,28 @@ func TestCloseDoesNotUnlinkTheSocketPath(t *testing.T) {
 	}
 }
 
+// Shutdown can run before Serve registers the listener; Serve must still return.
+func TestServeWithAnAlreadyCancelledContextReturns(t *testing.T) {
+	f := newFixture(t, nil)
+	path := filepath.Join(shortSocketDir(t), "s.sock")
+	l, err := Listen(path, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	done := make(chan error, 1)
+	go func() { done <- (&Server{Issuer: f.issuer, Logf: f.logs.add}).Serve(ctx, l) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("serve: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Serve blocked after its context was already cancelled")
+	}
+}
+
 func TestSocketOperatorGetsHuman(t *testing.T) {
 	uid := uint32(os.Getuid())
 	c, _ := startServer(t, func(s *Settings) { s.OperatorUID = &uid })
