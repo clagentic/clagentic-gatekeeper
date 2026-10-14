@@ -160,9 +160,9 @@ func (k *Keyring) Kid() string { return k.current.jwk.Kid }
 // Alg is the algorithm new assertions are signed with.
 func (k *Keyring) Alg() string { return k.current.jwk.Alg }
 
-// Sign returns the raw signature over input in the JWS wire form: the Ed25519
-// signature, or the 64-byte R||S form for ES256.
-func (k *Keyring) Sign(input []byte) ([]byte, error) {
+// sign returns the raw signature over input in the JWS wire form: the Ed25519
+// signature, or the 64-byte R||S form for ES256. Callers use SignClaims.
+func (k *Keyring) sign(input []byte) ([]byte, error) {
 	if k.edPriv != nil {
 		return ed25519.Sign(k.edPriv, input), nil
 	}
@@ -177,9 +177,9 @@ func (k *Keyring) Sign(input []byte) ([]byte, error) {
 	return out, nil
 }
 
-// Verify checks sig over input against the published key named by kid, and
-// requires the key to be of the algorithm alg.
-func (k *Keyring) Verify(kid, alg string, input, sig []byte) bool {
+// verify checks sig over input against the published key named by kid, and
+// requires the key to be of the algorithm alg. Callers use ParseOwn.
+func (k *Keyring) verify(kid, alg string, input, sig []byte) bool {
 	for _, p := range k.public {
 		if p.jwk.Kid != kid || p.jwk.Alg != alg {
 			continue

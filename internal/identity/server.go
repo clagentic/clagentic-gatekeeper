@@ -232,7 +232,7 @@ func Listen(path string, mode os.FileMode) (net.Listener, error) {
 	l, err := net.ListenUnix("unix", &net.UnixAddr{Name: tmp, Net: "unix"})
 	if err != nil {
 		cleanup()
-		return nil, err
+		return nil, publishError(path, "bind", err)
 	}
 	l.SetUnlinkOnClose(false)
 	discard := func(cause error) (net.Listener, error) {
@@ -244,13 +244,13 @@ func Listen(path string, mode os.FileMode) (net.Listener, error) {
 		listenAfterBind(private, tmp)
 	}
 	if err := os.Chmod(tmp, mode); err != nil {
-		return discard(err)
+		return discard(publishError(path, "set mode on", err))
 	}
 	if err := os.Link(tmp, path); err != nil {
 		if errors.Is(err, fs.ErrExist) {
 			return discard(fmt.Errorf("%s already exists; refusing to start (it was left untouched; remove it yourself once no server uses it)", path))
 		}
-		return discard(fmt.Errorf("publish socket at %s: %w", path, err))
+		return discard(publishError(path, "publish", err))
 	}
 	// The socket is already published with its mode; a leftover private
 	// directory is unreachable to other uids, but report it.
@@ -258,6 +258,18 @@ func Listen(path string, mode os.FileMode) (net.Listener, error) {
 		fmt.Fprintf(os.Stderr, "identity: could not remove temporary socket directory %s: %v\n", private, err)
 	}
 	return publishedListener{UnixListener: l, addr: &net.UnixAddr{Name: path, Net: "unix"}}, nil
+}
+
+// publishError names the socket path the operator configured and keeps only
+// the innermost cause (the errno), because the wrapping path errors carry the
+// temporary .gk- staging path, which means nothing to the caller and is gone
+// by the time the error is read. The cause stays reachable through errors.Is.
+func publishError(path, step string, err error) error {
+	cause := err
+	for u := errors.Unwrap(cause); u != nil; u = errors.Unwrap(cause) {
+		cause = u
+	}
+	return fmt.Errorf("%s socket %s: %w", step, path, cause)
 }
 
 // publishedListener reports the path the socket was published at. The

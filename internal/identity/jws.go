@@ -62,7 +62,7 @@ func (k *Keyring) SignClaims(c Claims) (string, error) {
 		return "", err
 	}
 	input := b64(hdr) + "." + b64(payload)
-	sig, err := k.Sign([]byte(input))
+	sig, err := k.sign([]byte(input))
 	if err != nil {
 		return "", err
 	}
@@ -92,7 +92,7 @@ func (k *Keyring) ParseOwn(token string) (Claims, error) {
 	if err != nil {
 		return Claims{}, invalid("signature is not base64url")
 	}
-	if !k.Verify(hdr.Kid, hdr.Alg, []byte(parts[0]+"."+parts[1]), sig) {
+	if !k.verify(hdr.Kid, hdr.Alg, []byte(parts[0]+"."+parts[1]), sig) {
 		return Claims{}, invalid("signature does not verify against a key this issuer publishes")
 	}
 	var c Claims

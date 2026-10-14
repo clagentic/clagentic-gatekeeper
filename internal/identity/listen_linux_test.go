@@ -1,6 +1,7 @@
 package identity
 
 import (
+	"errors"
 	"net"
 	"os"
 	"os/exec"
@@ -218,6 +219,24 @@ func TestListenExistingFinalPathRefusedAndUntouchedUnderUmask000(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(path); string(b) != "keep" {
 		t.Fatalf("existing file content changed: %q", b)
+	}
+}
+
+// A failure after the bind names the path the operator configured and never the
+// temporary staging path.
+func TestListenErrorsNameThePublishedPathNotTheStagingPath(t *testing.T) {
+	dir := shortSocketDir(t)
+	path := filepath.Join(dir, "s.sock")
+	setHook(t, func(_, tmp string) { _ = os.Remove(tmp) })
+	_, err := Listen(path, 0o600)
+	if err == nil {
+		t.Fatal("a vanished staging socket was accepted")
+	}
+	if !strings.Contains(err.Error(), path) || strings.Contains(err.Error(), ".gk-") {
+		t.Fatalf("error %q must name %s and not the staging path", err, path)
+	}
+	if !errors.Is(err, syscall.ENOENT) {
+		t.Fatalf("the cause is no longer reachable: %v", err)
 	}
 }
 
