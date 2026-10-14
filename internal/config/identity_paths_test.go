@@ -20,7 +20,14 @@ func TestEveryIdentityPathFieldIsTaggedAbsolute(t *testing.T) {
 	for i := 0; i < typ.NumField(); i++ {
 		f := typ.Field(i)
 		key := yamlKey(f)
-		pathNamed := strings.HasSuffix(key, "_path") || strings.HasSuffix(key, "_dir") || strings.HasSuffix(key, "_root")
+		// A field with no config key cannot be named in a refusal, so the guard
+		// fails rather than skips it.
+		if key == "" || key == "-" {
+			t.Errorf("identity field %s has no yaml key; the path guard cannot name it", f.Name)
+			continue
+		}
+		pathNamed := strings.HasSuffix(key, "_path") || strings.HasSuffix(key, "_dir") || strings.HasSuffix(key, "_root") ||
+			strings.HasSuffix(f.Name, "Path") || strings.HasSuffix(f.Name, "Dir") || strings.HasSuffix(f.Name, "Root")
 		if pathNamed && f.Type.Kind() != reflect.String {
 			t.Errorf("identity.%s is path-named but is a %s; validate only checks strings, so extend it before adding this field", key, f.Type.Kind())
 			continue

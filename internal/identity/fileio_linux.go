@@ -48,7 +48,6 @@ func openRegularAt(dir *os.File, name string) (*os.File, os.FileInfo, error) {
 	return f, fi, nil
 }
 
-// ownerUID reports the uid that owns the file fi describes.
 func ownerUID(fi os.FileInfo) (uint32, bool) {
 	st, ok := fi.Sys().(*syscall.Stat_t)
 	if !ok {
