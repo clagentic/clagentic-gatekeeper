@@ -95,6 +95,7 @@ func (i *Issuer) isOperator(p Peer) bool { return i.OperatorUID != nil && *i.Ope
 
 // IssueSession answers issue-session for an attested peer.
 func (i *Issuer) IssueSession(peer Peer, req SessionRequest) (*Issued, error) {
+	now := i.Now()
 	proc, err := i.Proc(peer.PID)
 	if err != nil {
 		return nil, refuse(http.StatusForbidden, "peer_unattested", "%v", err)
@@ -152,11 +153,14 @@ func (i *Issuer) IssueSession(peer Peer, req SessionRequest) (*Issued, error) {
 		c.Act = &Actor{Sub: runtimeActor}
 	}
 
-	return i.finish(peer, proc, c, i.Now().Add(i.SessionTTL), nil)
+	return i.finish(peer, proc, c, now, now.Add(i.SessionTTL), nil)
 }
 
 // IssueChild answers issue-child for an attested peer.
 func (i *Issuer) IssueChild(peer Peer, req ChildRequest) (*Issued, error) {
+	// One clock sample serves the parent expiry check and the child's iat, so
+	// crossing the parent's exp mid-request cannot yield a child that outlives it.
+	now := i.Now()
 	if !reName.MatchString(req.AgentType) || !reName.MatchString(req.AgentID) {
 		return nil, refuse(http.StatusBadRequest, "bad_request", "agent_type and agent_id must match [A-Za-z0-9._-]{1,128}")
 	}
@@ -164,7 +168,6 @@ func (i *Issuer) IssueChild(peer Peer, req ChildRequest) (*Issued, error) {
 	if err != nil {
 		return nil, refuse(http.StatusForbidden, "parent_invalid", "%v", err)
 	}
-	now := i.Now()
 	if parent.Exp <= now.Unix() {
 		return nil, refuse(http.StatusForbidden, "parent_expired", "the parent token expired at %d", parent.Exp)
 	}
@@ -201,12 +204,15 @@ func (i *Issuer) IssueChild(peer Peer, req ChildRequest) (*Issued, error) {
 	if pe := time.Unix(parent.Exp, 0); pe.Before(exp) {
 		exp = pe
 	}
-	return i.finish(peer, proc, child, exp, narrowed)
+	return i.finish(peer, proc, child, now, exp, narrowed)
 }
 
-// finish allocates the delivery directory, signs, publishes and records.
-func (i *Issuer) finish(peer Peer, proc ProcInfo, c Claims, exp time.Time, narrowed *Narrowing) (*Issued, error) {
-	now := i.Now()
+// finish allocates the delivery directory, signs, publishes and records. now
+// is the caller's single clock sample; finish never reads the clock itself.
+func (i *Issuer) finish(peer Peer, proc ProcInfo, c Claims, now, exp time.Time, narrowed *Narrowing) (*Issued, error) {
+	if now.Unix() >= exp.Unix() {
+		return nil, refuse(http.StatusForbidden, "lifetime_empty", "the assertion would expire at %d, not after it is issued at %d", exp.Unix(), now.Unix())
+	}
 	jti, err := randomID()
 	if err != nil {
 		return nil, refuse(http.StatusInternalServerError, "internal", "%v", err)

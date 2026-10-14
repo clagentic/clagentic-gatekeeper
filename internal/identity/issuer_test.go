@@ -278,6 +278,50 @@ func TestChildClaimsExtendChainAndBoundExpiry(t *testing.T) {
 	}
 }
 
+func TestChildSamplesTheClockOnceAndStaysWithinParentExpiry(t *testing.T) {
+	f := newFixture(t, nil)
+	_, parentClaims := mustSession(t, f, selfPeer(10), SessionRequest{})
+	parentClaims.Exp = testNow.Unix() + 5
+	parentClaims.Jti = "near-expiry-parent"
+	parent, err := f.issuer.Keys.SignClaims(parentClaims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.issuer.Registry.put(parentClaims.Jti, issuedTo{pid: 10, startTime: 100, exp: parentClaims.Exp}, testNow)
+	// The first reading is inside the parent's life; any later one is past it.
+	calls := 0
+	f.issuer.Now = func() time.Time {
+		calls++
+		if calls == 1 {
+			return testNow
+		}
+		return time.Unix(parentClaims.Exp+10, 0)
+	}
+	out, err := f.issuer.IssueChild(selfPeer(10), ChildRequest{ParentToken: parent, AgentType: "example-builder", AgentID: "edge"})
+	if err != nil {
+		t.Fatalf("the child was refused although the parent was valid when asked: %v", err)
+	}
+	c, err := f.issuer.Keys.ParseOwn(out.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || c.Iat != testNow.Unix() || c.Iat >= c.Exp || c.Exp > parentClaims.Exp {
+		t.Fatalf("clock samples %d, iat %d exp %d parent exp %d", calls, c.Iat, c.Exp, parentClaims.Exp)
+	}
+}
+
+func TestIssuingRefusesAnAssertionThatExpiresNoLaterThanItIsIssued(t *testing.T) {
+	f := newFixture(t, nil)
+	f.issuer.SessionTTL = 0
+	_, err := f.issuer.IssueSession(selfPeer(10), SessionRequest{})
+	if ie, ok := IsIssueError(err); !ok || ie.Code != "lifetime_empty" {
+		t.Fatalf("got %v", err)
+	}
+	if entries, rerr := os.ReadDir(f.root); rerr != nil || len(entries) != 0 {
+		t.Fatalf("a refused issue left delivery directories: %v %v", entries, rerr)
+	}
+}
+
 func TestChildRejectsBadNames(t *testing.T) {
 	f, parent := childSetup(t, nil)
 	_, err := f.issuer.IssueChild(selfPeer(10), ChildRequest{ParentToken: parent.Token, AgentType: "example-builder", AgentID: "../x"})
