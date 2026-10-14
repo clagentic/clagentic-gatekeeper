@@ -257,6 +257,53 @@ func TestSocketServesJWKSAndSelfCheck(t *testing.T) {
 	}
 }
 
+// allowOthersToTraverse gives "other" search permission on every directory from
+// dir up to the filesystem root, restoring each mode at cleanup. A runner that
+// points TMPDIR at a private (0700) directory otherwise hides the helper binary
+// and the socket from the uid the helper runs as. An ancestor that is not
+// searchable and cannot be changed fails the test rather than skipping it.
+func allowOthersToTraverse(t *testing.T, dir string) {
+	t.Helper()
+	for d := dir; ; d = filepath.Dir(d) {
+		fi, err := os.Stat(d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fi.Mode().Perm()&0o001 == 0 {
+			orig := fi.Mode().Perm()
+			if err := os.Chmod(d, orig|0o001); err != nil {
+				t.Fatalf("%s is not searchable by other users and cannot be changed: %v", d, err)
+			}
+			t.Cleanup(func() { os.Chmod(d, orig) })
+		}
+		if parent := filepath.Dir(d); parent == d {
+			return
+		}
+	}
+}
+
+func TestAllowOthersToTraverseOpensAndRestoresPrivateAncestors(t *testing.T) {
+	outer := t.TempDir()
+	inner := filepath.Join(outer, "inner")
+	if err := os.Mkdir(inner, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(outer, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Run("opens", func(t *testing.T) {
+		allowOthersToTraverse(t, inner)
+		fi, err := os.Stat(outer)
+		if err != nil || fi.Mode().Perm()&0o001 == 0 {
+			t.Fatalf("ancestor not searchable by others: %v %v", fi, err)
+		}
+	})
+	fi, err := os.Stat(outer)
+	if err != nil || fi.Mode().Perm() != 0o700 {
+		t.Fatalf("mode not restored: %v %v", fi.Mode().Perm(), err)
+	}
+}
+
 func runHelper(t *testing.T, sock, parentToken string) string {
 	t.Helper()
 	cmd := exec.Command(os.Args[0], "-test.run=^TestHelperProcess$")
@@ -275,6 +322,17 @@ func TestSocketRealOtherUidGetsWorkloadAndOwnDirectory(t *testing.T) {
 		t.Skip("needs root to run a peer under another uid")
 	}
 	const otherUID = 65534
+	// Run with a private (0700) TMPDIR, the shape of a scoped runner, so the
+	// test proves the helper stays reachable when no ancestor is searchable.
+	private, err := os.MkdirTemp("", "gk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(private) })
+	if err := os.Chmod(private, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", private)
 	c, f := startServer(t, nil)
 	shared := filepath.Dir(c.Socket)
 	bin := filepath.Join(shared, "helper.test")
@@ -288,6 +346,7 @@ func TestSocketRealOtherUidGetsWorkloadAndOwnDirectory(t *testing.T) {
 	if err := os.Chmod(shared, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	allowOthersToTraverse(t, shared)
 	cmd := exec.Command(bin, "-test.run=^TestHelperProcess$")
 	cmd.Env = append(os.Environ(), helperEnvSocket+"="+c.Socket)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: otherUID, Gid: otherUID}}
