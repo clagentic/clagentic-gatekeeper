@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"os"
+	"reflect"
 	"time"
 )
 
@@ -92,18 +94,28 @@ func (c Client) IssueChild(req ChildRequest) (*Issued, error) {
 
 // FetchJWKS reads the key set the server publishes.
 func (c Client) FetchJWKS() (JWKS, error) {
-	body, status, err := c.do(http.MethodGet, PathJWKS, nil)
+	body, err := c.fetchJWKSRaw()
 	if err != nil {
 		return JWKS{}, err
-	}
-	if status != http.StatusOK {
-		return JWKS{}, fmt.Errorf("jwks answered %d", status)
 	}
 	var doc JWKS
 	if err := json.Unmarshal(body, &doc); err != nil {
 		return JWKS{}, fmt.Errorf("jwks: %w", err)
 	}
 	return doc, nil
+}
+
+// fetchJWKSRaw returns the published document byte for byte, so a comparison
+// sees members the typed JWKS does not model.
+func (c Client) fetchJWKSRaw() ([]byte, error) {
+	body, status, err := c.do(http.MethodGet, PathJWKS, nil)
+	if err != nil {
+		return nil, err
+	}
+	if status != http.StatusOK {
+		return nil, fmt.Errorf("jwks answered %d", status)
+	}
+	return body, nil
 }
 
 // Check is one line of a self-check report.
@@ -118,9 +130,13 @@ type Check struct {
 // file may be; zero skips the age test.
 func SelfCheck(c Client, jwksPath string, maxAge time.Duration, now time.Time) []Check {
 	var checks []Check
-	live, err := c.FetchJWKS()
+	liveRaw, err := c.fetchJWKSRaw()
 	if err != nil {
 		return append(checks, Check{Name: "socket_reachable", Detail: err.Error()})
+	}
+	var live JWKS
+	if err := json.Unmarshal(liveRaw, &live); err != nil {
+		return append(checks, Check{Name: "socket_reachable", Detail: fmt.Sprintf("jwks: %v", err)})
 	}
 	checks = append(checks, Check{Name: "socket_reachable", OK: len(live.Keys) > 0, Detail: fmt.Sprintf("%s serves %d key(s)", c.Socket, len(live.Keys))})
 	if jwksPath == "" {
@@ -130,12 +146,12 @@ func SelfCheck(c Client, jwksPath string, maxAge time.Duration, now time.Time) [
 	if err != nil {
 		return append(checks, Check{Name: "jwks_fresh", Detail: err.Error()})
 	}
-	var onDisk JWKS
-	if err := json.Unmarshal(raw, &onDisk); err != nil {
+	same, err := sameJWKSDocument(liveRaw, raw)
+	if err != nil {
 		return append(checks, Check{Name: "jwks_fresh", Detail: fmt.Sprintf("%s: %v", jwksPath, err)})
 	}
-	if !sameKeys(live, onDisk) {
-		return append(checks, Check{Name: "jwks_fresh", Detail: fmt.Sprintf("%s lists different keys than the server publishes (key id or key material differs)", jwksPath)})
+	if !same {
+		return append(checks, Check{Name: "jwks_fresh", Detail: fmt.Sprintf("%s differs from the key set the server publishes", jwksPath)})
 	}
 	detail := jwksPath + " matches the published key set"
 	if fi, err := os.Stat(jwksPath); err == nil && maxAge > 0 && now.Sub(fi.ModTime()) > maxAge {
@@ -144,30 +160,47 @@ func SelfCheck(c Client, jwksPath string, maxAge time.Duration, now time.Time) [
 	return append(checks, Check{Name: "jwks_fresh", OK: true, Detail: detail})
 }
 
-// sameKeys reports whether two key sets publish identical keys. A kid is only
-// a label, so the public key material (kty, crv, x, y) must match per kid; two
-// keys sharing a kid with different material are different sets.
-func sameKeys(a, b JWKS) bool {
-	index := func(d JWKS) (map[string]JWK, bool) {
-		out := make(map[string]JWK, len(d.Keys))
-		for _, k := range d.Keys {
-			if _, dup := out[k.Kid]; dup {
-				return nil, false
-			}
-			out[k.Kid] = k
+// sameJWKSDocument reports whether two JWKS documents are the same document:
+// every JSON member of every key must match, not a chosen field list, so a
+// changed alg, use or any unknown member such as key_ops is a difference. Keys
+// are matched by kid, so their order does not matter; a repeated or missing kid
+// makes the document unusable and is an error.
+func sameJWKSDocument(a, b []byte) (bool, error) {
+	x, err := normaliseJWKS(a)
+	if err != nil {
+		return false, err
+	}
+	y, err := normaliseJWKS(b)
+	if err != nil {
+		return false, err
+	}
+	return reflect.DeepEqual(x, y), nil
+}
+
+func normaliseJWKS(raw []byte) (map[string]any, error) {
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return nil, err
+	}
+	list, ok := doc["keys"].([]any)
+	if !ok {
+		return nil, errors.New("no keys array")
+	}
+	byKid := make(map[string]any, len(list))
+	for _, item := range list {
+		key, ok := item.(map[string]any)
+		if !ok {
+			return nil, errors.New("a key is not a JSON object")
 		}
-		return out, true
-	}
-	x, okA := index(a)
-	y, okB := index(b)
-	if !okA || !okB || len(x) != len(y) {
-		return false
-	}
-	for kid, ka := range x {
-		kb, ok := y[kid]
-		if !ok || ka.Kty != kb.Kty || ka.Crv != kb.Crv || ka.X != kb.X || ka.Y != kb.Y {
-			return false
+		kid, _ := key["kid"].(string)
+		if kid == "" {
+			return nil, errors.New("a key has no kid")
 		}
+		if _, dup := byKid[kid]; dup {
+			return nil, fmt.Errorf("kid %q appears more than once", kid)
+		}
+		byKid[kid] = key
 	}
-	return true
+	doc["keys"] = byKid
+	return doc, nil
 }
