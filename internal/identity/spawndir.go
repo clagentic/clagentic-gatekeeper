@@ -3,7 +3,9 @@ package identity
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"time"
@@ -23,6 +25,10 @@ func randomID() (string, error) {
 // SpawnDirs creates delivery directories under Root.
 type SpawnDirs struct {
 	Root string
+
+	// lstat is os.Lstat unless a test needs a failure the filesystem cannot
+	// produce on demand.
+	lstat func(string) (fs.FileInfo, error)
 }
 
 // Ensure creates Root. It is 0711 so every peer can walk to its own
@@ -83,23 +89,42 @@ func (s SpawnDirs) discard(dir string) error {
 // Reap removes delivery directories untouched for longer than maxAge. An
 // assertion lives at most MaxLifetimeSeconds, so a directory idle for twice
 // that holds nothing a holder can still use.
+//
+// Only an entry that vanished between listing and inspection (ENOENT) is
+// ignored. Any other Lstat or removal failure is collected, the sweep carries
+// on with the remaining entries, and the joined error is returned so the
+// caller can log that stale directories remain.
 func (s SpawnDirs) Reap(now time.Time, maxAge time.Duration) (int, error) {
 	entries, err := os.ReadDir(s.Root)
 	if err != nil {
 		return 0, err
 	}
+	lstat := s.lstat
+	if lstat == nil {
+		lstat = os.Lstat
+	}
 	removed := 0
+	var failures []error
 	for _, e := range entries {
-		fi, err := os.Lstat(filepath.Join(s.Root, e.Name()))
-		if err != nil || !fi.IsDir() {
+		path := filepath.Join(s.Root, e.Name())
+		fi, err := lstat(path)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			failures = append(failures, fmt.Errorf("inspect %s: %w", e.Name(), err))
+			continue
+		}
+		if !fi.IsDir() {
 			continue
 		}
 		if now.Sub(fi.ModTime()) > maxAge {
-			if err := s.discard(filepath.Join(s.Root, e.Name())); err != nil {
-				return removed, err
+			if err := s.discard(path); err != nil {
+				failures = append(failures, fmt.Errorf("remove %s: %w", e.Name(), err))
+				continue
 			}
 			removed++
 		}
 	}
-	return removed, nil
+	return removed, errors.Join(failures...)
 }

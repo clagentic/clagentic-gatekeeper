@@ -205,10 +205,12 @@ func (s *Server) reapLoop(ctx context.Context) {
 	t := time.NewTicker(time.Hour)
 	defer t.Stop()
 	for {
-		if n, err := s.Issuer.Dirs.Reap(s.Issuer.Now(), maxAge); err != nil {
-			fmt.Fprintf(os.Stderr, "identity: reap spawn directories: %v\n", err)
-		} else if n > 0 {
+		n, err := s.Issuer.Dirs.Reap(s.Issuer.Now(), maxAge)
+		if n > 0 {
 			fmt.Fprintf(os.Stderr, "identity: removed %d stale spawn directories\n", n)
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "identity: stale spawn directories remain: %v\n", err)
 		}
 		select {
 		case <-ctx.Done():

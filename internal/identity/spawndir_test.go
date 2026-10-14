@@ -1,9 +1,14 @@
 package identity
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 func newSpawnDirs(t *testing.T) SpawnDirs {
@@ -130,6 +135,52 @@ func TestPublishRefusesDirectoryThatIsASymlink(t *testing.T) {
 	entries, err := os.ReadDir(elsewhere)
 	if err != nil || len(entries) != 0 {
 		t.Fatalf("symlink target gained entries: %v %v", entries, err)
+	}
+}
+
+func TestReapSurfacesNonENOENTLstatErrorsAndKeepsSweeping(t *testing.T) {
+	s := newSpawnDirs(t)
+	var dirs []string
+	for i := 0; i < 3; i++ {
+		d, err := s.Create()
+		if err != nil {
+			t.Fatal(err)
+		}
+		dirs = append(dirs, d)
+	}
+	denied, vanished := dirs[0], dirs[1]
+	real := os.Lstat
+	s.lstat = func(p string) (fs.FileInfo, error) {
+		switch p {
+		case denied:
+			return nil, &fs.PathError{Op: "lstat", Path: p, Err: syscall.EACCES}
+		case vanished:
+			return nil, &fs.PathError{Op: "lstat", Path: p, Err: syscall.ENOENT}
+		}
+		return real(p)
+	}
+	removed, err := s.Reap(time.Now().Add(48*time.Hour), time.Hour)
+	if err == nil || !errors.Is(err, syscall.EACCES) || !strings.Contains(err.Error(), filepath.Base(denied)) {
+		t.Fatalf("a permission error was swallowed: %v", err)
+	}
+	if errors.Is(err, syscall.ENOENT) {
+		t.Fatalf("a vanished entry was reported: %v", err)
+	}
+	if removed != 1 {
+		t.Fatalf("removed %d, want the one reachable stale directory", removed)
+	}
+	if _, statErr := os.Stat(dirs[2]); !os.IsNotExist(statErr) {
+		t.Fatalf("sweep stopped at the failure: %v", statErr)
+	}
+}
+
+func TestReapLeavesFreshDirectoriesAndReportsNothing(t *testing.T) {
+	s := newSpawnDirs(t)
+	if _, err := s.Create(); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := s.Reap(time.Now(), time.Hour); err != nil || n != 0 {
+		t.Fatalf("fresh directory reaped or errored: %d %v", n, err)
 	}
 }
 
