@@ -30,7 +30,10 @@ type peerConn struct {
 	peer Peer
 }
 
-type peerListener struct{ net.Listener }
+type peerListener struct {
+	net.Listener
+	logf func(format string, args ...any)
+}
 
 func (l peerListener) Accept() (net.Conn, error) {
 	for {
@@ -40,12 +43,15 @@ func (l peerListener) Accept() (net.Conn, error) {
 		}
 		uc, ok := c.(*net.UnixConn)
 		if !ok {
+			l.logf("identity: dropped a connection that is not a unix socket connection (%T)", c)
 			c.Close()
 			continue
 		}
 		p, err := peerCred(uc)
 		if err != nil {
-			// A connection whose peer cannot be attested is dropped, not served.
+			// A connection whose peer cannot be attested is dropped, not served;
+			// the cause is logged because the client only sees a closed socket.
+			l.logf("identity: dropped a connection, peer attestation failed: %v", err)
 			c.Close()
 			continue
 		}
@@ -58,6 +64,14 @@ type Server struct {
 	Issuer *Issuer
 	// Logf receives the internal cause of a refusal; nil logs to stderr.
 	Logf func(format string, args ...any)
+}
+
+// log returns Logf, or a stderr logger when it is nil.
+func (s *Server) log() func(format string, args ...any) {
+	if s.Logf != nil {
+		return s.Logf
+	}
+	return func(format string, args ...any) { fmt.Fprintf(os.Stderr, format+"\n", args...) }
 }
 
 // Handler returns the HTTP surface; the peer is taken from the request
@@ -157,11 +171,7 @@ func (s *Server) respond(w http.ResponseWriter) func(*Issued, error) {
 // writeRefusal sends only the public code and message; the internal cause, if
 // any, goes to the server log with the code.
 func (s *Server) writeRefusal(w http.ResponseWriter, e *IssueError) {
-	logf := s.Logf
-	if logf == nil {
-		logf = func(format string, args ...any) { fmt.Fprintf(os.Stderr, format+"\n", args...) }
-	}
-	logf("identity: refused %s (%d): %v", e.Code, e.Status, e.detail)
+	s.log()("identity: refused %s (%d): %v", e.Code, e.Status, e.detail)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(e.Status)
 	_ = json.NewEncoder(w).Encode(e)
@@ -310,7 +320,7 @@ func (s *Server) Serve(ctx context.Context, l net.Listener) error {
 		_ = l.Close()
 	}()
 	go s.reapLoop(ctx)
-	err := srv.Serve(peerListener{l})
+	err := srv.Serve(peerListener{Listener: l, logf: s.log()})
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}
