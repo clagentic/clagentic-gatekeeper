@@ -24,28 +24,6 @@ func mustSession(t *testing.T, f *fixture, p Peer, req SessionRequest) (*Issued,
 	return out, c
 }
 
-func TestNonOperatorWithoutDefinitionGetsWorkloadRuntimeNeverHuman(t *testing.T) {
-	f := newFixture(t, nil)
-	_, c := mustSession(t, f, selfPeer(10), SessionRequest{})
-	if strings.HasPrefix(c.Sub, "human:") {
-		t.Fatalf("non-operator received a human subject %q", c.Sub)
-	}
-	if c.Act == nil || c.Act.Sub != "runtime:example-runtime" || c.Grade != "workload" {
-		t.Fatalf("act=%+v grade=%s", c.Act, c.Grade)
-	}
-	if c.Orig == "human" {
-		t.Fatal("origin human issued to a non-operator")
-	}
-}
-
-func TestNonOperatorCannotClaimOriginHuman(t *testing.T) {
-	f := newFixture(t, nil)
-	_, err := f.issuer.IssueSession(selfPeer(10), SessionRequest{Origin: "human"})
-	if ie, ok := IsIssueError(err); !ok || ie.Code != "origin_forbidden" {
-		t.Fatalf("got %v", err)
-	}
-}
-
 func TestDefinitionFileSuppliesRolesWithoutConfigEdit(t *testing.T) {
 	f := newFixture(t, nil)
 	_, c := mustSession(t, f, selfPeer(10), SessionRequest{Definition: "example-builder"})
@@ -83,16 +61,62 @@ func TestDefinitionNameMustMatchFile(t *testing.T) {
 	}
 }
 
-func TestOperatorGetsHumanUnlessRuntimeDeclared(t *testing.T) {
-	op := uint32(os.Getuid())
-	f := newFixture(t, func(s *Settings) { s.OperatorUID = &op })
+// Every agent on a host runs as the serving uid, so a request that merely omits
+// a field must not be graded human.
+func TestServingUidPeerOmittingRuntimeIsWorkloadNeverHuman(t *testing.T) {
+	f := newFixture(t, func(s *Settings) { s.RuntimeRoles = []string{"reader"} })
 	_, c := mustSession(t, f, selfPeer(10), SessionRequest{})
-	if c.Sub != "human:example-operator" || c.Act != nil || c.Orig != "human" {
-		t.Fatalf("sub=%s act=%+v origin=%s", c.Sub, c.Act, c.Orig)
+	if c.Sub != "runtime:example-runtime" || c.Grade != "workload" || c.Orig == "human" {
+		t.Fatalf("sub=%s grade=%s origin=%s", c.Sub, c.Grade, c.Orig)
+	}
+	if c.Act == nil || c.Act.Sub != "runtime:example-runtime" || strings.Join(c.Roles, ",") != "reader" {
+		t.Fatalf("act=%+v roles=%v", c.Act, c.Roles)
 	}
 	_, c = mustSession(t, f, selfPeer(10), SessionRequest{Runtime: &RuntimeDecl{Version: "1.2.3"}})
 	if c.Act == nil || c.Act.Sub != "runtime:example-runtime" || c.RT.Version != "1.2.3" {
 		t.Fatalf("act=%+v rt=%+v", c.Act, c.RT)
+	}
+}
+
+// No combination of caller-controlled request fields reaches the human grade,
+// a human subject or origin, or a child of one.
+func TestNoRequestShapeReachesHuman(t *testing.T) {
+	f := newFixture(t, func(s *Settings) { s.RuntimeRoles = []string{"reader"} })
+	origins := []string{"", "scheduled", "loop", "trigger", "agent", "human"}
+	defs := []string{"", "example-builder"}
+	runtimes := []*RuntimeDecl{nil, {}, {ID: "example-runtime", Version: "1.0.0"}}
+	for _, o := range origins {
+		for _, d := range defs {
+			for _, rt := range runtimes {
+				req := SessionRequest{Origin: o, Definition: d, Runtime: rt}
+				out, err := f.issuer.IssueSession(selfPeer(10), req)
+				if o == "human" {
+					if ie, ok := IsIssueError(err); !ok || ie.Code != CodeOriginForbidden {
+						t.Errorf("%+v: origin human got %v", req, err)
+					}
+					continue
+				}
+				if err != nil {
+					t.Errorf("%+v: %v", req, err)
+					continue
+				}
+				c, err := f.issuer.Keys.ParseOwn(out.Token)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if strings.HasPrefix(c.Sub, "human:") || c.Orig == "human" || c.Grade != "workload" {
+					t.Errorf("%+v: sub %s origin %s grade %s", req, c.Sub, c.Orig, c.Grade)
+				}
+				child, err := f.issuer.IssueChild(selfPeer(10), ChildRequest{ParentToken: out.Token, AgentType: "example-builder", AgentID: "a1"})
+				if err != nil {
+					t.Errorf("%+v: child: %v", req, err)
+					continue
+				}
+				if strings.HasPrefix(child.Subject, "human:") || child.Grade != "harness" {
+					t.Errorf("%+v: child sub %s grade %s", req, child.Subject, child.Grade)
+				}
+			}
+		}
 	}
 }
 
@@ -111,39 +135,17 @@ func TestSpoofedArgvCannotChangeRolesOrGrade(t *testing.T) {
 		{"/usr/bin/env", []string{"env", "merger"}},
 		{"/opt/example/reader", []string{"reader"}},
 	}
-	for _, operator := range []bool{false, true} {
-		op := uint32(os.Getuid()) + 1
-		if operator {
-			op = uint32(os.Getuid())
-		}
-		f := newFixture(t, func(s *Settings) {
-			s.OperatorUID = &op
-			s.RuntimeRoles = []string{"reader"}
-			s.OperatorRoles = []string{"operator-reader"}
-		})
-		var wantRoles []string
-		var wantSub string
-		for i, sp := range spoofs {
-			exe, args := sp.exe, sp.args
-			f.issuer.Proc = func(int32) (ProcInfo, error) { return ProcInfo{Exe: exe, Args: args, StartTime: 100}, nil }
-			for _, req := range []SessionRequest{{}, {Runtime: &RuntimeDecl{}}} {
-				_, c := mustSession(t, f, selfPeer(10), req)
-				if i == 0 && req.Runtime == nil {
-					wantRoles, wantSub = c.Roles, c.Sub
-				}
-				want := wantRoles
-				if req.Runtime != nil {
-					want = []string{"reader"}
-				}
-				// For a non-operator the subject is runtime:<rt> by design (attribution
-				// only), so only the operator's subject is compared across spoofs.
-				subDrifted := operator && c.Sub != wantSub
-				if strings.Join(c.Roles, ",") != strings.Join(want, ",") || subDrifted {
-					t.Errorf("operator=%v exe=%s args=%v req=%+v: roles %v sub %s, want roles %v sub %s", operator, exe, args, req, c.Roles, c.Sub, want, wantSub)
-				}
-				if !operator && (strings.HasPrefix(c.Sub, "human:") || c.Grade != "workload") {
-					t.Errorf("non-operator with spoofed argv got sub %s grade %s", c.Sub, c.Grade)
-				}
+	f := newFixture(t, func(s *Settings) { s.RuntimeRoles = []string{"reader"} })
+	for _, sp := range spoofs {
+		exe, args := sp.exe, sp.args
+		f.issuer.Proc = func(int32) (ProcInfo, error) { return ProcInfo{Exe: exe, Args: args, StartTime: 100}, nil }
+		for _, req := range []SessionRequest{{}, {Runtime: &RuntimeDecl{}}} {
+			_, c := mustSession(t, f, selfPeer(10), req)
+			if strings.Join(c.Roles, ",") != "reader" {
+				t.Errorf("exe=%s args=%v req=%+v: roles %v, want reader", exe, args, req, c.Roles)
+			}
+			if strings.HasPrefix(c.Sub, "human:") || c.Grade != "workload" {
+				t.Errorf("spoofed argv got sub %s grade %s", c.Sub, c.Grade)
 			}
 		}
 	}
@@ -287,37 +289,22 @@ func TestChildFromOtherPidRefusesNamingMismatch(t *testing.T) {
 // and the delivery directory owner follow the SO_PEERCRED uid. The fake /proc
 // describes a process of a different, privileged-looking identity.
 func TestGrantsFollowPeerCredentialsNotProcData(t *testing.T) {
-	for _, operator := range []bool{false, true} {
-		op := uint32(os.Getuid()) + 1
-		peer := selfPeer(10)
-		if operator {
-			op = peer.UID
-		}
-		f := newFixture(t, func(s *Settings) {
-			s.OperatorUID = &op
-			s.OperatorRoles = []string{"operator-reader"}
-			s.RuntimeRoles = []string{"reader"}
-		})
-		f.issuer.Proc = func(int32) (ProcInfo, error) {
-			return ProcInfo{Exe: "/usr/sbin/example-root-daemon", Args: []string{"example-root-daemon", "--uid", "0"}, StartTime: 100}, nil
-		}
-		out, c := mustSession(t, f, peer, SessionRequest{})
-		if operator {
-			if c.Sub != "human:example-operator" || c.Orig != "human" || strings.Join(c.Roles, ",") != "operator-reader" {
-				t.Errorf("operator peer: sub %s origin %s roles %v", c.Sub, c.Orig, c.Roles)
-			}
-		} else if strings.HasPrefix(c.Sub, "human:") || c.Orig == "human" || c.Grade != "workload" || strings.Join(c.Roles, ",") != "reader" {
-			t.Errorf("non-operator peer: sub %s origin %s grade %s roles %v", c.Sub, c.Orig, c.Grade, c.Roles)
-		}
-		fi, err := os.Stat(out.Dir)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if uid, ok := ownerUID(fi); ok && uid != peer.UID {
-			t.Errorf("delivery directory owned by %d, want peer uid %d", uid, peer.UID)
-		}
+	peer := selfPeer(10)
+	f := newFixture(t, func(s *Settings) { s.RuntimeRoles = []string{"reader"} })
+	f.issuer.Proc = func(int32) (ProcInfo, error) {
+		return ProcInfo{Exe: "/usr/sbin/example-root-daemon", Args: []string{"example-root-daemon", "--uid", "0"}, StartTime: 100}, nil
 	}
-
+	out, c := mustSession(t, f, peer, SessionRequest{})
+	if strings.HasPrefix(c.Sub, "human:") || c.Orig == "human" || c.Grade != "workload" || strings.Join(c.Roles, ",") != "reader" {
+		t.Errorf("sub %s origin %s grade %s roles %v", c.Sub, c.Orig, c.Grade, c.Roles)
+	}
+	fi, err := os.Stat(out.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if uid, ok := ownerUID(fi); ok && uid != peer.UID {
+		t.Errorf("delivery directory owned by %d, want peer uid %d", uid, peer.UID)
+	}
 }
 
 func TestUnreadableProcAndUnderivableRuntimeRefuseInsteadOfGranting(t *testing.T) {

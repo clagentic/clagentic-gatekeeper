@@ -46,8 +46,8 @@ func TestIdentityWrittenPathsMustBeAbsoluteAndNameTheKey(t *testing.T) {
 }
 
 func TestIdentityOnlyConfigLoads(t *testing.T) {
-	cfg := loadIdentity(t, "identity:\n  key_path: /k\n  operator_uid: 1000\n")
-	if !cfg.IdentityEnabled() || cfg.Identity.OperatorUID == nil || *cfg.Identity.OperatorUID != 1000 {
+	cfg := loadIdentity(t, "identity:\n  key_path: /k\n  runtime_roles: [reader]\n")
+	if !cfg.IdentityEnabled() || len(cfg.Identity.RuntimeRoles) != 1 {
 		t.Fatalf("%+v", cfg.Identity)
 	}
 	if len(cfg.Roles) != 0 {
@@ -63,7 +63,7 @@ func TestIdentityOnlyConfigLoads(t *testing.T) {
 // section.
 func TestIdentitySectionWithoutKeyPathIsAConfigError(t *testing.T) {
 	for _, body := range []string{
-		"identity:\n  operator_uid: 1000\n",
+		"identity:\n  runtime_roles: [reader]\n",
 		"identity:\n",
 		"identity: {}\n",
 	} {

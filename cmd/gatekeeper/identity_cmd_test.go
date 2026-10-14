@@ -261,16 +261,15 @@ func TestServeRefusesAtStartWhenATrustRootIsWritableByOthers(t *testing.T) {
 	}
 }
 
-// Only the serving uid is served, so an operator uid that is not the serving uid
-// leaves every peer, which is the serving uid, a workload and never a human.
-func TestServeWithAnotherOperatorUidNeverIssuesHuman(t *testing.T) {
+// A config that still names the removed operator keys, here with the serving
+// uid as operator, must not make serve issue a human assertion.
+func TestServeWithOperatorKeysInConfigNeverIssuesHuman(t *testing.T) {
 	dir, key, defs := identityDeployment(t)
 	sock := filepath.Join(dir, "id.sock")
-	other := os.Getuid() + 1
-	cfg := writeConfig(t, dir, fmt.Sprintf("identity:\n  key_path: %s\n  definitions_dir: %s\n  spawn_root: %s\n  operator_uid: %d\n  operator_name: example-operator\n", key, defs, filepath.Join(dir, "spawn"), other))
+	cfg := writeConfig(t, dir, fmt.Sprintf("identity:\n  key_path: %s\n  definitions_dir: %s\n  spawn_root: %s\n  operator_uid: %d\n  operator_name: example-operator\n  operator_roles: [reader]\n", key, defs, filepath.Join(dir, "spawn"), os.Getuid()))
 	startServe(t, cfg, sock)
 	out, err := identity.Client{Socket: sock}.IssueSession(identity.SessionRequest{})
-	if err != nil || strings.HasPrefix(out.Subject, "human:") {
+	if err != nil || strings.HasPrefix(out.Subject, "human:") || out.Grade != "workload" || len(out.Roles) != 0 {
 		t.Fatalf("%+v %v", out, err)
 	}
 }

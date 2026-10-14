@@ -318,16 +318,16 @@ func TestServeWithAnAlreadyCancelledContextReturns(t *testing.T) {
 	}
 }
 
-func TestSocketOperatorGetsHuman(t *testing.T) {
-	uid := uint32(os.Getuid())
-	c, _ := startServer(t, func(s *Settings) { s.OperatorUID = &uid })
-	out, err := c.IssueSession(SessionRequest{})
-	if err != nil || out.Subject != "human:example-operator" {
-		t.Fatalf("%+v %v", out, err)
+func TestSocketNeverIssuesHuman(t *testing.T) {
+	c, _ := startServer(t, nil)
+	for _, req := range []SessionRequest{{}, {Runtime: &RuntimeDecl{}}, {Origin: "agent"}} {
+		out, err := c.IssueSession(req)
+		if err != nil || strings.HasPrefix(out.Subject, "human:") || out.Grade != "workload" || !strings.HasPrefix(out.Actor, "runtime:") {
+			t.Fatalf("%+v: %+v %v", req, out, err)
+		}
 	}
-	out, err = c.IssueSession(SessionRequest{Runtime: &RuntimeDecl{}})
-	if err != nil || out.Subject != "human:example-operator" || !strings.HasPrefix(out.Actor, "runtime:") {
-		t.Fatalf("%+v %v", out, err)
+	if _, err := c.IssueSession(SessionRequest{Origin: "human"}); err == nil {
+		t.Fatal("origin human was issued")
 	}
 }
 

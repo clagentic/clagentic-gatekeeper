@@ -39,8 +39,7 @@ func runServe(args []string) error {
 	sock := socketFor(*socket, cfg)
 	issuer, err := identity.NewIssuer(identity.Settings{
 		Issuer: ic.Issuer, SocketPath: sock, KeyPath: ic.KeyPath, Alg: ic.Alg,
-		JWKSPath: ic.JWKSPath, OperatorUID: ic.OperatorUID, OperatorName: ic.OperatorName,
-		OperatorRoles: ic.OperatorRoles, RuntimeRoles: ic.RuntimeRoles, DefinitionsDir: ic.DefinitionsDir,
+		JWKSPath: ic.JWKSPath, RuntimeRoles: ic.RuntimeRoles, DefinitionsDir: ic.DefinitionsDir,
 		DelegableRoles: ic.DelegableRoles, SpawnRoot: ic.SpawnRoot,
 		SessionTTL: time.Duration(ic.SessionTTLSeconds) * time.Second,
 	})

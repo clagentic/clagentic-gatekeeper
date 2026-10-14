@@ -586,10 +586,14 @@ Normatively, this check, not file permissions, is the access boundary. Socket
 mode, the socket directory and its ancestors are defense in depth only; a
 deployment must not rely on them to exclude a uid.
 
-`identity.operator_uid` names the uid that receives a human subject. Because
-only the serving uid is served, it yields a human subject only when it equals the
-serving uid. Serving callers under other uids (allow-lists, handing delivery
-directories to a foreign uid) is tracked in lr-767925.
+`serve` issues no human assertions at all. Human requires a positive signal
+that a same-uid process cannot produce by omitting or setting a request field
+or its own argv, and this release has no such signal: every agent on a host
+runs as the serving uid. The former `identity.operator_uid`,
+`identity.operator_name` and `identity.operator_roles` keys are removed; a
+config that still carries them has them ignored. Origin `human` is refused with
+`origin_forbidden`. Serving callers under other uids (allow-lists, handing
+delivery directories to a foreign uid) is tracked in lr-767925.
 
 A served peer may name any definition: a definition's roles are a ceiling,
 not a grant, and a consumer's own entitlement still decides what is granted.
@@ -640,12 +644,13 @@ detail goes to the server log only. The codes are `bad_request`,
 
 ### Who gets what
 
-- Peer uid equals `identity.operator_uid` and no runtime session is declared:
-  subject `human:<operator_name>`, origin `human`.
-- Any other served peer, or an operator that passes `--runtime`: grade `workload`;
-  `act.sub` is `agent:<definition>` when `--definition` is given, else
-  `runtime:<id>`. The runtime id is read from the peer's executable (for an
-  interpreter, its script name). Origin `human` is refused for any other uid.
+- Every served peer, whatever fields its request carries or omits: grade
+  `workload`, subject `runtime:<id>`; `act.sub` is `agent:<definition>` when
+  `--definition` is given, else `runtime:<id>`. Roles are the definition's, else
+  `identity.runtime_roles`. The default origin is `trigger`. The runtime id is
+  read from the peer's executable (for an interpreter, its script name). Origin
+  `human` is refused for every uid, and a child is never human: it inherits its
+  parent's subject, and no parent is human.
 - A definition must exist in `identity.definitions_dir`; its roles are the
   ceiling. Adding a file is enough; no gatekeeper config edit and no roster.
 - `issue-child` requires a parent token this server issued, still unexpired,
@@ -666,7 +671,7 @@ derived from the peer's executable and command line, and any process can set
 its own argv, so a same-uid process can always present any runtime id it
 likes. The uid is the trust boundary, not the runtime id. Therefore, and
 normatively: no role, role ceiling, or human-versus-workload decision may
-depend on the runtime id or on any other argv-derived field; it appears only
+depend on the runtime id or on any other argv-derived field or request field; it appears only
 in `rt.id` and in the `runtime:<id>` subject or actor of a workload assertion
 for attribution and audit. `identity.runtime_roles` is one list applied to
 every runtime session regardless of its id and is never keyed by a runtime
@@ -689,10 +694,6 @@ the derived one (`runtime_mismatch`), the request is refused and nothing is
 granted. Accepted residual: a pid reused before the first `/proc` read can make
 the derived runtime id describe the wrong process. That affects attribution
 only, never roles, grade or ownership, because those do not read `/proc`.
-
-An operator-uid peer that names a definition receives subject
-`human:<operator_name>` with `act.sub = agent:<definition>` (RFC 8693 actor
-semantics).
 
 ### Signing key
 

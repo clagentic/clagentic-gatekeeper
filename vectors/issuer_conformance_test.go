@@ -63,7 +63,6 @@ func TestIssuedAssertionsPassConformance(t *testing.T) {
 		keyPath := issuerKey(t, dir, es)
 		iss, err := identity.NewIssuer(identity.Settings{
 			SocketPath: filepath.Join(dir, "run", "identity.sock"), KeyPath: keyPath,
-			OperatorUID: &operator, OperatorName: "example-operator", OperatorRoles: []string{"reader"},
 			DefinitionsDir: defs, SpawnRoot: filepath.Join(dir, "spawn"),
 		})
 		if err != nil {
@@ -72,17 +71,6 @@ func TestIssuedAssertionsPassConformance(t *testing.T) {
 		defer iss.Close()
 		pid := int32(os.Getpid())
 		peer := identity.Peer{UID: operator, GID: uint32(os.Getgid()), PID: pid}
-		// A non-operator peer is modelled by a second issuer with no operator: only
-		// the serving uid is served, so the peer cannot be a different uid.
-		guest, err := identity.NewIssuer(identity.Settings{
-			SocketPath: filepath.Join(dir, "run", "identity.sock"), KeyPath: keyPath,
-			OperatorRoles:  []string{"reader"},
-			DefinitionsDir: defs, SpawnRoot: filepath.Join(dir, "spawn2"),
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer guest.Close()
 
 		raw, err := iss.Keys.MarshalJWKS()
 		if err != nil {
@@ -106,12 +94,7 @@ func TestIssuedAssertionsPassConformance(t *testing.T) {
 			}
 		}
 
-		human, err := iss.IssueSession(peer, identity.SessionRequest{})
-		if err != nil {
-			t.Fatal(err)
-		}
-		check("human", human.Token, human.Dir, "workload")
-		runtime, err := guest.IssueSession(peer, identity.SessionRequest{})
+		runtime, err := iss.IssueSession(peer, identity.SessionRequest{})
 		if err != nil {
 			t.Fatal(err)
 		}

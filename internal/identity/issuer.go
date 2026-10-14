@@ -27,15 +27,8 @@ type Issuer struct {
 	Proc     ProcReader
 	Now      func() time.Time
 
-	// OperatorUID is the only uid that may receive a human subject; nil means
-	// none may. Only peers running as the serving uid are served at all, so an
-	// operator uid other than the serving uid never receives anything.
-	OperatorUID  *uint32
-	OperatorName string
-	// OperatorRoles and RuntimeRoles are the role ceilings of sessions that
-	// name no definition.
-	OperatorRoles []string
-	RuntimeRoles  []string
+	// RuntimeRoles is the role ceiling of a session that names no definition.
+	RuntimeRoles []string
 	// DelegableRoles narrows issue-child. nil means every role is delegable;
 	// a non-nil slice, even an empty one, restricts children to its members.
 	DelegableRoles []string
@@ -70,8 +63,6 @@ func (n *Narrowing) add(policy string, dropped []string) *Narrowing {
 	n.Steps = append(n.Steps, PolicyStep{Policy: policy, Dropped: dropped})
 	return n
 }
-
-func (i *Issuer) isOperator(p Peer) bool { return i.OperatorUID != nil && *i.OperatorUID == p.UID }
 
 // permitted reports whether p may request issuance at all: only a peer running
 // as the serving uid. It is decided from the SO_PEERCRED uid and nothing else;
@@ -109,26 +100,21 @@ func (i *Issuer) IssueSession(peer Peer, req SessionRequest) (*Issued, error) {
 		}
 	}
 
-	operator := i.isOperator(peer)
+	// No assertion is graded human by absence or by a request field: a same-uid
+	// peer controls every field and its own argv, and this release has no
+	// positive signal it cannot forge. Origin human is therefore never issued.
 	origin := req.Origin
 	switch {
 	case origin == "":
 		origin = "trigger"
-		if operator {
-			origin = "human"
-		}
 	case !origins[origin]:
 		return nil, refuse(http.StatusBadRequest, CodeBadRequest, fmt.Errorf("origin %q is not one of human, scheduled, loop, trigger, agent", origin))
-	case origin == "human" && !operator:
-		return nil, refuse(http.StatusForbidden, CodeOriginForbidden, fmt.Errorf("origin human requested by non-operator uid %d", peer.UID))
+	case origin == "human":
+		return nil, refuse(http.StatusForbidden, CodeOriginForbidden, fmt.Errorf("origin human requested by uid %d: no human assertions are issued", peer.UID))
 	}
 
 	runtimeActor := "runtime:" + rtID
-	c := Claims{Iss: i.Issuer, Grade: "workload", RT: Runtime{ID: rtID, Version: version}, Orig: origin}
-	c.Sub = runtimeActor
-	if operator {
-		c.Sub = "human:" + i.OperatorName
-	}
+	c := Claims{Iss: i.Issuer, Sub: runtimeActor, Grade: "workload", RT: Runtime{ID: rtID, Version: version}, Orig: origin}
 
 	switch {
 	case req.Definition != "":
@@ -138,8 +124,6 @@ func (i *Issuer) IssueSession(peer Peer, req SessionRequest) (*Issued, error) {
 		}
 		c.Roles = def.Roles
 		c.Act = &Actor{Sub: "agent:" + def.Name}
-	case operator && req.Runtime == nil:
-		c.Roles = i.OperatorRoles
 	default:
 		c.Roles = i.RuntimeRoles
 		c.Act = &Actor{Sub: runtimeActor}

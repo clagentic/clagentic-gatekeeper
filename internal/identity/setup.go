@@ -5,9 +5,7 @@ package identity
 import (
 	"errors"
 	"fmt"
-	"os/user"
 	"path/filepath"
-	"strconv"
 	"time"
 )
 
@@ -19,9 +17,6 @@ type Settings struct {
 	KeyPath        string
 	Alg            string
 	JWKSPath       string
-	OperatorUID    *uint32
-	OperatorName   string
-	OperatorRoles  []string
 	RuntimeRoles   []string
 	DefinitionsDir string
 	DelegableRoles []string
@@ -47,23 +42,12 @@ func NewIssuer(s Settings) (*Issuer, error) {
 	if ttl < time.Minute || ttl > MaxLifetimeSeconds*time.Second {
 		return nil, fmt.Errorf("identity.session_ttl_seconds must be between 60 and %d", MaxLifetimeSeconds)
 	}
-	for _, list := range [][]string{s.OperatorRoles, s.RuntimeRoles, s.DelegableRoles} {
+	for _, list := range [][]string{s.RuntimeRoles, s.DelegableRoles} {
 		for _, r := range list {
 			if !reRole.MatchString(r) {
 				return nil, fmt.Errorf("role %q does not match %s", r, reRole)
 			}
 		}
-	}
-	name := s.OperatorName
-	if name == "" && s.OperatorUID != nil {
-		u, err := user.LookupId(strconv.FormatUint(uint64(*s.OperatorUID), 10))
-		if err != nil {
-			return nil, fmt.Errorf("identity.operator_name is unset and uid %d has no account name: %w", *s.OperatorUID, err)
-		}
-		name = u.Username
-	}
-	if s.OperatorUID != nil && !reName.MatchString(name) {
-		return nil, fmt.Errorf("operator name %q does not match %s", name, reName)
 	}
 	root := s.SpawnRoot
 	if root == "" {
@@ -107,8 +91,7 @@ func NewIssuer(s Settings) (*Issuer, error) {
 	return &Issuer{
 		Issuer: issuer, Keys: keys, Defs: defs, Dirs: dirs,
 		Registry: NewRegistry(), Proc: ReadProc, Now: time.Now,
-		OperatorUID: s.OperatorUID, OperatorName: name,
-		OperatorRoles: s.OperatorRoles, RuntimeRoles: s.RuntimeRoles,
+		RuntimeRoles:   s.RuntimeRoles,
 		DelegableRoles: s.DelegableRoles, SessionTTL: ttl,
 	}, nil
 }

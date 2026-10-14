@@ -88,8 +88,8 @@ type fixture struct {
 	logs   *logSink
 }
 
-// newFixture builds an issuer with an invented operator uid unless the test
-// sets one.
+// newFixture builds an issuer over synthetic definitions; mutate adjusts the
+// settings.
 func newFixture(t *testing.T, mutate func(*Settings)) *fixture {
 	t.Helper()
 	tmp := t.TempDir()
@@ -99,10 +99,8 @@ func newFixture(t *testing.T, mutate func(*Settings)) *fixture {
 	}
 	writeDefinition(t, defs, "example-builder", "builder")
 	writeDefinition(t, defs, "example-merger", "merger, builder")
-	operator := uint32(os.Getuid()) + 1
 	s := Settings{
 		SocketPath: filepath.Join(tmp, "run", "identity.sock"), KeyPath: writeKey(t, tmp, "key.pem", false),
-		OperatorUID: &operator, OperatorName: "example-operator", OperatorRoles: []string{"reader"},
 		DefinitionsDir: defs, SpawnRoot: filepath.Join(tmp, "spawn"),
 	}
 	if mutate != nil {

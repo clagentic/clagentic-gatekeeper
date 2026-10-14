@@ -325,15 +325,11 @@ roles:
 #   # Default "0600" (serving uid only). A second layer: serve answers only a
 #   # peer whose SO_PEERCRED uid is the serving uid, whatever the mode.
 #   socket_mode: "0600"
-#   # The only uid that may receive a human subject. Unset: nobody does. Only the
-#   # serving uid is served, so set this to the serving uid to get a human subject.
-#   operator_uid: 1000
-#   operator_name: example-operator      # default: the account name of operator_uid
-#   # Role ceilings for sessions that name no definition. runtime_roles is one
-#   # list for every runtime session: it is never keyed by runtime name, because
-#   # the runtime id comes from the peer's argv and is self-asserted attribution
-#   # within the peer uid (docs/SETUP.md).
-#   operator_roles: [reader]
+#   # Role ceiling for sessions that name no definition. serve issues no human
+#   # assertions, so there is no operator uid or operator ceiling. runtime_roles
+#   # is one list for every such session: it is never keyed by runtime name,
+#   # because the runtime id comes from the peer's argv and is self-asserted
+#   # attribution within the peer uid (docs/SETUP.md).
 #   runtime_roles: []
 #   # One <name>.md per agent, frontmatter keys name, roles, trust_boundary
 #   # (trust_boundary is parsed and not yet enforced). The directory, each file

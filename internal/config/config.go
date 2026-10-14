@@ -86,19 +86,11 @@ type IdentityConfig struct {
 	Alg string `yaml:"alg,omitempty"`
 	// JWKSPath is where the published key set is written at start.
 	JWKSPath string `yaml:"jwks_path,omitempty" abspath:"true"`
-	// OperatorUID is the uid that may receive a human assertion. Unset means
-	// no peer ever does. Only the serving uid is served, so a value other than
-	// the serving uid also means no peer ever does.
-	OperatorUID *uint32 `yaml:"operator_uid,omitempty"`
-	// OperatorName is the name in `human:<name>`; defaults to the account name
-	// of OperatorUID.
-	OperatorName string `yaml:"operator_name,omitempty"`
-	// OperatorRoles is the role ceiling of a human session that names no
-	// definition. RuntimeRoles is the same for a runtime session with none; it
-	// is one list for all runtime sessions, never keyed by the argv-derived
+	// RuntimeRoles is the role ceiling of a session that names no definition.
+	// It is one list for all such sessions, never keyed by the argv-derived
 	// runtime id, which is self-asserted attribution within the peer uid.
-	OperatorRoles []string `yaml:"operator_roles,omitempty"`
-	RuntimeRoles  []string `yaml:"runtime_roles,omitempty"`
+	// serve issues no human assertions, so there is no operator ceiling.
+	RuntimeRoles []string `yaml:"runtime_roles,omitempty"`
 	// DefinitionsDir holds one <name>.md per agent definition (YAML
 	// frontmatter keys name, roles, trust_boundary; trust_boundary is parsed
 	// and not yet enforced).
