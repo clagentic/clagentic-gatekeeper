@@ -46,7 +46,63 @@ type Config struct {
 	// GitHub-domain mint (internal/mint) is entirely unaffected. Additive,
 	// off by default.
 	A2AProvider A2AProviderConfig `yaml:"a2a_provider,omitempty"`
+	// Identity is the OPTIONAL Identity Assertion issuer section
+	// (docs/identity-contract.md). A config holding only this section is a
+	// valid issuer-only deployment: `gatekeeper serve` runs, `gatekeeper mint`
+	// reports that minting is not configured. Absent means serve refuses.
+	Identity IdentityConfig `yaml:"identity,omitempty"`
 }
+
+// IdentityConfig configures `gatekeeper serve`, the Identity Assertion issuer.
+// Every field is deployment-specific and none has a baked-in identity; roles
+// are a vocabulary the deployment defines, never names this code knows.
+type IdentityConfig struct {
+	// Issuer is the `iss` claim. Defaults to unix://<socket path>, which is
+	// the form verifiers discover keys from without extra configuration.
+	Issuer string `yaml:"issuer,omitempty"`
+	// SocketPath is the unix socket serve listens on (flag --socket wins).
+	SocketPath string `yaml:"socket_path,omitempty"`
+	// SocketMode is the octal permission of the socket, default "0666": any
+	// local uid may ask, and the kernel-attested peer credentials decide what
+	// it gets.
+	SocketMode string `yaml:"socket_mode,omitempty"`
+	// KeyPath is the signing key: a PKCS#8 PEM, Ed25519 or P-256, mode 0600
+	// and owned by the serving uid. Required to serve.
+	KeyPath string `yaml:"key_path,omitempty"`
+	// Alg is "EdDSA" (default) or "ES256" and must agree with the key type.
+	Alg string `yaml:"alg,omitempty"`
+	// JWKSPath is where the published key set is written at start.
+	JWKSPath string `yaml:"jwks_path,omitempty"`
+	// RetiredKeys are former signing keys (PKCS#8 private or PKIX public PEM)
+	// whose public halves stay published until the last assertion they signed
+	// has expired (at most 12 hours after rotation).
+	RetiredKeys []string `yaml:"retired_keys,omitempty"`
+	// OperatorUID is the uid that may receive a human assertion. Unset means
+	// no peer ever does.
+	OperatorUID *uint32 `yaml:"operator_uid,omitempty"`
+	// OperatorName is the name in `human:<name>`; defaults to the account name
+	// of OperatorUID.
+	OperatorName string `yaml:"operator_name,omitempty"`
+	// OperatorRoles is the role ceiling of a human session that names no
+	// definition. RuntimeRoles is the same for a runtime session with none.
+	OperatorRoles []string `yaml:"operator_roles,omitempty"`
+	RuntimeRoles  []string `yaml:"runtime_roles,omitempty"`
+	// DefinitionsDir holds one <name>.md per agent definition (YAML
+	// frontmatter keys name, roles, trust_boundary).
+	DefinitionsDir string `yaml:"definitions_dir,omitempty"`
+	// DelegableRoles narrows what issue-child may hand a child. Absent means
+	// every role is delegable; an explicit empty list means none is.
+	DelegableRoles []string `yaml:"delegable_roles,omitempty"`
+	// SpawnRoot is the parent of the per-assertion delivery directories.
+	// Defaults to <socket dir>/spawn.
+	SpawnRoot string `yaml:"spawn_root,omitempty"`
+	// SessionTTLSeconds is the session assertion lifetime, default and
+	// maximum 43200.
+	SessionTTLSeconds int `yaml:"session_ttl_seconds,omitempty"`
+}
+
+// Enabled reports whether the identity section is present at all.
+func (c IdentityConfig) Enabled() bool { return c.KeyPath != "" }
 
 // GitHubConfig holds GitHub connectivity settings.
 type GitHubConfig struct {
