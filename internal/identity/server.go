@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -179,50 +178,20 @@ func (s *Server) writeRefusal(w http.ResponseWriter, e *IssueError) {
 	_ = json.NewEncoder(w).Encode(e)
 }
 
-// probeSocket tries to connect to path. It is a variable so a test can produce
-// outcomes (a timeout from a backlogged server) a filesystem cannot on demand.
-var probeSocket = func(path string) error {
-	c, err := net.DialTimeout("unix", path, time.Second)
-	if err == nil {
-		c.Close()
-	}
-	return err
-}
-
-// Listen binds the socket. A leftover socket file is replaced only when it is
-// provably stale: a socket owned by the serving uid whose probe is refused
-// outright (ECONNREFUSED, nothing is listening). A probe that merely failed,
-// such as a timeout from a live but paused or backlogged server, proves
-// nothing, and unlinking then would let a second issuer bind the path, so
-// Listen refuses and names the path.
+// Listen binds the socket and refuses to start when anything already exists at
+// path, whatever it is. It never unlinks: telling a stale socket from one a
+// live server is about to use cannot be done without racing that server, so
+// cleanup belongs to the service manager (a systemd RuntimeDirectory is
+// emptied on every stop). The kernel's bind is the single atomic check, so two
+// issuers can never both bind the path.
 func Listen(path string, mode os.FileMode) (net.Listener, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
-	fi, err := os.Lstat(path)
-	switch {
-	case errors.Is(err, fs.ErrNotExist):
-	case err != nil:
-		return nil, fmt.Errorf("inspect %s: %w", path, err)
-	default:
-		if fi.Mode()&os.ModeSocket == 0 {
-			return nil, fmt.Errorf("%s exists and is not a socket", path)
-		}
-		if uid, ok := ownerUID(fi); !ok || int(uid) != os.Geteuid() {
-			return nil, fmt.Errorf("%s exists and is not owned by the serving uid; remove it by hand if it is stale", path)
-		}
-		perr := probeSocket(path)
-		if perr == nil {
-			return nil, fmt.Errorf("another server is already listening on %s", path)
-		}
-		if !errors.Is(perr, syscall.ECONNREFUSED) {
-			return nil, fmt.Errorf("cannot tell whether a server is listening on %s (%v); remove the file by hand if it is stale", path, perr)
-		}
-		if err := os.Remove(path); err != nil {
-			return nil, err
-		}
-	}
 	l, err := net.Listen("unix", path)
+	if errors.Is(err, syscall.EADDRINUSE) {
+		return nil, fmt.Errorf("%s already exists; refusing to start (remove it, or have the service manager own cleanup, for example systemd RuntimeDirectory)", path)
+	}
 	if err != nil {
 		return nil, err
 	}

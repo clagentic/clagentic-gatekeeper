@@ -554,11 +554,13 @@ The socket also answers `GET /.well-known/jwks.json` (HTTP/1.1), so a
 verifier trusting `iss = unix:///path/to/socket` finds the keys with no extra
 configuration.
 
-At start, `serve` replaces a leftover socket file only when it is a socket
-owned by the serving uid and a connection attempt is refused outright
-(`ECONNREFUSED`). If the probe times out, or the file is owned by another uid,
-`serve` refuses to start and names the path: a live but paused server must not
-lose its socket to a second issuer.
+`serve` refuses to start when anything exists at the socket path (a socket, a
+file, a directory, a link) and names it. It never removes or replaces what it
+finds: telling a stale socket from one a live server is about to use cannot be
+done without racing that server. The service manager owns cleanup; under
+systemd, `RuntimeDirectory=` is emptied on every stop (see the unit below). A
+clean shutdown of `serve` removes its own socket. After a crash outside a
+service manager, remove the leftover socket by hand.
 
 ### Who gets what
 
@@ -660,8 +662,12 @@ After=network.target
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/gatekeeper serve --config /etc/gatekeeper/config.yaml
+# systemd creates /run/clagentic-gatekeeper before start and removes it,
+# socket included, after every stop. serve relies on this: it never unlinks a
+# socket path it finds, so do not set RuntimeDirectoryPreserve=yes.
 RuntimeDirectory=clagentic-gatekeeper
 RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=no
 Restart=on-failure
 NoNewPrivileges=true
 ProtectSystem=strict

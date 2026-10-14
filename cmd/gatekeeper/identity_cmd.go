@@ -72,7 +72,6 @@ func runServe(args []string) error {
 	if err != nil {
 		return fmt.Errorf("identity: listen: %w", err)
 	}
-	defer os.Remove(sock)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
