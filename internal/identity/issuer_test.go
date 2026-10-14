@@ -138,7 +138,7 @@ func TestSpoofedArgvCannotChangeRolesOrGrade(t *testing.T) {
 	f := newFixture(t, func(s *Settings) { s.RuntimeRoles = []string{"reader"} })
 	for _, sp := range spoofs {
 		exe, args := sp.exe, sp.args
-		f.issuer.Proc = func(int32) (ProcInfo, error) { return ProcInfo{Exe: exe, Args: args, StartTime: 100}, nil }
+		f.issuer.Proc = func(int32) (ProcInfo, error) { return ProcInfo{Exe: exe, Args: args, StartTime: 100, UID: uint32(os.Getuid()), HasUID: true}, nil }
 		for _, req := range []SessionRequest{{}, {Runtime: &RuntimeDecl{}}} {
 			_, c := mustSession(t, f, selfPeer(10), req)
 			if strings.Join(c.Roles, ",") != "reader" {
@@ -292,7 +292,7 @@ func TestGrantsFollowPeerCredentialsNotProcData(t *testing.T) {
 	peer := selfPeer(10)
 	f := newFixture(t, func(s *Settings) { s.RuntimeRoles = []string{"reader"} })
 	f.issuer.Proc = func(int32) (ProcInfo, error) {
-		return ProcInfo{Exe: "/usr/sbin/example-root-daemon", Args: []string{"example-root-daemon", "--uid", "0"}, StartTime: 100}, nil
+		return ProcInfo{Exe: "/usr/sbin/example-root-daemon", Args: []string{"example-root-daemon", "--uid", "0"}, StartTime: 100, UID: peer.UID, HasUID: true}, nil
 	}
 	out, c := mustSession(t, f, peer, SessionRequest{})
 	if strings.HasPrefix(c.Sub, "human:") || c.Orig == "human" || c.Grade != "workload" || strings.Join(c.Roles, ",") != "reader" {
@@ -336,7 +336,7 @@ func TestChildRefusesWhenPidWasReused(t *testing.T) {
 func TestChildRefusesWhenExeIdentityChangedWithSamePidAndStartTime(t *testing.T) {
 	f, parent := childSetup(t, nil)
 	f.issuer.Proc = func(int32) (ProcInfo, error) {
-		return ProcInfo{Exe: "/opt/example/example-runtime", Args: []string{"example-runtime"}, StartTime: 100, ExeDev: 1, ExeIno: 4242}, nil
+		return ProcInfo{Exe: "/opt/example/example-runtime", Args: []string{"example-runtime"}, StartTime: 100, ExeDev: 1, ExeIno: 4242, UID: uint32(os.Getuid()), HasUID: true}, nil
 	}
 	_, err := f.issuer.IssueChild(selfPeer(10), ChildRequest{ParentToken: parent.Token, AgentType: "example-builder", AgentID: "a1"})
 	if ie, ok := IsIssueError(err); !ok || ie.Code != CodeExeMismatch {

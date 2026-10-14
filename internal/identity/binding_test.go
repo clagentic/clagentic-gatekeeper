@@ -176,14 +176,13 @@ func TestTooManyWrappersRefuse(t *testing.T) {
 	b.shell(130, 100, 250, "sh", "-c", "x")
 	b.shell(131, 130, 251, "sh", "-c", "x")
 	b.shell(132, 131, 252, "sh", "-c", "x")
+	// Three wrappers are climbed through to the runtime.
+	if _, c := mustSession(t, b.fixture, b.hook(149, 132, 299), SessionRequest{}); c.RT.ID != "claude" {
+		t.Fatalf("three wrappers must reach the runtime: rt %+v", c.RT)
+	}
 	b.shell(133, 132, 253, "sh", "-c", "x")
 	_, err := b.issuer.IssueSession(b.hook(150, 133, 300), SessionRequest{})
 	wantCode(t, err, CodeRuntimeUnbound)
-	b.tree[133] = b.proc("/opt/example/claude", 253, 1, "claude")
-	b.hook(151, 133, 300)
-	if _, err := b.issuer.IssueSession(selfPeer(151), SessionRequest{}); err != nil {
-		t.Fatalf("three wrappers must be accepted: %v", err)
-	}
 }
 
 func TestAncestryViolationsRefuseWithoutIssuing(t *testing.T) {
@@ -206,6 +205,25 @@ func TestAncestryViolationsRefuseWithoutIssuing(t *testing.T) {
 		},
 		"parent younger than its child": func(b *bindingFixture) Peer {
 			return b.hook(150, 100, 10)
+		},
+		"direct peer of another uid": func(b *bindingFixture) Peer {
+			p := b.proc("/opt/example/direct-client", 400, 100, "direct-client")
+			p.UID++
+			b.tree[300] = p
+			return selfPeer(300)
+		},
+		"hook peer of another uid": func(b *bindingFixture) Peer {
+			peer := b.hook(150, 100, 300)
+			p := b.tree[150]
+			p.UID++
+			b.tree[150] = p
+			return peer
+		},
+		"direct peer with unknown uid": func(b *bindingFixture) Peer {
+			p := b.proc("/opt/example/direct-client", 400, 100, "direct-client")
+			p.HasUID = false
+			b.tree[300] = p
+			return selfPeer(300)
 		},
 		"wrapper of another uid": func(b *bindingFixture) Peer {
 			b.shell(120, 100, 250, "sh", "-c", "x")
@@ -263,6 +281,26 @@ func TestAncestryThatChangesDuringTheWalkRefuses(t *testing.T) {
 		return info, err
 	}
 	_, err := b.issuer.IssueSession(hook, SessionRequest{})
+	wantCode(t, err, CodeRuntimeUnbound)
+}
+
+// The peer's own record is bracketed too: a direct client replaced between the
+// two reads cannot carry the binding of the process first read.
+func TestDirectPeerThatChangesDuringTheReadRefuses(t *testing.T) {
+	b := newBindingFixture(t)
+	b.tree[300] = b.proc("/opt/example/direct-client", 400, 100, "direct-client")
+	reads := 0
+	b.issuer.Proc = func(pid int32) (ProcInfo, error) {
+		info, err := b.tree.reader()(pid)
+		if pid == 300 {
+			reads++
+			if reads > 1 {
+				info.StartTime = 9999
+			}
+		}
+		return info, err
+	}
+	_, err := b.issuer.IssueSession(selfPeer(300), SessionRequest{})
 	wantCode(t, err, CodeRuntimeUnbound)
 }
 

@@ -81,6 +81,19 @@ func unbound(detail error) *IssueError {
 	return refuse(http.StatusForbidden, CodeRuntimeUnbound, detail)
 }
 
+// confirm re-reads a process and refuses when it is no longer the one first
+// read, which brackets every record used for a binding by its start time.
+func (i *Issuer) confirm(pid int32, first ProcInfo) error {
+	again, err := i.Proc(pid)
+	if err != nil {
+		return refuse(http.StatusForbidden, CodePeerUnattested, err)
+	}
+	if again.StartTime != first.StartTime || again.PPID != first.PPID || again.ExeDev != first.ExeDev || again.ExeIno != first.ExeIno {
+		return unbound(errors.New("the process ancestry changed while it was being read"))
+	}
+	return nil
+}
+
 // bindRuntime returns the process an issuance for peer binds to.
 //
 // A peer that is not the gatekeeper client binary is its own runtime: a direct
@@ -97,7 +110,7 @@ func unbound(detail error) *IssueError {
 //     wrapper the runtime used to start the hook, and is climbed through, at most
 //     maxWrapperHops times;
 //   - the first ancestor that is not such a wrapper is the runtime;
-//   - every ancestor must run as the peer's uid, must not be younger than the
+//   - the peer itself, on either path, and every ancestor must run as the peer's uid, must not be younger than the
 //     process below it, and must not be init (pid 1) or the pid 0 an orphan
 //     reports;
 //   - each process is read bracketed by its start time and parent pid, and the
@@ -112,7 +125,13 @@ func (i *Issuer) bindRuntime(peer Peer) (Binding, error) {
 	if err != nil {
 		return Binding{}, refuse(http.StatusForbidden, CodePeerUnattested, err)
 	}
+	if !first.HasUID || first.UID != peer.UID {
+		return Binding{}, unbound(fmt.Errorf("peer pid %d does not run as the uid the socket attested", peer.PID))
+	}
 	if !i.isHelper(first) {
+		if err := i.confirm(peer.PID, first); err != nil {
+			return Binding{}, err
+		}
 		return Binding{PID: peer.PID, Proc: first}, nil
 	}
 
@@ -147,12 +166,8 @@ func (i *Issuer) bindRuntime(peer Peer) (Binding, error) {
 	}
 
 	for _, l := range chain {
-		again, err := i.Proc(l.pid)
-		if err != nil {
-			return Binding{}, refuse(http.StatusForbidden, CodePeerUnattested, err)
-		}
-		if again.StartTime != l.proc.StartTime || again.PPID != l.proc.PPID || again.ExeDev != l.proc.ExeDev || again.ExeIno != l.proc.ExeIno {
-			return Binding{}, unbound(errors.New("the process ancestry changed while it was being read"))
+		if err := i.confirm(l.pid, l.proc); err != nil {
+			return Binding{}, err
 		}
 	}
 	rt := chain[len(chain)-1]

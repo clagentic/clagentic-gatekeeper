@@ -59,7 +59,7 @@ func writeDefinition(t *testing.T, dir, name, roles string) {
 // executable; the socket tests read the real /proc.
 func fakeProc(exe string, start uint64) ProcReader {
 	return func(int32) (ProcInfo, error) {
-		return ProcInfo{Exe: exe, Args: []string{exe}, StartTime: start}, nil
+		return ProcInfo{Exe: exe, Args: []string{exe}, StartTime: start, UID: uint32(os.Getuid()), HasUID: true}, nil
 	}
 }
 
