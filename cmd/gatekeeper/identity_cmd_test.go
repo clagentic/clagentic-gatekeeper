@@ -5,9 +5,12 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/pem"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -110,6 +113,38 @@ func TestIdentityOnlyConfigServesAndMintReportsNotConfigured(t *testing.T) {
 	err = runMintA2A([]string{"--audience", "peer", "--config", cfg})
 	if err == nil || !strings.Contains(err.Error(), "not configured") {
 		t.Fatalf("mint-a2a on an identity-only config: %v", err)
+	}
+}
+
+// A config that names a GitHub API and a broker but no roles must stop mint
+// before either is contacted. The doubles fail the test on any request.
+func TestIdentityOnlyMintNeverContactsBrokerOrGitHub(t *testing.T) {
+	var calls atomic.Int32
+	double := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		t.Errorf("unexpected request to the broker or GitHub double: %s %s", r.Method, r.URL.Path)
+		http.Error(w, "must not be called", http.StatusInternalServerError)
+	}))
+	defer double.Close()
+
+	dir, key, defs := identityDeployment(t)
+	cfg := writeConfig(t, dir, `github:
+  owner: example-org
+  api_base: `+double.URL+`
+broker:
+  type: vault
+  endpoint: `+double.URL+`
+identity:
+  key_path: `+key+`
+  definitions_dir: `+defs+`
+  spawn_root: `+filepath.Join(dir, "spawn")+`
+`)
+	err := runMint([]string{"--role", "builder", "--config", cfg})
+	if err == nil || !strings.Contains(err.Error(), "minting is not configured") {
+		t.Fatalf("mint on a config with no roles section: %v", err)
+	}
+	if n := calls.Load(); n != 0 {
+		t.Fatalf("mint contacted the broker or GitHub %d time(s)", n)
 	}
 }
 
