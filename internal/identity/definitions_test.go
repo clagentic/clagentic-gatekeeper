@@ -15,6 +15,9 @@ func TestDefinitionParsing(t *testing.T) {
 		"example-nofm.md":    "just text\n",
 		"example-open.md":    "---\nname: example-open\nroles: [reader]\n",
 		"example-badrole.md": "---\nname: example-badrole\nroles: [Not_A_Role]\n---\n",
+		"example-junk.md":    "---\nname: example-junk\nroles: [merger]\n---junk\nbody\n",
+		"example-trail.md":   "---\nname: example-trail\nroles: [merger]\n--- \nbody\n",
+		"example-long.md":    "---\nname: example-long\nroles: [merger]\n----\nbody\n",
 	}
 	for n, c := range files {
 		if err := os.WriteFile(filepath.Join(dir, n), []byte(c), 0o644); err != nil {
@@ -29,7 +32,7 @@ func TestDefinitionParsing(t *testing.T) {
 	if def, err := d.Load("example-crlf"); err != nil || !reflect.DeepEqual(def.Roles, []string{"reader"}) {
 		t.Fatalf("%+v %v", def, err)
 	}
-	for _, bad := range []string{"example-nofm", "example-open", "example-badrole", "example-missing"} {
+	for _, bad := range []string{"example-nofm", "example-open", "example-badrole", "example-missing", "example-junk", "example-trail", "example-long"} {
 		if _, err := d.Load(bad); err == nil {
 			t.Errorf("%s accepted", bad)
 		}

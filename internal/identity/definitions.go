@@ -88,7 +88,16 @@ func parseFrontmatter(raw []byte) (frontmatter, error) {
 		return frontmatter{}, errors.New("no YAML frontmatter")
 	}
 	rest := raw[len("---\n"):]
-	end := bytes.Index(rest, []byte("\n---"))
+	// The closing fence is a whole line equal to "---": "---junk" or "--- " is
+	// not a fence, so a malformed definition fails closed.
+	end, offset := -1, 0
+	for _, line := range bytes.SplitAfter(rest, []byte("\n")) {
+		if string(bytes.TrimSuffix(line, []byte("\n"))) == "---" {
+			end = offset
+			break
+		}
+		offset += len(line)
+	}
 	if end < 0 {
 		return frontmatter{}, errors.New("frontmatter is not closed")
 	}
