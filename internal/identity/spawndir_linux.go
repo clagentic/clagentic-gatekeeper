@@ -26,16 +26,9 @@ func publishRelative(rootfd int, name string, content []byte) error {
 		return fmt.Errorf("delivery directory %s is not owned by the serving uid", name)
 	}
 
-	ffd, err := syscall.Openat(dfd, DeliveryFile, syscall.O_WRONLY|syscall.O_CREAT|syscall.O_EXCL|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0o600)
-	if err != nil {
-		return fmt.Errorf("create %s: %w", DeliveryFile, err)
-	}
-	file := os.NewFile(uintptr(ffd), DeliveryFile)
-	defer file.Close()
-	if _, err := file.Write(content); err != nil {
-		return err
-	}
-	if err := file.Sync(); err != nil {
+	// The token is on disk before identity.jwt exists under its name, and the
+	// no-replace publish never overwrites a pre-existing entry.
+	if err := publishFileAt(dfd, DeliveryFile, content, 0o600, false); err != nil {
 		return err
 	}
 
@@ -44,5 +37,9 @@ func publishRelative(rootfd int, name string, content []byte) error {
 	if err := syscall.Mkdirat(dfd, "tmp", 0o700); err != nil {
 		return fmt.Errorf("create tmp: %w", err)
 	}
-	return syscall.Fsync(dfd)
+	if err := syscall.Fsync(dfd); err != nil {
+		return err
+	}
+	// The directory's own entry in the spawn root is flushed last.
+	return syscall.Fsync(rootfd)
 }

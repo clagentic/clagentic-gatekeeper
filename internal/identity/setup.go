@@ -5,11 +5,9 @@ package identity
 import (
 	"errors"
 	"fmt"
-	"os"
 	"os/user"
 	"path/filepath"
 	"strconv"
-	"syscall"
 	"time"
 )
 
@@ -128,37 +126,5 @@ func (k *Keyring) WriteJWKS(path string) error {
 		return err
 	}
 	defer dir.Close()
-	dfd := int(dir.Fd())
-	id, err := randomID()
-	if err != nil {
-		return err
-	}
-	tmpName := ".jwks-" + id[:16]
-	fd, err := syscall.Openat(dfd, tmpName, syscall.O_WRONLY|syscall.O_CREAT|syscall.O_EXCL|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0o644)
-	if err != nil {
-		return err
-	}
-	tmp := os.NewFile(uintptr(fd), tmpName)
-	committed := false
-	defer func() {
-		tmp.Close()
-		if !committed {
-			_ = syscall.Unlinkat(dfd, tmpName)
-		}
-	}()
-	// Openat's mode is filtered by the umask; fchmod is not.
-	if err := tmp.Chmod(0o644); err != nil {
-		return err
-	}
-	if _, err := tmp.Write(append(body, '\n')); err != nil {
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := syscall.Renameat(dfd, tmpName, dfd, filepath.Base(path)); err != nil {
-		return err
-	}
-	committed = true
-	return nil
+	return publishFileAt(int(dir.Fd()), filepath.Base(path), append(body, '\n'), 0o644, true)
 }
