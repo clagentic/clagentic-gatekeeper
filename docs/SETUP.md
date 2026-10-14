@@ -643,31 +643,6 @@ A config with only the `identity:` section starts `serve` without any
 minting is not configured. A config with both runs both, and `mint` behaves as
 it did before.
 
-### systemd
-
-```ini
-[Unit]
-Description=Clagentic Gatekeeper identity issuer
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/gatekeeper serve --config /etc/gatekeeper/config.yaml
-# systemd creates /run/clagentic-gatekeeper before start and removes it,
-# socket included, after every stop. serve relies on this: it never unlinks a
-# socket path it finds, so do not set RuntimeDirectoryPreserve=yes.
-RuntimeDirectory=clagentic-gatekeeper
-RuntimeDirectoryMode=0755
-RuntimeDirectoryPreserve=no
-Restart=on-failure
-NoNewPrivileges=true
-ProtectSystem=strict
-ReadWritePaths=/run/clagentic-gatekeeper /var/lib/gatekeeper
-
-[Install]
-WantedBy=multi-user.target
-```
-
 ## Summary
 
 | Layer | What it answers | Config | Fails closed? |
