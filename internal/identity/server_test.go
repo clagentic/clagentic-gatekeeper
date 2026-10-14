@@ -53,16 +53,7 @@ func startServer(t *testing.T, mutate func(*Settings)) (Client, *fixture) {
 	// The socket tests read the real /proc and real SO_PEERCRED.
 	f.issuer.Proc = ReadProc
 	f.issuer.Now = time.Now
-	// A unix socket path is limited to 108 bytes, shorter than t.TempDir().
-	short, err := os.MkdirTemp("", "gk")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.RemoveAll(short) })
-	sock := filepath.Join(short, "s.sock")
-	if len(sock) >= 108 {
-		t.Fatalf("socket path %q is %d bytes, over the 108-byte sun_path limit; point TMPDIR at a shorter directory", sock, len(sock))
-	}
+	sock := filepath.Join(shortSocketDir(t), "s.sock")
 	l, err := Listen(sock, 0o666)
 	if err != nil {
 		t.Fatal(err)
