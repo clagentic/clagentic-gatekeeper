@@ -184,6 +184,21 @@ func TestReapLeavesFreshDirectoriesAndReportsNothing(t *testing.T) {
 	}
 }
 
+// A relative root would make every returned path depend on the working
+// directory of the process that later resolves it.
+func TestRelativeSpawnRootIsRefused(t *testing.T) {
+	s := SpawnDirs{Root: "relative/spawn"}
+	if dir, err := s.Create(); err == nil {
+		t.Fatalf("Create returned %q for a relative root", dir)
+	}
+	if err := s.Ensure(); err == nil {
+		t.Fatal("Ensure accepted a relative root")
+	}
+	if _, err := NewIssuer(Settings{KeyPath: "k", SocketPath: "/run/x.sock", SpawnRoot: "relative/spawn"}); err == nil || !strings.Contains(err.Error(), "identity.spawn_root") {
+		t.Fatalf("NewIssuer: %v", err)
+	}
+}
+
 func TestPublishRefusesDirectoryOutsideRoot(t *testing.T) {
 	s := newSpawnDirs(t)
 	if err := s.Publish(t.TempDir(), selfPeer(1), "tok"); err == nil {

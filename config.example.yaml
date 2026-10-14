@@ -338,9 +338,11 @@ roles:
 #   runtime_roles: []
 #   # One <name>.md per agent, frontmatter keys name, roles, trust_boundary.
 #   definitions_dir: /etc/gatekeeper/definitions
-#   # What issue-child may hand a child. Absent: every role. [] : none.
+#   # What issue-child may hand a child. Absent: every role. [] : none. A child
+#   # also never holds a role its parent token lacks.
 #   delegable_roles: [builder, reviewer]
-#   # Default <socket dir>/spawn.
+#   # socket_path, jwks_path and spawn_root must be absolute paths; a relative
+#   # one is refused at load. spawn_root defaults to <socket dir>/spawn.
 #   spawn_root: /run/clagentic-gatekeeper/spawn
 #   # Default and maximum 43200.
 #   session_ttl_seconds: 43200

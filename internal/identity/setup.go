@@ -63,6 +63,13 @@ func NewIssuer(s Settings) (*Issuer, error) {
 	if s.OperatorUID != nil && !reName.MatchString(name) {
 		return nil, fmt.Errorf("operator name %q does not match %s", name, reName)
 	}
+	root := s.SpawnRoot
+	if root == "" {
+		root = filepath.Join(filepath.Dir(s.SocketPath), "spawn")
+	}
+	if !filepath.IsAbs(root) {
+		return nil, fmt.Errorf("identity.spawn_root %q must be absolute", root)
+	}
 	keys, err := LoadKeyring(s.KeyPath, s.Alg, s.RetiredKeys)
 	if err != nil {
 		return nil, err
@@ -70,13 +77,6 @@ func NewIssuer(s Settings) (*Issuer, error) {
 	issuer := s.Issuer
 	if issuer == "" {
 		issuer = "unix://" + s.SocketPath
-	}
-	root := s.SpawnRoot
-	if root == "" {
-		root = filepath.Join(filepath.Dir(s.SocketPath), "spawn")
-	}
-	if !filepath.IsAbs(root) {
-		return nil, fmt.Errorf("identity.spawn_root %q must be absolute", root)
 	}
 	dirs := SpawnDirs{Root: filepath.Clean(root)}
 	if err := dirs.Ensure(); err != nil {

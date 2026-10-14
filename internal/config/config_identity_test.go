@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -28,6 +29,20 @@ func TestIdentityDelegableRolesAbsentVersusEmpty(t *testing.T) {
 	if empty.Identity.DelegableRoles == nil || len(empty.Identity.DelegableRoles) != 0 {
 		t.Fatalf("empty delegable_roles should be non-nil and empty (none delegable), got %#v", empty.Identity.DelegableRoles)
 	}
+}
+
+func TestIdentityWrittenPathsMustBeAbsoluteAndNameTheKey(t *testing.T) {
+	for _, key := range []string{"socket_path", "jwks_path", "spawn_root"} {
+		p := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(p, []byte("identity:\n  key_path: /k\n  "+key+": relative/dir\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, err := Load(p)
+		if err == nil || !strings.Contains(err.Error(), "identity."+key) || !strings.Contains(err.Error(), "absolute") {
+			t.Errorf("%s: got %v", key, err)
+		}
+	}
+	loadIdentity(t, "identity:\n  key_path: /k\n  socket_path: /run/x.sock\n  jwks_path: /var/j.json\n  spawn_root: /run/spawn\n")
 }
 
 func TestIdentityOnlyConfigLoads(t *testing.T) {

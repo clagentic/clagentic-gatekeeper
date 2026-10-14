@@ -6,6 +6,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"gopkg.in/yaml.v3"
 )
@@ -105,6 +106,23 @@ type IdentityConfig struct {
 
 // Enabled reports whether the identity section is present at all.
 func (c IdentityConfig) Enabled() bool { return c.KeyPath != "" }
+
+// validate refuses a relative path for every location the issuer writes
+// under. Such a path would resolve against whatever directory the service
+// manager started serve in, and the delivery directory it yields is handed to
+// other uids.
+func (c IdentityConfig) validate() error {
+	for _, p := range []struct{ key, value string }{
+		{"identity.socket_path", c.SocketPath},
+		{"identity.jwks_path", c.JWKSPath},
+		{"identity.spawn_root", c.SpawnRoot},
+	} {
+		if p.value != "" && !filepath.IsAbs(p.value) {
+			return fmt.Errorf("%s %q must be an absolute path", p.key, p.value)
+		}
+	}
+	return nil
+}
 
 // GitHubConfig holds GitHub connectivity settings.
 type GitHubConfig struct {
@@ -401,6 +419,9 @@ func Load(path string) (*Config, error) {
 	}
 
 	if err := cfg.Attestation.validate(); err != nil {
+		return nil, fmt.Errorf("config %s: %w", path, err)
+	}
+	if err := cfg.Identity.validate(); err != nil {
 		return nil, fmt.Errorf("config %s: %w", path, err)
 	}
 

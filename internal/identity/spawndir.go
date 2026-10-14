@@ -34,6 +34,9 @@ type SpawnDirs struct {
 // Ensure creates Root. It is 0711 so every peer can walk to its own
 // directory without being able to list the others.
 func (s SpawnDirs) Ensure() error {
+	if !filepath.IsAbs(s.Root) {
+		return fmt.Errorf("spawn root %q must be absolute", s.Root)
+	}
 	if err := os.MkdirAll(s.Root, 0o711); err != nil {
 		return err
 	}
@@ -44,6 +47,9 @@ func (s SpawnDirs) Ensure() error {
 // absolute path. The peer cannot enter it, so it cannot plant anything in it,
 // until Publish hands it over as the very last step.
 func (s SpawnDirs) Create() (string, error) {
+	if !filepath.IsAbs(s.Root) {
+		return "", fmt.Errorf("spawn root %q must be absolute", s.Root)
+	}
 	id, err := randomID()
 	if err != nil {
 		return "", err
