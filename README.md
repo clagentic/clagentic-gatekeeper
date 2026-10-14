@@ -2,7 +2,7 @@
   <img src="media/logo/gatekeeper-lockup-256.png" alt="clagentic:gatekeeper" width="260" />
 </p>
 
-<h4 align="center">Role-scoped GitHub App tokens. Built for builders.</h4>
+<h4 align="center">Agent identity and role-scoped access. Built for builders.</h4>
 
 <p align="center">
   <a href="https://clagentic.ai"><img src="https://img.shields.io/badge/-clagentic.ai-00CFFF?style=flat&logoColor=white" alt="clagentic.ai" /></a>
@@ -11,13 +11,42 @@
   <a href="https://ko-fi.com/clagentic"><img src="https://img.shields.io/badge/Ko--fi-FF5E5B?style=flat&logo=ko-fi&logoColor=white&label=support" alt="Support on Ko-fi" /></a>
 </p>
 
-Role-scoped GitHub App installation tokens for automated agents. Part of the [clagentic](https://clagentic.ai) suite.
+Who is this agent, and what may it do? Gatekeeper answers both. Part of the [clagentic](https://clagentic.ai) suite.
 
 ---
 
-Gatekeeper stands at the GitHub gate. When an automated agent needs to act on a repository, Gatekeeper mints a **short-lived, role-scoped GitHub App installation token** narrowed to exactly what that role is allowed to do — and nothing more.
+Gatekeeper is built around two things:
 
-It ships four generic roles out of the box:
+1. **Agent identity.** An open contract, the [Identity Assertion](docs/identity-contract.md): a signed, short-lived statement of which actor is acting, on whose behalf, under which role ceiling, and where the request came from. Any tool verifies it with a standard JWS library; any peer in an agent-to-agent (A2A) exchange can validate it. The contract, its [schemas](schemas/), and its signed [conformance vectors](vectors/README.md) are the only things tools share. No tool imports Gatekeeper's code.
+2. **Role-scoped access.** Given a role, Gatekeeper mints a **short-lived, role-scoped GitHub App installation token** narrowed to exactly what that role is allowed to do, and nothing more. Identity is what tells Gatekeeper which roles a caller may ask for.
+
+## Modes
+
+Gatekeeper's two halves are independently usable.
+
+| Mode | What you run | What you need | What you get |
+|------|--------------|---------------|--------------|
+| **Issuer-only** | The identity issuer | A signing key and its published key set. No GitHub App, no secret broker, no roles configuration. | Verifiable agent identity and attribution for every tool that implements the contract. |
+| **Mint-only** | `gatekeeper mint` | GitHub Apps, a secret broker, a `roles` configuration, and an attestation source (below). | Role-scoped installation tokens, as before. |
+| **Both** | Issuer and mint | Everything above. | The issued identity is the attestation that decides which roles a caller may mint. |
+
+Status in this release: the contract, schemas and conformance vectors are published (the identity half is a specification that any issuer can implement), and mint-only is implemented. The Gatekeeper issuer itself, and minting driven by an identity assertion, are not part of this release. Mint-only uses the attestation layer described in [`docs/SETUP.md`](docs/SETUP.md).
+
+## What an attestation provider adds
+
+Every consumer of the contract works without any attestation provider: it declares its actor itself, and says so on every record it writes. Pointing it at a provider that issues Identity Assertions adds:
+
+- **Unforgeable agent identity.** The actor is signed by an issuer the agent cannot impersonate, instead of being a name the agent reports about itself.
+- **A delegation chain.** Who the work is for, which agent did it, and what that agent was spawned under, in one verifiable `act` chain.
+- **Origin.** Whether a human, a schedule, a loop, a trigger or another agent started the turn.
+- **A role ceiling.** The roles the actor may be granted, signed, so consumers do not each keep their own list of who may do what.
+- **Cross-tool agreement.** Every tool that verifies the contract reaches the same answer about who acted, and each record states which provider and grade vouched for it.
+
+Without a provider you keep self-reported names, no chain and no ceiling. That is a valid way to run; it is just labeled as declared.
+
+## Roles
+
+Gatekeeper ships four generic roles for the mint half:
 
 | Role       | Can do                                                        | Cannot do                          |
 |------------|---------------------------------------------------------------|------------------------------------|
@@ -38,7 +67,7 @@ The App private keys never touch the agent. Gatekeeper reads them from a pluggab
 
 ## What this is NOT
 
-- It is **not** a dispatcher, a queue, or an agent framework. It mints tokens. That is the whole surface.
+- It is **not** a dispatcher, a queue, or an agent framework. It establishes who an agent is and mints role-scoped tokens. That is the whole surface.
 - It is **not** coupled to any specific set of agents. Agent→role mapping lives in the consumer, not here.
 - It does **not** store long-lived secrets. The broker does.
 
@@ -217,6 +246,9 @@ The private key is read server-side only, used to sign the App JWT, and never re
 
 ## Docs
 
+- [`docs/identity-contract.md`](docs/identity-contract.md) — the Identity Assertion contract: claims, key discovery, local delivery, A2A peer validation, versioning
+- [`schemas/`](schemas/) — JSON Schemas for the assertion claims and issuer trust / key discovery
+- [`vectors/`](vectors/README.md) — signed conformance vectors for verifiers and peer validators
 - [`docs/SETUP.md`](docs/SETUP.md) — attested identity, the fail-closed trust model, and configuring your own attestation source
 - [`docs/ROLES.md`](docs/ROLES.md) — per-role GitHub App permission tables
 - [`docs/GOVERNANCE.md`](docs/GOVERNANCE.md) — branch ruleset and CODEOWNERS reference
