@@ -17,10 +17,10 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"math/big"
 	"os"
 	"strings"
-	"syscall"
 )
 
 // Algorithm names from the contract's section 2.
@@ -64,10 +64,7 @@ func b64(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
 // LoadKeyring reads the signing key and the retired keys. wantAlg may be empty,
 // in which case the key type decides; otherwise it must agree with the key.
 func LoadKeyring(keyPath, wantAlg string, retired []string) (*Keyring, error) {
-	if err := checkPrivateKeyFile(keyPath); err != nil {
-		return nil, fmt.Errorf("signing key: %w", err)
-	}
-	der, err := readPEM(keyPath, "PRIVATE KEY")
+	der, err := readPrivateKeyPEM(keyPath, "PRIVATE KEY")
 	if err != nil {
 		return nil, fmt.Errorf("signing key: %w", err)
 	}
@@ -106,30 +103,33 @@ func LoadKeyring(keyPath, wantAlg string, retired []string) (*Keyring, error) {
 	return kr, nil
 }
 
-// checkPrivateKeyFile enforces the key-handling rule from the contract's
-// security section: a regular file, mode 0600, owned by the serving uid.
-func checkPrivateKeyFile(path string) error {
-	fi, err := os.Lstat(path)
-	if err != nil {
-		return err
-	}
-	if !fi.Mode().IsRegular() {
-		return fmt.Errorf("%s is not a regular file", path)
-	}
-	if fi.Mode().Perm()&0o077 != 0 {
-		return fmt.Errorf("%s has group or other permission bits (%#o); it must be 0600", path, fi.Mode().Perm())
-	}
-	st, ok := fi.Sys().(*syscall.Stat_t)
-	if !ok || int(st.Uid) != os.Geteuid() {
-		return fmt.Errorf("%s is not owned by the serving uid", path)
-	}
-	return nil
-}
+// maxKeyFileBytes bounds a key file read; a PKCS#8 key is a few hundred bytes.
+const maxKeyFileBytes = 64 << 10
 
-func readPEM(path, wantType string) ([]byte, error) {
-	raw, err := os.ReadFile(path)
+// readPrivateKeyPEM enforces the key-handling rule from the contract's
+// security section (a regular file, mode 0600, owned by the serving uid) and
+// returns the decoded PEM block. The file is opened once without following
+// links, and owner and mode are read from that descriptor, so the bytes parsed
+// are those of the inode that was validated; a path swapped after the check
+// cannot substitute a different key.
+func readPrivateKeyPEM(path, wantType string) ([]byte, error) {
+	f, fi, err := openRegular(path)
 	if err != nil {
 		return nil, err
+	}
+	defer f.Close()
+	if fi.Mode().Perm()&0o077 != 0 {
+		return nil, fmt.Errorf("%s has group or other permission bits (%#o); it must be 0600", path, fi.Mode().Perm())
+	}
+	if uid, ok := ownerUID(fi); !ok || int(uid) != os.Geteuid() {
+		return nil, fmt.Errorf("%s is not owned by the serving uid", path)
+	}
+	raw, err := io.ReadAll(io.LimitReader(f, maxKeyFileBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) > maxKeyFileBytes {
+		return nil, fmt.Errorf("%s is larger than %d bytes", path, maxKeyFileBytes)
 	}
 	block, _ := pem.Decode(raw)
 	if block == nil || block.Type != wantType {

@@ -9,10 +9,12 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os"
 	"reflect"
 	"time"
 )
+
+// maxJWKSFileBytes bounds the published key set file a self-check reads.
+const maxJWKSFileBytes = 1 << 20
 
 // Client talks to a running server over its unix socket.
 type Client struct {
@@ -142,9 +144,16 @@ func SelfCheck(c Client, jwksPath string, maxAge time.Duration, now time.Time) [
 	if jwksPath == "" {
 		return append(checks, Check{Name: "jwks_fresh", Detail: "identity.jwks_path is not configured"})
 	}
-	raw, err := os.ReadFile(jwksPath)
+	// One open serves the content and the mtime, so the age reported is the
+	// age of the bytes compared.
+	f, fi, err := openRegular(jwksPath)
 	if err != nil {
 		return append(checks, Check{Name: "jwks_fresh", Detail: err.Error()})
+	}
+	defer f.Close()
+	raw, err := io.ReadAll(io.LimitReader(f, maxJWKSFileBytes+1))
+	if err != nil || len(raw) > maxJWKSFileBytes {
+		return append(checks, Check{Name: "jwks_fresh", Detail: fmt.Sprintf("%s is unreadable or larger than %d bytes", jwksPath, maxJWKSFileBytes)})
 	}
 	same, err := sameJWKSDocument(liveRaw, raw)
 	if err != nil {
@@ -154,7 +163,7 @@ func SelfCheck(c Client, jwksPath string, maxAge time.Duration, now time.Time) [
 		return append(checks, Check{Name: "jwks_fresh", Detail: fmt.Sprintf("%s differs from the key set the server publishes", jwksPath)})
 	}
 	detail := jwksPath + " matches the published key set"
-	if fi, err := os.Stat(jwksPath); err == nil && maxAge > 0 && now.Sub(fi.ModTime()) > maxAge {
+	if maxAge > 0 && now.Sub(fi.ModTime()) > maxAge {
 		return append(checks, Check{Name: "jwks_fresh", Detail: fmt.Sprintf("%s is older than %s", jwksPath, maxAge)})
 	}
 	return append(checks, Check{Name: "jwks_fresh", OK: true, Detail: detail})
