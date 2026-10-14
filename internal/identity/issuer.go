@@ -9,17 +9,40 @@ import (
 	"time"
 )
 
-// IssueError is a refusal with a stable code a client can act on.
+// IssueError is a refusal with a stable code and message a client can act on.
+// Detail holds the internal cause (paths, keys, host errors); it is logged by
+// the server and never serialised or included in Error.
 type IssueError struct {
 	Code    string `json:"error"`
 	Message string `json:"message"`
 	Status  int    `json:"-"`
+	Detail  error  `json:"-"`
 }
 
 func (e *IssueError) Error() string { return e.Code + ": " + e.Message }
 
+// Unwrap exposes the internal cause to errors.Is/As in-process only.
+func (e *IssueError) Unwrap() error { return e.Detail }
+
 func refuse(status int, code, format string, args ...any) *IssueError {
 	return &IssueError{Code: code, Message: fmt.Sprintf(format, args...), Status: status}
+}
+
+// refuseInternal answers with a fixed public message and keeps cause for the
+// server log, so a client never learns filesystem, key or host details.
+func refuseInternal(status int, code, message string, cause error) *IssueError {
+	return &IssueError{Code: code, Message: message, Status: status, Detail: cause}
+}
+
+const (
+	publicInternalMessage = "the issuer failed to complete the request; see the issuer log"
+	publicUninspectable   = "the calling process could not be inspected"
+)
+
+// unknownDefinition hides why a definition failed to load (paths, parse
+// errors); the caller only learns that the name is not usable.
+func unknownDefinition(name string, cause error) *IssueError {
+	return refuseInternal(http.StatusNotFound, "definition_unknown", fmt.Sprintf("definition %q is not available", name), cause)
 }
 
 // origins is the contract's origin vocabulary.
@@ -98,11 +121,11 @@ func (i *Issuer) IssueSession(peer Peer, req SessionRequest) (*Issued, error) {
 	now := i.Now()
 	proc, err := i.Proc(peer.PID)
 	if err != nil {
-		return nil, refuse(http.StatusForbidden, "peer_unattested", "%v", err)
+		return nil, refuseInternal(http.StatusForbidden, "peer_unattested", publicUninspectable, err)
 	}
 	rtID, err := RuntimeID(proc.Exe, proc.Args)
 	if err != nil {
-		return nil, refuse(http.StatusForbidden, "peer_unattested", "%v", err)
+		return nil, refuseInternal(http.StatusForbidden, "peer_unattested", "no runtime id can be derived from the calling process", err)
 	}
 	version := "unknown"
 	if d := req.Runtime; d != nil {
@@ -142,7 +165,7 @@ func (i *Issuer) IssueSession(peer Peer, req SessionRequest) (*Issued, error) {
 	case req.Definition != "":
 		def, err := i.Defs.Load(req.Definition)
 		if err != nil {
-			return nil, refuse(http.StatusNotFound, "definition_unknown", "%v", err)
+			return nil, unknownDefinition(req.Definition, err)
 		}
 		c.Roles = def.Roles
 		c.Act = &Actor{Sub: "agent:" + def.Name}
@@ -180,14 +203,14 @@ func (i *Issuer) IssueChild(peer Peer, req ChildRequest) (*Issued, error) {
 	}
 	proc, err := i.Proc(peer.PID)
 	if err != nil {
-		return nil, refuse(http.StatusForbidden, "peer_unattested", "%v", err)
+		return nil, refuseInternal(http.StatusForbidden, "peer_unattested", publicUninspectable, err)
 	}
 	if proc.StartTime != issued.startTime {
 		return nil, refuse(http.StatusForbidden, "parent_pid_mismatch", "pid %d is no longer the process the parent token was issued to (start time differs)", peer.PID)
 	}
 	def, err := i.Defs.Load(req.AgentType)
 	if err != nil {
-		return nil, refuse(http.StatusNotFound, "definition_unknown", "%v", err)
+		return nil, unknownDefinition(req.AgentType, err)
 	}
 
 	roles, dropped := intersect(def.Roles, i.DelegableRoles)
@@ -211,16 +234,16 @@ func (i *Issuer) IssueChild(peer Peer, req ChildRequest) (*Issued, error) {
 // is the caller's single clock sample; finish never reads the clock itself.
 func (i *Issuer) finish(peer Peer, proc ProcInfo, c Claims, now, exp time.Time, narrowed *Narrowing) (*Issued, error) {
 	if now.Unix() >= exp.Unix() {
-		return nil, refuse(http.StatusForbidden, "lifetime_empty", "the assertion would expire at %d, not after it is issued at %d", exp.Unix(), now.Unix())
+		return nil, refuse(http.StatusForbidden, "lifetime_empty", "the assertion would not outlive its issue time")
 	}
 	jti, err := randomID()
 	if err != nil {
-		return nil, refuse(http.StatusInternalServerError, "internal", "%v", err)
+		return nil, refuseInternal(http.StatusInternalServerError, "internal", publicInternalMessage, err)
 	}
 	if c.Sid == "" {
 		sid, err := randomID()
 		if err != nil {
-			return nil, refuse(http.StatusInternalServerError, "internal", "%v", err)
+			return nil, refuseInternal(http.StatusInternalServerError, "internal", publicInternalMessage, err)
 		}
 		c.Sid = "s-" + sid
 	}
@@ -231,7 +254,7 @@ func (i *Issuer) finish(peer Peer, proc ProcInfo, c Claims, now, exp time.Time, 
 
 	dir, err := i.Dirs.Create()
 	if err != nil {
-		return nil, refuse(http.StatusInternalServerError, "spawn_dir", "%v", err)
+		return nil, refuseInternal(http.StatusInternalServerError, "spawn_dir", "could not prepare a delivery directory; see the issuer log", err)
 	}
 	c.Dir = filepath.Clean(dir)
 	token, err := i.Keys.SignClaims(c)
@@ -240,7 +263,7 @@ func (i *Issuer) finish(peer Peer, proc ProcInfo, c Claims, now, exp time.Time, 
 	}
 	if err != nil {
 		_ = i.Dirs.Discard(dir)
-		return nil, refuse(http.StatusInternalServerError, "internal", "%v", err)
+		return nil, refuseInternal(http.StatusInternalServerError, "internal", publicInternalMessage, err)
 	}
 	i.Registry.put(jti, issuedTo{pid: peer.PID, startTime: proc.StartTime, exp: c.Exp}, now)
 

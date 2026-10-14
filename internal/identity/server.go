@@ -61,6 +61,8 @@ func (l peerListener) Accept() (net.Conn, error) {
 // Server serves the issuer over a unix socket.
 type Server struct {
 	Issuer *Issuer
+	// Logf receives the internal cause of a refusal; nil logs to stderr.
+	Logf func(format string, args ...any)
 }
 
 // Handler returns the HTTP surface; the peer is taken from the request
@@ -76,7 +78,7 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) jwks(w http.ResponseWriter, _ *http.Request) {
 	body, err := s.Issuer.Keys.MarshalJWKS()
 	if err != nil {
-		writeRefusal(w, refuse(http.StatusInternalServerError, "internal", "%v", err))
+		s.writeRefusal(w, refuseInternal(http.StatusInternalServerError, "internal", publicInternalMessage, err))
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -91,45 +93,45 @@ func peerOf(r *http.Request) (Peer, bool) {
 
 func (s *Server) issueSession(w http.ResponseWriter, r *http.Request) {
 	var req SessionRequest
-	peer, ok := decode(w, r, &req)
+	peer, ok := s.decode(w, r, &req)
 	if !ok {
 		return
 	}
-	respond(w)(s.Issuer.IssueSession(peer, req))
+	s.respond(w)(s.Issuer.IssueSession(peer, req))
 }
 
 func (s *Server) issueChild(w http.ResponseWriter, r *http.Request) {
 	var req ChildRequest
-	peer, ok := decode(w, r, &req)
+	peer, ok := s.decode(w, r, &req)
 	if !ok {
 		return
 	}
-	respond(w)(s.Issuer.IssueChild(peer, req))
+	s.respond(w)(s.Issuer.IssueChild(peer, req))
 }
 
-func decode(w http.ResponseWriter, r *http.Request, into any) (Peer, bool) {
+func (s *Server) decode(w http.ResponseWriter, r *http.Request, into any) (Peer, bool) {
 	peer, ok := peerOf(r)
 	if !ok {
-		writeRefusal(w, refuse(http.StatusForbidden, "peer_unattested", "no peer credentials for this connection"))
+		s.writeRefusal(w, refuse(http.StatusForbidden, "peer_unattested", "no peer credentials for this connection"))
 		return Peer{}, false
 	}
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRequestBytes))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(into); err != nil && !errors.Is(err, io.EOF) {
-		writeRefusal(w, refuse(http.StatusBadRequest, "bad_request", "request body: %v", err))
+		s.writeRefusal(w, refuse(http.StatusBadRequest, "bad_request", "request body: %v", err))
 		return Peer{}, false
 	}
 	return peer, true
 }
 
-func respond(w http.ResponseWriter) func(*Issued, error) {
+func (s *Server) respond(w http.ResponseWriter) func(*Issued, error) {
 	return func(out *Issued, err error) {
 		if err != nil {
 			if ie, ok := IsIssueError(err); ok {
-				writeRefusal(w, ie)
+				s.writeRefusal(w, ie)
 				return
 			}
-			writeRefusal(w, refuse(http.StatusInternalServerError, "internal", "%v", err))
+			s.writeRefusal(w, refuseInternal(http.StatusInternalServerError, "internal", publicInternalMessage, err))
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -137,7 +139,16 @@ func respond(w http.ResponseWriter) func(*Issued, error) {
 	}
 }
 
-func writeRefusal(w http.ResponseWriter, e *IssueError) {
+// writeRefusal sends only the public code and message; the internal cause, if
+// any, goes to the server log.
+func (s *Server) writeRefusal(w http.ResponseWriter, e *IssueError) {
+	if e.Detail != nil {
+		logf := s.Logf
+		if logf == nil {
+			logf = func(format string, args ...any) { fmt.Fprintf(os.Stderr, format+"\n", args...) }
+		}
+		logf("identity: refused %s (%d): %v", e.Code, e.Status, e.Detail)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(e.Status)
 	_ = json.NewEncoder(w).Encode(e)

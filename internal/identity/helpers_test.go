@@ -8,8 +8,11 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/pem"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -83,10 +86,29 @@ func fakeProc(exe string, start uint64) ProcReader {
 	}
 }
 
+// logSink collects server log lines for assertions.
+type logSink struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (l *logSink) add(format string, args ...any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.lines = append(l.lines, fmt.Sprintf(format, args...))
+}
+
+func (l *logSink) all() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return strings.Join(l.lines, "\n")
+}
+
 type fixture struct {
 	issuer *Issuer
 	defs   string
 	root   string
+	logs   *logSink
 }
 
 // newFixture builds an issuer with an invented operator uid unless the test
@@ -115,7 +137,7 @@ func newFixture(t *testing.T, mutate func(*Settings)) *fixture {
 	}
 	iss.Now = func() time.Time { return testNow }
 	iss.Proc = fakeProc("/opt/example/example-runtime", 100)
-	return &fixture{issuer: iss, defs: defs, root: s.SpawnRoot}
+	return &fixture{issuer: iss, defs: defs, root: s.SpawnRoot, logs: &logSink{}}
 }
 
 func selfPeer(pid int32) Peer {

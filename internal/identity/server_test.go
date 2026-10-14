@@ -62,7 +62,9 @@ func startServer(t *testing.T, mutate func(*Settings)) (Client, *fixture) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- (&Server{Issuer: f.issuer}).Serve(ctx, l) }()
+	go func() {
+		done <- (&Server{Issuer: f.issuer, Logf: f.logs.add}).Serve(ctx, l)
+	}()
 	t.Cleanup(func() {
 		cancel()
 		if err := <-done; err != nil {
@@ -80,6 +82,41 @@ func TestSocketNonOperatorGetsWorkloadRuntime(t *testing.T) {
 	}
 	if strings.HasPrefix(out.Subject, "human:") || !strings.HasPrefix(out.Actor, "runtime:") || out.Grade != "workload" {
 		t.Fatalf("%+v", out)
+	}
+}
+
+func TestRefusalExposesStableMessageAndLogsInternalDetailOnly(t *testing.T) {
+	c, f := startServer(t, nil)
+	// Removing the spawn root makes directory creation fail with an error that
+	// names the filesystem path.
+	if err := os.RemoveAll(f.root); err != nil {
+		t.Fatal(err)
+	}
+	_, err := c.IssueSession(SessionRequest{})
+	ie, ok := IsIssueError(err)
+	if !ok || ie.Code != "spawn_dir" || ie.Status != 500 {
+		t.Fatalf("got %v", err)
+	}
+	if strings.Contains(ie.Message, f.root) || strings.Contains(ie.Message, "no such file") || strings.Contains(ie.Message, os.TempDir()) {
+		t.Fatalf("the response leaked internal detail: %q", ie.Message)
+	}
+	if !strings.Contains(f.logs.all(), f.root) {
+		t.Fatalf("the internal cause was not logged server-side: %q", f.logs.all())
+	}
+}
+
+func TestUnknownDefinitionResponseDoesNotCarryParseDetail(t *testing.T) {
+	c, f := startServer(t, nil)
+	if err := os.WriteFile(filepath.Join(f.defs, "example-broken.md"), []byte("---\nname: [unterminated\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := c.IssueSession(SessionRequest{Definition: "example-broken"})
+	ie, ok := IsIssueError(err)
+	if !ok || ie.Code != "definition_unknown" || ie.Message != `definition "example-broken" is not available` {
+		t.Fatalf("got %v", err)
+	}
+	if !strings.Contains(f.logs.all(), "example-broken") {
+		t.Fatalf("definition failure not logged: %q", f.logs.all())
 	}
 }
 
