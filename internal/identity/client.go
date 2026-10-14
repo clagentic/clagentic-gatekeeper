@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"sort"
 	"time"
 )
 
@@ -135,8 +134,8 @@ func SelfCheck(c Client, jwksPath string, maxAge time.Duration, now time.Time) [
 	if err := json.Unmarshal(raw, &onDisk); err != nil {
 		return append(checks, Check{Name: "jwks_fresh", Detail: fmt.Sprintf("%s: %v", jwksPath, err)})
 	}
-	if !sameKids(live, onDisk) {
-		return append(checks, Check{Name: "jwks_fresh", Detail: fmt.Sprintf("%s lists different key ids than the server publishes", jwksPath)})
+	if !sameKeys(live, onDisk) {
+		return append(checks, Check{Name: "jwks_fresh", Detail: fmt.Sprintf("%s lists different keys than the server publishes (key id or key material differs)", jwksPath)})
 	}
 	detail := jwksPath + " matches the published key set"
 	if fi, err := os.Stat(jwksPath); err == nil && maxAge > 0 && now.Sub(fi.ModTime()) > maxAge {
@@ -145,21 +144,28 @@ func SelfCheck(c Client, jwksPath string, maxAge time.Duration, now time.Time) [
 	return append(checks, Check{Name: "jwks_fresh", OK: true, Detail: detail})
 }
 
-func sameKids(a, b JWKS) bool {
-	ids := func(d JWKS) []string {
-		out := make([]string, 0, len(d.Keys))
+// sameKeys reports whether two key sets publish identical keys. A kid is only
+// a label, so the public key material (kty, crv, x, y) must match per kid; two
+// keys sharing a kid with different material are different sets.
+func sameKeys(a, b JWKS) bool {
+	index := func(d JWKS) (map[string]JWK, bool) {
+		out := make(map[string]JWK, len(d.Keys))
 		for _, k := range d.Keys {
-			out = append(out, k.Kid)
+			if _, dup := out[k.Kid]; dup {
+				return nil, false
+			}
+			out[k.Kid] = k
 		}
-		sort.Strings(out)
-		return out
+		return out, true
 	}
-	x, y := ids(a), ids(b)
-	if len(x) != len(y) {
+	x, okA := index(a)
+	y, okB := index(b)
+	if !okA || !okB || len(x) != len(y) {
 		return false
 	}
-	for i := range x {
-		if x[i] != y[i] {
+	for kid, ka := range x {
+		kb, ok := y[kid]
+		if !ok || ka.Kty != kb.Kty || ka.Crv != kb.Crv || ka.X != kb.X || ka.Y != kb.Y {
 			return false
 		}
 	}
