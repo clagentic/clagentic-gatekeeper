@@ -2,6 +2,7 @@ package identity
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
@@ -257,53 +258,6 @@ func TestSocketServesJWKSAndSelfCheck(t *testing.T) {
 	}
 }
 
-// allowOthersToTraverse gives "other" search permission on every directory from
-// dir up to the filesystem root, restoring each mode at cleanup. A runner that
-// points TMPDIR at a private (0700) directory otherwise hides the helper binary
-// and the socket from the uid the helper runs as. An ancestor that is not
-// searchable and cannot be changed fails the test rather than skipping it.
-func allowOthersToTraverse(t *testing.T, dir string) {
-	t.Helper()
-	for d := dir; ; d = filepath.Dir(d) {
-		fi, err := os.Stat(d)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if fi.Mode().Perm()&0o001 == 0 {
-			orig := fi.Mode().Perm()
-			if err := os.Chmod(d, orig|0o001); err != nil {
-				t.Fatalf("%s is not searchable by other users and cannot be changed: %v", d, err)
-			}
-			t.Cleanup(func() { os.Chmod(d, orig) })
-		}
-		if parent := filepath.Dir(d); parent == d {
-			return
-		}
-	}
-}
-
-func TestAllowOthersToTraverseOpensAndRestoresPrivateAncestors(t *testing.T) {
-	outer := t.TempDir()
-	inner := filepath.Join(outer, "inner")
-	if err := os.Mkdir(inner, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(outer, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	t.Run("opens", func(t *testing.T) {
-		allowOthersToTraverse(t, inner)
-		fi, err := os.Stat(outer)
-		if err != nil || fi.Mode().Perm()&0o001 == 0 {
-			t.Fatalf("ancestor not searchable by others: %v %v", fi, err)
-		}
-	})
-	fi, err := os.Stat(outer)
-	if err != nil || fi.Mode().Perm() != 0o700 {
-		t.Fatalf("mode not restored: %v %v", fi.Mode().Perm(), err)
-	}
-}
-
 func runHelper(t *testing.T, sock, parentToken string) string {
 	t.Helper()
 	cmd := exec.Command(os.Args[0], "-test.run=^TestHelperProcess$")
@@ -318,12 +272,52 @@ func runHelper(t *testing.T, sock, parentToken string) string {
 // A peer running under a different uid is attested by the kernel, not by
 // anything it says. Needs root to switch uid; skipped otherwise.
 func TestSocketRealOtherUidGetsWorkloadAndOwnDirectory(t *testing.T) {
+	runOtherUidSession(t)
+}
+
+// ancestorModes records mode and owner of every directory from dir up to /.
+func ancestorModes(t *testing.T, dir string) map[string]string {
+	t.Helper()
+	modes := map[string]string{}
+	for d := dir; ; d = filepath.Dir(d) {
+		fi, err := os.Stat(d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		modes[d] = fmt.Sprintf("%v uid=%d", fi.Mode(), fi.Sys().(*syscall.Stat_t).Uid)
+		if filepath.Dir(d) == d {
+			return modes
+		}
+	}
+}
+
+// The other-uid test must change nothing it did not create, so a killed or
+// timed-out run cannot leave a host directory more permissive than it found it.
+func TestOtherUidSessionLeavesEveryAncestorModeUnchanged(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("needs root to run a peer under another uid")
+	}
+	before := ancestorModes(t, os.TempDir())
+	runOtherUidSession(t)
+	after := ancestorModes(t, os.TempDir())
+	for d, want := range before {
+		if after[d] != want {
+			t.Errorf("%s changed from %q to %q", d, want, after[d])
+		}
+	}
+}
+
+// runOtherUidSession runs the helper under uid 65534 with a private (0700)
+// TMPDIR, the shape of a scoped runner. The uid cannot search that directory, so
+// the helper binary and the socket are reached through a directory descriptor
+// the parent opened and passes down: the helper still does its own connect(),
+// and the kernel records its uid. No path the test did not create is touched.
+func runOtherUidSession(t *testing.T) {
+	t.Helper()
 	if os.Geteuid() != 0 {
 		t.Skip("needs root to run a peer under another uid")
 	}
 	const otherUID = 65534
-	// Run with a private (0700) TMPDIR, the shape of a scoped runner, so the
-	// test proves the helper stays reachable when no ancestor is searchable.
 	private, err := os.MkdirTemp("", "gk")
 	if err != nil {
 		t.Fatal(err)
@@ -335,24 +329,33 @@ func TestSocketRealOtherUidGetsWorkloadAndOwnDirectory(t *testing.T) {
 	t.Setenv("TMPDIR", private)
 	c, f := startServer(t, nil)
 	shared := filepath.Dir(c.Socket)
-	bin := filepath.Join(shared, "helper.test")
 	self, err := os.ReadFile(os.Args[0])
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(bin, self, 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(shared, "helper.test"), self, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// shared is created by this test, so its mode may be set freely.
 	if err := os.Chmod(shared, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	allowOthersToTraverse(t, shared)
-	cmd := exec.Command(bin, "-test.run=^TestHelperProcess$")
-	cmd.Env = append(os.Environ(), helperEnvSocket+"="+c.Socket)
+	dirFD, err := os.Open(shared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dirFD.Close()
+	// ExtraFiles[0] becomes descriptor 3 in the child.
+	viaFD := "/proc/self/fd/3"
+	cmd := exec.Command(viaFD+"/helper.test", "-test.run=^TestHelperProcess$")
+	cmd.ExtraFiles = []*os.File{dirFD}
+	cmd.Env = append(os.Environ(), helperEnvSocket+"="+viaFD+"/"+filepath.Base(c.Socket))
 	cmd.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: otherUID, Gid: otherUID}}
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		t.Fatalf("helper under uid %d: %v", otherUID, err)
+		t.Fatalf("helper under uid %d could not run or connect through /proc/self/fd/3 (the environment denies exec or connect through a descriptor path): %v; stderr: %s", otherUID, err, stderr.String())
 	}
 	if !strings.Contains(string(out), "session:runtime:helper.test runtime:helper.test") {
 		t.Fatalf("got %q", out)
