@@ -30,6 +30,7 @@ const (
 	CodeBadRequest        = "bad_request"
 	CodePeerUnattested    = "peer_unattested"
 	CodePeerUIDRefused    = "peer_uid_refused"
+	CodeRuntimeUnbound    = "runtime_unbound"
 	CodeRuntimeMismatch   = "runtime_mismatch"
 	CodeOriginForbidden   = "origin_forbidden"
 	CodeDefinitionUnknown = "definition_unknown"

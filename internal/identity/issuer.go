@@ -26,6 +26,10 @@ type Issuer struct {
 	Registry *Registry
 	Proc     ProcReader
 	Now      func() time.Time
+	// HelperExe names the gatekeeper client executable. A peer running that file
+	// is a transient hook or CLI process and is bound to the runtime above it
+	// (bindRuntime); empty means every peer is its own runtime.
+	HelperExe string
 
 	// RuntimeRoles is the role ceiling of a session that names no definition.
 	RuntimeRoles []string
@@ -79,11 +83,11 @@ func (i *Issuer) IssueSession(peer Peer, req SessionRequest) (*Issued, error) {
 		return nil, i.refuseUnpermitted(peer)
 	}
 	now := i.Now()
-	proc, err := i.Proc(peer.PID)
+	bound, err := i.bindRuntime(peer)
 	if err != nil {
-		return nil, refuse(http.StatusForbidden, CodePeerUnattested, err)
+		return nil, err
 	}
-	rtID, err := RuntimeID(proc.Exe, proc.Args)
+	rtID, err := RuntimeID(bound.Proc.Exe, bound.Proc.Args)
 	if err != nil {
 		return nil, refuse(http.StatusForbidden, CodePeerUnattested, err)
 	}
@@ -129,7 +133,7 @@ func (i *Issuer) IssueSession(peer Peer, req SessionRequest) (*Issued, error) {
 		c.Act = &Actor{Sub: runtimeActor}
 	}
 
-	return i.finish(peer, proc, c, now, now.Add(i.SessionTTL), nil)
+	return i.finish(peer, bound, c, now, now.Add(i.SessionTTL), nil)
 }
 
 // IssueChild answers issue-child for an attested peer.
@@ -157,18 +161,19 @@ func (i *Issuer) IssueChild(peer Peer, req ChildRequest) (*Issued, error) {
 	if issued.uid != peer.UID {
 		return nil, refuse(http.StatusForbidden, CodeUIDMismatch, fmt.Errorf("the parent token was issued to uid %d, the request comes from uid %d", issued.uid, peer.UID))
 	}
-	if issued.pid != peer.PID {
-		return nil, refuse(http.StatusForbidden, CodePIDMismatch, fmt.Errorf("the parent token was issued to pid %d, the request comes from pid %d", issued.pid, peer.PID))
-	}
-	proc, err := i.Proc(peer.PID)
+	bound, err := i.bindRuntime(peer)
 	if err != nil {
-		return nil, refuse(http.StatusForbidden, CodePeerUnattested, err)
+		return nil, err
+	}
+	proc := bound.Proc
+	if issued.pid != bound.PID {
+		return nil, refuse(http.StatusForbidden, CodePIDMismatch, fmt.Errorf("the parent token was issued to runtime pid %d, the request is bound to runtime pid %d (peer pid %d)", issued.pid, bound.PID, peer.PID))
 	}
 	if proc.StartTime != issued.startTime {
-		return nil, refuse(http.StatusForbidden, CodePIDMismatch, fmt.Errorf("pid %d is no longer the process the parent token was issued to (start time differs)", peer.PID))
+		return nil, refuse(http.StatusForbidden, CodePIDMismatch, fmt.Errorf("pid %d is no longer the process the parent token was issued to (start time differs)", bound.PID))
 	}
 	if proc.ExeDev != issued.exeDev || proc.ExeIno != issued.exeIno {
-		return nil, refuse(http.StatusForbidden, CodeExeMismatch, fmt.Errorf("pid %d runs a different executable file than at issue time (dev/inode %d/%d, was %d/%d)", peer.PID, proc.ExeDev, proc.ExeIno, issued.exeDev, issued.exeIno))
+		return nil, refuse(http.StatusForbidden, CodeExeMismatch, fmt.Errorf("pid %d runs a different executable file than at issue time (dev/inode %d/%d, was %d/%d)", bound.PID, proc.ExeDev, proc.ExeIno, issued.exeDev, issued.exeIno))
 	}
 	def, err := i.Defs.Load(req.AgentType)
 	if err != nil {
@@ -204,12 +209,13 @@ func (i *Issuer) IssueChild(peer Peer, req ChildRequest) (*Issued, error) {
 	if pe := time.Unix(parent.Exp, 0); pe.Before(exp) {
 		exp = pe
 	}
-	return i.finish(peer, proc, child, now, exp, narrowed)
+	return i.finish(peer, bound, child, now, exp, narrowed)
 }
 
 // finish allocates the delivery directory, signs, publishes and records. now
-// is the caller's single clock sample; finish never reads the clock itself.
-func (i *Issuer) finish(peer Peer, proc ProcInfo, c Claims, now, exp time.Time, narrowed *Narrowing) (*Issued, error) {
+// is the caller's single clock sample; finish never reads the clock itself. The
+// assertion is recorded against the bound runtime, not the requesting process.
+func (i *Issuer) finish(peer Peer, bound Binding, c Claims, now, exp time.Time, narrowed *Narrowing) (*Issued, error) {
 	if now.Unix() >= exp.Unix() {
 		return nil, refuse(http.StatusForbidden, CodeLifetimeEmpty, nil)
 	}
@@ -242,7 +248,7 @@ func (i *Issuer) finish(peer Peer, proc ProcInfo, c Claims, now, exp time.Time, 
 		_ = i.Dirs.Discard(dir)
 		return nil, refuse(http.StatusInternalServerError, CodeInternal, err)
 	}
-	i.Registry.put(jti, issuedTo{uid: peer.UID, pid: peer.PID, startTime: proc.StartTime, exeDev: proc.ExeDev, exeIno: proc.ExeIno, exp: c.Exp}, now)
+	i.Registry.put(jti, issuedTo{uid: peer.UID, pid: bound.PID, startTime: bound.Proc.StartTime, exeDev: bound.Proc.ExeDev, exeIno: bound.Proc.ExeIno, exp: c.Exp}, now)
 
 	actor := c.Sub
 	if c.Act != nil {

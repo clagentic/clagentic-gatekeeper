@@ -9,6 +9,7 @@ var publicMessages = map[string]string{
 	CodeBadRequest:        "the request is malformed or names a value the issuer does not accept",
 	CodePeerUnattested:    "the calling process could not be attested",
 	CodePeerUIDRefused:    "this issuer serves only the user it runs as",
+	CodeRuntimeUnbound:    "the calling process is not running under a runtime this issuer can bind the request to",
 	CodeRuntimeMismatch:   "the declared runtime does not match the attested runtime",
 	CodeOriginForbidden:   "the requested origin is not permitted for the calling user",
 	CodeDefinitionUnknown: "the requested definition is not available",
