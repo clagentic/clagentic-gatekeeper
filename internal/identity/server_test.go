@@ -261,6 +261,38 @@ func TestListenRefusesALiveServer(t *testing.T) {
 	}
 }
 
+func TestListenRefusalLeavesNoTemporaryName(t *testing.T) {
+	dir := shortSocketDir(t)
+	path := filepath.Join(dir, "s.sock")
+	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Listen(path, 0o600); err == nil {
+		t.Fatal("an existing path was accepted")
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 1 || entries[0].Name() != "s.sock" {
+		t.Fatalf("directory after a refusal: %v %v", entries, err)
+	}
+}
+
+// Closing the listener must not unlink the path: a replacement socket bound
+// there by someone else after this server started has to survive an old
+// listener closing.
+func TestCloseDoesNotUnlinkTheSocketPath(t *testing.T) {
+	path := filepath.Join(shortSocketDir(t), "s.sock")
+	l, err := Listen(path, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(path); err != nil {
+		t.Fatalf("Close removed the socket path: %v", err)
+	}
+}
+
 func TestSocketOperatorGetsHuman(t *testing.T) {
 	uid := uint32(os.Getuid())
 	c, _ := startServer(t, func(s *Settings) { s.OperatorUID = &uid })

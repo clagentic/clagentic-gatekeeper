@@ -553,13 +553,17 @@ The socket also answers `GET /.well-known/jwks.json` (HTTP/1.1), so a
 verifier trusting `iss = unix:///path/to/socket` finds the keys with no extra
 configuration.
 
+The socket is created with `identity.socket_mode` (default `0666`, so any local
+uid may ask and the kernel-attested peer credentials decide what it gets). The
+path never exists with another mode: `serve` binds a private temporary name in
+the same directory, sets the mode there, and only then links it to the socket
+path.
+
 `serve` refuses to start when anything exists at the socket path (a socket, a
-file, a directory, a link) and names it. It never removes or replaces what it
-finds: telling a stale socket from one a live server is about to use cannot be
-done without racing that server. The service manager owns cleanup; under
-systemd, `RuntimeDirectory=` is emptied on every stop (see the unit below). A
-clean shutdown of `serve` removes its own socket. After a crash outside a
-service manager, remove the leftover socket by hand.
+file, a directory, a link) and names it. It never removes or replaces any path,
+including its own socket on shutdown: telling a stale socket from one a live
+server is about to use cannot be done without racing that server. Remove a
+leftover socket by hand, or have whatever starts `serve` clear it first.
 
 ### Who gets what
 

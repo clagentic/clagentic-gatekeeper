@@ -3,16 +3,18 @@ package identity
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
-	"syscall"
 	"time"
 )
 
@@ -179,25 +181,51 @@ func (s *Server) writeRefusal(w http.ResponseWriter, e *IssueError) {
 }
 
 // Listen binds the socket and refuses to start when anything already exists at
-// path, whatever it is. It never unlinks: telling a stale socket from one a
-// live server is about to use cannot be done without racing that server, so
-// cleanup belongs to the service manager (a systemd RuntimeDirectory is
-// emptied on every stop). The kernel's bind is the single atomic check, so two
-// issuers can never both bind the path.
+// path, whatever it is. Two invariants hold for every caller:
+//
+//   - path is never connectable with a mode other than mode. The socket is bound
+//     at a private temporary name in the same directory, given mode there, and
+//     only then linked to path, so path does not exist until it carries mode.
+//   - nothing at path is ever unlinked. The link step fails if path exists
+//     (link(2) never replaces), so two issuers can never both own the path, and
+//     the listener is not asked to unlink on Close. The only name this function
+//     removes is the temporary one it created itself.
+//
+// Cleanup of a leftover socket belongs to the operator or the service manager.
 func Listen(path string, mode os.FileMode) (net.Listener, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
-	l, err := net.Listen("unix", path)
-	if errors.Is(err, syscall.EADDRINUSE) {
-		return nil, fmt.Errorf("%s already exists; refusing to start (remove it, or have the service manager own cleanup, for example systemd RuntimeDirectory)", path)
+	var suffix [6]byte
+	if _, err := rand.Read(suffix[:]); err != nil {
+		return nil, err
 	}
+	tmp := filepath.Join(dir, ".gk-"+hex.EncodeToString(suffix[:]))
+	l, err := net.ListenUnix("unix", &net.UnixAddr{Name: tmp, Net: "unix"})
 	if err != nil {
 		return nil, err
 	}
-	if err := os.Chmod(path, mode); err != nil {
+	l.SetUnlinkOnClose(false)
+	// discard releases the listener and removes only the temporary name.
+	discard := func(cause error) (net.Listener, error) {
 		l.Close()
-		return nil, err
+		os.Remove(tmp)
+		return nil, cause
+	}
+	if err := os.Chmod(tmp, mode); err != nil {
+		return discard(err)
+	}
+	if err := os.Link(tmp, path); err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return discard(fmt.Errorf("%s already exists; refusing to start (it was left untouched; remove it yourself once no server uses it)", path))
+		}
+		return discard(fmt.Errorf("publish socket at %s: %w", path, err))
+	}
+	if err := os.Remove(tmp); err != nil {
+		// The socket is already published with its mode; a leftover temporary
+		// name is the same inode and is harmless to leave, but report it.
+		fmt.Fprintf(os.Stderr, "identity: could not remove temporary socket name %s: %v\n", tmp, err)
 	}
 	return l, nil
 }
