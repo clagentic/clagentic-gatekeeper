@@ -548,7 +548,6 @@ what it finds. Nothing a client sends can change who the kernel says it is.
 | `gatekeeper serve [--socket <path>] [--config <path>]` | Run the issuer. Socket: `--socket`, else `identity.socket_path`, else `/run/clagentic-gatekeeper/identity.sock`. |
 | `gatekeeper issue-session [--socket <path>] [--definition <name>] [--origin <origin>] [--runtime] [--runtime-id <id>] [--runtime-version <v>] [--json]` | Ask for a session assertion. Prints the token, or the full response with `--json`. |
 | `gatekeeper issue-child [--socket <path>] [--parent-token-file <path>] --agent-type <name> --agent-id <id> [--json]` | Ask for a child assertion. The parent token defaults to `$CLAGENTIC_IDENTITY_DIR/identity.jwt`. |
-| `gatekeeper self-check [--socket <path>] [--config <path>] [--max-age <duration>] [--json]` | Report socket reachability and whether `identity.jwks_path` still matches the key set the server publishes. Exits non-zero on any failure. |
 
 The socket also answers `GET /.well-known/jwks.json` (HTTP/1.1), so a
 verifier trusting `iss = unix:///path/to/socket` finds the keys with no extra
@@ -676,8 +675,6 @@ ReadWritePaths=/run/clagentic-gatekeeper /var/lib/gatekeeper
 [Install]
 WantedBy=multi-user.target
 ```
-
-Check it with `gatekeeper self-check --config /etc/gatekeeper/config.yaml`.
 
 ## Summary
 

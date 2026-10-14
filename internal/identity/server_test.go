@@ -274,35 +274,11 @@ func TestSocketOperatorGetsHuman(t *testing.T) {
 	}
 }
 
-func TestSocketServesJWKSAndSelfCheck(t *testing.T) {
+func TestSocketServesJWKS(t *testing.T) {
 	c, f := startServer(t, nil)
 	doc, err := c.FetchJWKS()
 	if err != nil || len(doc.Keys) != 1 || doc.Keys[0].Kid != f.issuer.Keys.Kid() {
 		t.Fatalf("%+v %v", doc, err)
-	}
-	jwks := filepath.Join(t.TempDir(), "jwks.json")
-	if err := f.issuer.Keys.WriteJWKS(jwks); err != nil {
-		t.Fatal(err)
-	}
-	for _, ch := range SelfCheck(c, jwks, 0, time.Now()) {
-		if !ch.OK {
-			t.Errorf("%+v", ch)
-		}
-	}
-	other, err := LoadKeyring(writeKey(t, t.TempDir(), "other.pem", false), "", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := other.WriteJWKS(jwks); err != nil {
-		t.Fatal(err)
-	}
-	checks := SelfCheck(c, jwks, 0, time.Now())
-	if checks[len(checks)-1].OK {
-		t.Fatalf("stale jwks file reported fresh: %+v", checks)
-	}
-	gone := SelfCheck(Client{Socket: c.Socket + ".gone"}, jwks, 0, time.Now())
-	if len(gone) != 1 || gone[0].OK {
-		t.Fatalf("%+v", gone)
 	}
 }
 

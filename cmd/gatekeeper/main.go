@@ -40,9 +40,9 @@ func main() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
-	case "serve", "issue-session", "issue-child", "self-check":
+	case "serve", "issue-session", "issue-child":
 		run := map[string]func([]string) error{
-			"serve": runServe, "issue-session": runIssueSession, "issue-child": runIssueChild, "self-check": runSelfCheck,
+			"serve": runServe, "issue-session": runIssueSession, "issue-child": runIssueChild,
 		}[os.Args[1]]
 		if err := run(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -65,7 +65,6 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  serve [--socket <path>] [--config <path>]")
 	fmt.Fprintln(os.Stderr, "  issue-session [--socket <path>] [--definition <name>] [--origin <origin>] [--runtime] [--runtime-id <id>] [--runtime-version <v>] [--json]")
 	fmt.Fprintln(os.Stderr, "  issue-child [--socket <path>] [--parent-token-file <path>] --agent-type <name> --agent-id <id> [--json]")
-	fmt.Fprintln(os.Stderr, "  self-check [--socket <path>] [--config <path>] [--max-age <duration>] [--json]")
 	fmt.Fprintln(os.Stderr, "  version")
 }
 

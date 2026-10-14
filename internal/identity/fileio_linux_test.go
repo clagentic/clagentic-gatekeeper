@@ -42,18 +42,3 @@ func TestSigningKeyThatIsAFIFOIsRefusedWithoutBlocking(t *testing.T) {
 		}
 	})
 }
-
-func TestSelfCheckWithAFIFOJWKSPathFailsWithoutBlocking(t *testing.T) {
-	c, _ := startServer(t, nil)
-	fifo := filepath.Join(t.TempDir(), "jwks.json")
-	if err := syscall.Mkfifo(fifo, 0o644); err != nil {
-		t.Skipf("cannot create a FIFO here: %v", err)
-	}
-	within(t, "SelfCheck on a FIFO jwks_path", func() {
-		checks := SelfCheck(c, fifo, 0, testNow)
-		last := checks[len(checks)-1]
-		if last.Name != "jwks_fresh" || last.OK {
-			t.Errorf("checks %+v", checks)
-		}
-	})
-}
