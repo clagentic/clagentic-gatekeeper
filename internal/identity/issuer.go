@@ -10,33 +10,37 @@ import (
 )
 
 // IssueError is a refusal with a stable code and message a client can act on.
-// Detail holds the internal cause (paths, keys, host errors); it is logged by
-// the server and never serialised or included in Error.
+// detail holds the internal cause (paths, keys, parser and host errors); it is
+// logged by the server and never serialised or included in Error. It is
+// unexported so no package-level caller can read it; Unwrap is the in-process
+// route for errors.Is/As.
 type IssueError struct {
 	Code    string `json:"error"`
 	Message string `json:"message"`
 	Status  int    `json:"-"`
-	Detail  error  `json:"-"`
+	detail  error
 }
 
 func (e *IssueError) Error() string { return e.Code + ": " + e.Message }
 
 // Unwrap exposes the internal cause to errors.Is/As in-process only.
-func (e *IssueError) Unwrap() error { return e.Detail }
+func (e *IssueError) Unwrap() error { return e.detail }
 
 func refuse(status int, code, format string, args ...any) *IssueError {
 	return &IssueError{Code: code, Message: fmt.Sprintf(format, args...), Status: status}
 }
 
 // refuseInternal answers with a fixed public message and keeps cause for the
-// server log, so a client never learns filesystem, key or host details.
+// server log, so a client never learns filesystem, key, parser or host
+// details.
 func refuseInternal(status int, code, message string, cause error) *IssueError {
-	return &IssueError{Code: code, Message: message, Status: status, Detail: cause}
+	return &IssueError{Code: code, Message: message, Status: status, detail: cause}
 }
 
 const (
 	publicInternalMessage = "the issuer failed to complete the request; see the issuer log"
 	publicUninspectable   = "the calling process could not be inspected"
+	publicParentInvalid   = "the parent token is not a valid assertion issued by this server"
 )
 
 // unknownDefinition hides why a definition failed to load (paths, parse
@@ -221,7 +225,7 @@ func (i *Issuer) IssueChild(peer Peer, req ChildRequest) (*Issued, error) {
 	}
 	parent, err := i.Keys.ParseOwn(req.ParentToken)
 	if err != nil {
-		return nil, refuse(http.StatusForbidden, "parent_invalid", "%v", err)
+		return nil, refuseInternal(http.StatusForbidden, "parent_invalid", publicParentInvalid, err)
 	}
 	if parent.Exp <= now.Unix() {
 		return nil, refuse(http.StatusForbidden, "parent_expired", "the parent token expired at %d", parent.Exp)

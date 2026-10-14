@@ -3,6 +3,7 @@ package identity
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -103,6 +104,63 @@ func TestRefusalExposesStableMessageAndLogsInternalDetailOnly(t *testing.T) {
 	}
 	if !strings.Contains(f.logs.all(), f.root) {
 		t.Fatalf("the internal cause was not logged server-side: %q", f.logs.all())
+	}
+}
+
+// post sends a raw body, bypassing Client's marshalling.
+func post(t *testing.T, c Client, path, body string) (int, string) {
+	t.Helper()
+	resp, err := c.http().Post("http://localhost"+path, "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp.StatusCode, string(raw)
+}
+
+func TestRequestBodyMustBeExactlyOneJSONObject(t *testing.T) {
+	c, f := startServer(t, nil)
+	for name, body := range map[string]string{
+		"two objects":      `{}{}`,
+		"trailing garbage": `{} garbage`,
+		"second document":  `{"definition":"example-builder"} {"definition":"example-merger"}`,
+		"array":            `[]`,
+		"null":             `null`,
+		"empty":            ``,
+		"truncated":        `{"definition":`,
+		"unknown member":   `{"definitoin":"example-builder"}`,
+	} {
+		status, got := post(t, c, PathIssueSession, body)
+		if status != 400 || !strings.Contains(got, `"error":"bad_request"`) {
+			t.Errorf("%s: status %d body %s", name, status, got)
+		}
+		for _, parserText := range []string{"invalid character", "unexpected", "unknown field", "cannot unmarshal"} {
+			if strings.Contains(got, parserText) {
+				t.Errorf("%s: the response carries parser text %q: %s", name, parserText, got)
+			}
+		}
+	}
+	if entries, err := os.ReadDir(f.root); err == nil && len(entries) != 0 {
+		t.Fatalf("a refused body still ran the operation: %v", entries)
+	}
+	if status, got := post(t, c, PathIssueSession, " {\"definition\":\"example-builder\"}\n "); status != 200 {
+		t.Fatalf("a single object with surrounding whitespace: %d %s", status, got)
+	}
+}
+
+func TestParentInvalidResponseCarriesNoParserText(t *testing.T) {
+	c, f := startServer(t, nil)
+	_, err := c.IssueChild(ChildRequest{ParentToken: "not.a.token", AgentType: "example-builder", AgentID: "a1"})
+	ie, ok := IsIssueError(err)
+	if !ok || ie.Code != "parent_invalid" || ie.Message != publicParentInvalid {
+		t.Fatalf("got %v", err)
+	}
+	if !strings.Contains(f.logs.all(), "parent_invalid") {
+		t.Fatalf("the cause was not logged: %q", f.logs.all())
 	}
 }
 

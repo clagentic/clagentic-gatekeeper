@@ -1,6 +1,7 @@
 package identity
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -117,13 +118,35 @@ func (s *Server) decode(w http.ResponseWriter, r *http.Request, into any) (Peer,
 		s.writeRefusal(w, refuse(http.StatusForbidden, "peer_unattested", "no peer credentials for this connection"))
 		return Peer{}, false
 	}
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRequestBytes))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(into); err != nil && !errors.Is(err, io.EOF) {
-		s.writeRefusal(w, refuse(http.StatusBadRequest, "bad_request", "request body: %v", err))
+	if err := decodeOneObject(http.MaxBytesReader(w, r.Body, maxRequestBytes), into); err != nil {
+		s.writeRefusal(w, refuseInternal(http.StatusBadRequest, "bad_request", publicBadBody, err))
 		return Peer{}, false
 	}
 	return peer, true
+}
+
+const publicBadBody = "the request body must be exactly one JSON object with known members"
+
+// decodeOneObject decodes a body that is a single JSON object and nothing
+// else: empty, non-object, malformed, unknown-member and trailing content are
+// all errors, so an operation never runs on a request only partly understood.
+func decodeOneObject(body io.Reader, into any) error {
+	raw, err := io.ReadAll(body)
+	if err != nil {
+		return err
+	}
+	if trimmed := bytes.TrimSpace(raw); len(trimmed) == 0 || trimmed[0] != '{' {
+		return errors.New("body is not a JSON object")
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(into); err != nil {
+		return err
+	}
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return errors.New("trailing content after the JSON object")
+	}
+	return nil
 }
 
 func (s *Server) respond(w http.ResponseWriter) func(*Issued, error) {
@@ -144,12 +167,12 @@ func (s *Server) respond(w http.ResponseWriter) func(*Issued, error) {
 // writeRefusal sends only the public code and message; the internal cause, if
 // any, goes to the server log.
 func (s *Server) writeRefusal(w http.ResponseWriter, e *IssueError) {
-	if e.Detail != nil {
+	if e.detail != nil {
 		logf := s.Logf
 		if logf == nil {
 			logf = func(format string, args ...any) { fmt.Fprintf(os.Stderr, format+"\n", args...) }
 		}
-		logf("identity: refused %s (%d): %v", e.Code, e.Status, e.Detail)
+		logf("identity: refused %s (%d): %v", e.Code, e.Status, e.detail)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(e.Status)
