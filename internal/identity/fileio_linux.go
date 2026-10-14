@@ -3,11 +3,22 @@
 package identity
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 	"syscall"
 )
+
+// errNotRegular marks an entry that is a directory, FIFO, device or socket.
+var errNotRegular = errors.New("not a regular file")
+
+// isNotRegularEntry reports whether an openRegularAt failure means the entry
+// is not a plain file at all (a symlink is refused by O_NOFOLLOW with ELOOP),
+// as opposed to a plain file that could not be opened or inspected.
+func isNotRegularEntry(err error) bool {
+	return errors.Is(err, errNotRegular) || errors.Is(err, syscall.ELOOP)
+}
 
 // openRegularAt opens the plain file name inside dir for reading and returns
 // the open file with the result of fstat on that same descriptor. It never
@@ -32,7 +43,7 @@ func openRegularAt(dir *os.File, name string) (*os.File, os.FileInfo, error) {
 	}
 	if !fi.Mode().IsRegular() {
 		f.Close()
-		return nil, nil, fmt.Errorf("%s is not a regular file", name)
+		return nil, nil, fmt.Errorf("%s: %w", name, errNotRegular)
 	}
 	return f, fi, nil
 }

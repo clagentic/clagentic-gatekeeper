@@ -79,7 +79,8 @@ func (d *Definitions) Close() error {
 
 // verifyFiles applies the owner and mode rule to every regular definition
 // file. An entry that is not a regular file (a link, a FIFO, a directory) is
-// left alone here and refused when named.
+// the one documented skip: it is left alone here and refused when named. Any
+// other open or stat failure refuses the start, naming the file.
 func (d *Definitions) verifyFiles() error {
 	scan, err := reopen(d.dir)
 	if err != nil {
@@ -96,7 +97,12 @@ func (d *Definitions) verifyFiles() error {
 		}
 		f, fi, err := openRegularAt(d.dir, n)
 		if err != nil {
-			continue
+			if isNotRegularEntry(err) {
+				continue
+			}
+			// An unreadable regular definition cannot be checked, so serving
+			// with it present would be serving with an unverified roster.
+			return fmt.Errorf("cannot verify definition %s: %w", n, err)
 		}
 		f.Close()
 		if err := checkTrustedFile(n, fi); err != nil {
