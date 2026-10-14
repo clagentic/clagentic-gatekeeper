@@ -92,7 +92,7 @@ func TestIssuedAssertionIsBoundToPeerStartTime(t *testing.T) {
 		t.Fatal(err)
 	}
 	bound, ok := f.issuer.Registry.get(claims.Jti)
-	if !ok || bound.pid != 10 || bound.startTime != 100 {
+	if !ok || bound.uid != selfPeer(10).UID || bound.pid != 10 || bound.startTime != 100 {
 		t.Fatalf("registry entry %+v ok=%v", bound, ok)
 	}
 }

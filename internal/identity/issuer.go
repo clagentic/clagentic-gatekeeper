@@ -198,6 +198,9 @@ func (i *Issuer) IssueChild(peer Peer, req ChildRequest) (*Issued, error) {
 	if !ok {
 		return nil, refuse(http.StatusForbidden, "parent_unknown", "the parent token was not issued by this serve process; ask for a new session")
 	}
+	if issued.uid != peer.UID {
+		return nil, refuse(http.StatusForbidden, "uid_mismatch", "the parent token was issued to uid %d but this request comes from uid %d", issued.uid, peer.UID)
+	}
 	if issued.pid != peer.PID {
 		return nil, refuse(http.StatusForbidden, "parent_pid_mismatch", "the parent token was issued to pid %d but this request comes from pid %d", issued.pid, peer.PID)
 	}
@@ -265,7 +268,7 @@ func (i *Issuer) finish(peer Peer, proc ProcInfo, c Claims, now, exp time.Time, 
 		_ = i.Dirs.Discard(dir)
 		return nil, refuseInternal(http.StatusInternalServerError, "internal", publicInternalMessage, err)
 	}
-	i.Registry.put(jti, issuedTo{pid: peer.PID, startTime: proc.StartTime, exp: c.Exp}, now)
+	i.Registry.put(jti, issuedTo{uid: peer.UID, pid: peer.PID, startTime: proc.StartTime, exp: c.Exp}, now)
 
 	actor := c.Sub
 	if c.Act != nil {

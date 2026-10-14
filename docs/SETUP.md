@@ -594,6 +594,22 @@ every runtime session regardless of its id and is never keyed by a runtime
 name. Consumers must not grant anything on the strength of a `runtime:<id>`
 value alone.
 
+**What a grant rests on.** Normatively, no grant depends on a value derived
+from `/proc`. Roles, grade, human versus workload, and the owner of the
+delivery directory follow the `SO_PEERCRED` uid and the definition file only.
+`issue-child` binds a parent token to the `SO_PEERCRED` uid and refuses with
+`uid_mismatch` when the asking uid differs; the pid and process start time are
+compared as well, as defense in depth. `sub` and `act.sub` of the form
+`runtime:<rt>` are attribution-grade: self-asserted within the peer uid, and
+not a basis for any decision.
+
+`/proc` failures are fail-closed. If `/proc` cannot be read for a peer, if no
+runtime id can be derived from it, or if a declared runtime id differs from
+the derived one (`runtime_mismatch`), the request is refused and nothing is
+granted. Accepted residual: a pid reused before the first `/proc` read can make
+the derived runtime id describe the wrong process. That affects attribution
+only, never roles, grade or ownership, because those do not read `/proc`.
+
 Any local uid able to open the socket may ask for a definition's roles; roles
 are a ceiling and a consumer's own entitlement still decides what is granted.
 This is a known limit of the design, accepted deliberately: the definition is

@@ -7,6 +7,9 @@ import (
 
 // issuedTo records which process an assertion was issued to.
 type issuedTo struct {
+	// uid is the SO_PEERCRED uid, the only credential a grant may rest on; pid
+	// and startTime narrow a grant further but never widen it.
+	uid       uint32
 	pid       int32
 	startTime uint64
 	exp       int64

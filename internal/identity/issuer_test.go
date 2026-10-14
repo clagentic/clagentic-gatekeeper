@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -223,6 +224,86 @@ func TestChildFromOtherPidRefusesNamingMismatch(t *testing.T) {
 	}
 }
 
+func TestChildFromOtherUidWithMatchingPidRefuses(t *testing.T) {
+	f, parent := childSetup(t, nil)
+	other := selfPeer(10)
+	other.UID++
+	_, err := f.issuer.IssueChild(other, ChildRequest{ParentToken: parent.Token, AgentType: "example-builder", AgentID: "a1"})
+	ie, ok := IsIssueError(err)
+	if !ok || ie.Code != "uid_mismatch" {
+		t.Fatalf("got %v", err)
+	}
+}
+
+// Nothing /proc reports may move a grant: roles, grade, human versus workload
+// and the delivery directory owner follow the SO_PEERCRED uid. The fake /proc
+// describes a process of a different, privileged-looking identity.
+func TestGrantsFollowPeerCredentialsNotProcData(t *testing.T) {
+	foreign := uint32(os.Getuid()) + 4242
+	for _, operator := range []bool{false, true} {
+		op := uint32(os.Getuid()) + 1
+		peer := selfPeer(10)
+		if operator {
+			op = peer.UID
+		}
+		f := newFixture(t, func(s *Settings) {
+			s.OperatorUID = &op
+			s.OperatorRoles = []string{"operator-reader"}
+			s.RuntimeRoles = []string{"reader"}
+		})
+		f.issuer.Proc = func(int32) (ProcInfo, error) {
+			return ProcInfo{Exe: "/usr/sbin/example-root-daemon", Args: []string{"example-root-daemon", "--uid", "0"}, StartTime: 100}, nil
+		}
+		out, c := mustSession(t, f, peer, SessionRequest{})
+		if operator {
+			if c.Sub != "human:example-operator" || c.Orig != "human" || strings.Join(c.Roles, ",") != "operator-reader" {
+				t.Errorf("operator peer: sub %s origin %s roles %v", c.Sub, c.Orig, c.Roles)
+			}
+		} else if strings.HasPrefix(c.Sub, "human:") || c.Orig == "human" || c.Grade != "workload" || strings.Join(c.Roles, ",") != "reader" {
+			t.Errorf("non-operator peer: sub %s origin %s grade %s roles %v", c.Sub, c.Orig, c.Grade, c.Roles)
+		}
+		fi, err := os.Stat(out.Dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st, ok := fi.Sys().(*syscall.Stat_t); ok && st.Uid != peer.UID {
+			t.Errorf("delivery directory owned by %d, want peer uid %d", st.Uid, peer.UID)
+		}
+	}
+
+	// A foreign peer uid needs CAP_CHOWN to be served, which only root has here.
+	if os.Geteuid() == 0 {
+		f := newFixture(t, nil)
+		peer := Peer{UID: foreign, GID: foreign, PID: 10}
+		out, c := mustSession(t, f, peer, SessionRequest{})
+		if strings.HasPrefix(c.Sub, "human:") {
+			t.Errorf("foreign uid got %s", c.Sub)
+		}
+		fi, err := os.Stat(out.Dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st, ok := fi.Sys().(*syscall.Stat_t); !ok || st.Uid != foreign {
+			t.Errorf("delivery directory not owned by the peer uid %d", foreign)
+		}
+	}
+}
+
+func TestUnreadableProcAndUnderivableRuntimeRefuseInsteadOfGranting(t *testing.T) {
+	f := newFixture(t, nil)
+	f.issuer.Proc = func(int32) (ProcInfo, error) { return ProcInfo{}, os.ErrPermission }
+	if _, err := f.issuer.IssueSession(selfPeer(10), SessionRequest{}); err == nil {
+		t.Fatal("a /proc read failure produced a grant")
+	}
+	f.issuer.Proc = func(int32) (ProcInfo, error) { return ProcInfo{Exe: "/"}, nil }
+	if _, err := f.issuer.IssueSession(selfPeer(10), SessionRequest{}); err == nil {
+		t.Fatal("an underivable runtime id produced a grant")
+	}
+	if entries, err := os.ReadDir(f.root); err == nil && len(entries) != 0 {
+		t.Fatalf("a refusal left delivery directories: %v", entries)
+	}
+}
+
 func TestChildRefusesWhenPidWasReused(t *testing.T) {
 	f, parent := childSetup(t, nil)
 	f.issuer.Proc = fakeProc("/opt/example/example-runtime", 999)
@@ -258,7 +339,7 @@ func TestChildClaimsExtendChainAndBoundExpiry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.issuer.Registry.put("short-parent", issuedTo{pid: 10, startTime: 100, exp: parentClaims.Exp}, testNow)
+	f.issuer.Registry.put("short-parent", issuedTo{uid: selfPeer(10).UID, pid: 10, startTime: 100, exp: parentClaims.Exp}, testNow)
 	out, err := f.issuer.IssueChild(selfPeer(10), ChildRequest{ParentToken: parent, AgentType: "example-builder", AgentID: "child-1"})
 	if err != nil {
 		t.Fatal(err)
@@ -287,7 +368,7 @@ func TestChildSamplesTheClockOnceAndStaysWithinParentExpiry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.issuer.Registry.put(parentClaims.Jti, issuedTo{pid: 10, startTime: 100, exp: parentClaims.Exp}, testNow)
+	f.issuer.Registry.put(parentClaims.Jti, issuedTo{uid: selfPeer(10).UID, pid: 10, startTime: 100, exp: parentClaims.Exp}, testNow)
 	// The first reading is inside the parent's life; any later one is past it.
 	calls := 0
 	f.issuer.Now = func() time.Time {

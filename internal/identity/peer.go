@@ -55,6 +55,11 @@ func (r realProc) readFile(pid int32, name string) ([]byte, error) {
 // ReadProc is the /proc based ProcReader.
 func ReadProc(pid int32) (ProcInfo, error) { return readProcFrom(realProc{}, pid) }
 
+// Nothing read here may decide a grant: roles, grade, human versus workload and
+// directory ownership follow the SO_PEERCRED uid. /proc feeds attribution and a
+// defense-in-depth start-time comparison only, and any failure to read it is a
+// refusal.
+//
 // readProcFrom reads the start time before and after exe and cmdline. The
 // separate /proc reads are not atomic, so a peer that exits mid-read and whose
 // pid is reused would otherwise yield an exe from one process and a start time
