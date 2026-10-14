@@ -223,7 +223,7 @@ func (i *Issuer) finish(peer Peer, proc ProcInfo, c Claims, exp time.Time, narro
 	}
 	c.Iat, c.Exp, c.Jti, c.Cia = now.Unix(), exp.Unix(), jti, ContractVersion
 
-	dir, err := i.Dirs.Create(peer)
+	dir, err := i.Dirs.Create()
 	if err != nil {
 		return nil, refuse(http.StatusInternalServerError, "spawn_dir", "%v", err)
 	}

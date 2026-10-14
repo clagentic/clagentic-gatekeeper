@@ -34,10 +34,10 @@ func (s SpawnDirs) Ensure() error {
 	return os.Chmod(s.Root, 0o711)
 }
 
-// Create makes a 0700 directory owned by the peer with a tmp/ child, and
-// returns its absolute path. The directory is handed to the peer before any
-// content exists in it.
-func (s SpawnDirs) Create(peer Peer) (string, error) {
+// Create makes a 0700 directory owned by the serving uid and returns its
+// absolute path. The peer cannot enter it, so it cannot plant anything in it,
+// until Publish hands it over as the very last step.
+func (s SpawnDirs) Create() (string, error) {
 	id, err := randomID()
 	if err != nil {
 		return "", err
@@ -46,43 +46,27 @@ func (s SpawnDirs) Create(peer Peer) (string, error) {
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		return "", err
 	}
-	if err := s.own(dir, peer); err != nil {
-		os.Remove(dir)
-		return "", err
-	}
-	tmp := filepath.Join(dir, "tmp")
-	if err := os.Mkdir(tmp, 0o700); err != nil {
-		s.discard(dir)
-		return "", err
-	}
-	if err := s.own(tmp, peer); err != nil {
-		s.discard(dir)
-		return "", err
-	}
 	return dir, nil
 }
 
-func (s SpawnDirs) own(path string, peer Peer) error {
-	if int(peer.UID) == os.Geteuid() && int(peer.GID) == os.Getegid() {
-		return nil
+// Publish fills a directory made by Create and then hands it to the peer. The
+// privileged writer never follows a path the peer could own: the directory is
+// opened O_NOFOLLOW, every entry is created relative to that descriptor with
+// O_EXCL, and ownership moves to the peer only after the content is written
+// and synced.
+func (s SpawnDirs) Publish(dir string, peer Peer, token string) error {
+	if filepath.Dir(filepath.Clean(dir)) != filepath.Clean(s.Root) {
+		return fmt.Errorf("%s is not a direct child of the spawn root", dir)
 	}
-	if err := os.Lchown(path, int(peer.UID), int(peer.GID)); err != nil {
-		return fmt.Errorf("hand %s to uid %d (serve needs root or CAP_CHOWN to serve another uid): %w", filepath.Base(path), peer.UID, err)
-	}
-	return nil
+	return publishRelative(dir, peer, []byte(token+"\n"))
 }
 
-// Publish writes the token into dir by writing tmp/ and renaming over
-// identity.jwt, so a reader never sees a partial file.
-func (s SpawnDirs) Publish(dir string, peer Peer, token string) error {
-	staged := filepath.Join(dir, "tmp", DeliveryFile)
-	if err := os.WriteFile(staged, []byte(token+"\n"), 0o600); err != nil {
-		return err
-	}
-	if err := s.own(staged, peer); err != nil {
-		return err
-	}
-	return os.Rename(staged, filepath.Join(dir, DeliveryFile))
+func needsChown(peer Peer) bool {
+	return int(peer.UID) != os.Geteuid() || int(peer.GID) != os.Getegid()
+}
+
+func handoverError(what string, peer Peer, err error) error {
+	return fmt.Errorf("hand %s to uid %d (serve needs root or CAP_CHOWN to serve another uid): %w", what, peer.UID, err)
 }
 
 // Discard removes a directory this package created; it refuses anything that
