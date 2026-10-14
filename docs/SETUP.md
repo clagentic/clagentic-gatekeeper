@@ -576,10 +576,26 @@ configuration.
   `CAP_CHOWN`, and reading `/proc/<pid>/exe` of another uid needs ptrace
   access, so run the service as root or with those capabilities.
 
+**The runtime id is self-asserted attribution within the peer uid.** It is
+derived from the peer's executable and command line, and any process can set
+its own argv, so a same-uid process can always present any runtime id it
+likes. The uid is the trust boundary, not the runtime id. Therefore, and
+normatively: no role, role ceiling, or human-versus-workload decision may
+depend on the runtime id or on any other argv-derived field; it appears only
+in `rt.id` and in the `runtime:<id>` subject or actor of a workload assertion
+for attribution and audit. `identity.runtime_roles` is one list applied to
+every runtime session regardless of its id and is never keyed by a runtime
+name. Consumers must not grant anything on the strength of a `runtime:<id>`
+value alone.
+
 Any local uid able to open the socket may ask for a definition's roles; roles
 are a ceiling and a consumer's own entitlement still decides what is granted.
-Narrow `identity.socket_mode`, or the socket directory, to restrict who may
-ask at all.
+This is a known limit of the design, accepted deliberately: the definition is
+the ceiling and `identity.socket_mode` is the access boundary. Narrow
+`identity.socket_mode`, or the socket directory, to restrict who may ask at
+all. An operator-uid peer that names a definition receives subject
+`human:<operator_name>` with `act.sub = agent:<definition>` (RFC 8693 actor
+semantics).
 
 ### Keys and rotation
 

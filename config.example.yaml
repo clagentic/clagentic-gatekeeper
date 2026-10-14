@@ -330,7 +330,10 @@ roles:
 #   # The only uid that may receive a human subject. Unset: nobody does.
 #   operator_uid: 1000
 #   operator_name: example-operator      # default: the account name of operator_uid
-#   # Role ceilings for sessions that name no definition.
+#   # Role ceilings for sessions that name no definition. runtime_roles is one
+#   # list for every runtime session: it is never keyed by runtime name, because
+#   # the runtime id comes from the peer's argv and is self-asserted attribution
+#   # within the peer uid (docs/SETUP.md).
 #   operator_roles: [reader]
 #   runtime_roles: []
 #   # One <name>.md per agent, frontmatter keys name, roles, trust_boundary.

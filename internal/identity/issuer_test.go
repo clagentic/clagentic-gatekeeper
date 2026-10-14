@@ -93,6 +93,59 @@ func TestOperatorGetsHumanUnlessRuntimeDeclared(t *testing.T) {
 	}
 }
 
+// The runtime id comes from the peer's argv, which any process of the same uid
+// can set to anything. It is attribution only: no role, ceiling or
+// human/workload decision may follow it.
+func TestSpoofedArgvCannotChangeRolesOrGrade(t *testing.T) {
+	spoofs := []struct {
+		exe  string
+		args []string
+	}{
+		{"/opt/example/example-runtime", []string{"example-runtime"}},
+		{"/opt/example/example-merger", []string{"example-merger"}},
+		{"/usr/bin/node", []string{"node", "example-merger.js"}},
+		{"/usr/bin/python3", []string{"python3", "--", "example-builder.py"}},
+		{"/usr/bin/env", []string{"env", "merger"}},
+		{"/opt/example/reader", []string{"reader"}},
+	}
+	for _, operator := range []bool{false, true} {
+		op := uint32(os.Getuid()) + 1
+		if operator {
+			op = uint32(os.Getuid())
+		}
+		f := newFixture(t, func(s *Settings) {
+			s.OperatorUID = &op
+			s.RuntimeRoles = []string{"reader"}
+			s.OperatorRoles = []string{"operator-reader"}
+		})
+		var wantRoles []string
+		var wantSub string
+		for i, sp := range spoofs {
+			exe, args := sp.exe, sp.args
+			f.issuer.Proc = func(int32) (ProcInfo, error) { return ProcInfo{Exe: exe, Args: args, StartTime: 100}, nil }
+			for _, req := range []SessionRequest{{}, {Runtime: &RuntimeDecl{}}} {
+				_, c := mustSession(t, f, selfPeer(10), req)
+				if i == 0 && req.Runtime == nil {
+					wantRoles, wantSub = c.Roles, c.Sub
+				}
+				want := wantRoles
+				if req.Runtime != nil {
+					want = []string{"reader"}
+				}
+				// For a non-operator the subject is runtime:<rt> by design (attribution
+				// only), so only the operator's subject is compared across spoofs.
+				subDrifted := operator && c.Sub != wantSub
+				if strings.Join(c.Roles, ",") != strings.Join(want, ",") || subDrifted {
+					t.Errorf("operator=%v exe=%s args=%v req=%+v: roles %v sub %s, want roles %v sub %s", operator, exe, args, req, c.Roles, c.Sub, want, wantSub)
+				}
+				if !operator && (strings.HasPrefix(c.Sub, "human:") || c.Grade != "workload") {
+					t.Errorf("non-operator with spoofed argv got sub %s grade %s", c.Sub, c.Grade)
+				}
+			}
+		}
+	}
+}
+
 func TestDeclaredRuntimeIdMustMatchAttested(t *testing.T) {
 	f := newFixture(t, nil)
 	_, err := f.issuer.IssueSession(selfPeer(10), SessionRequest{Runtime: &RuntimeDecl{ID: "someone-else"}})

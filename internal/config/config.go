@@ -84,7 +84,9 @@ type IdentityConfig struct {
 	// of OperatorUID.
 	OperatorName string `yaml:"operator_name,omitempty"`
 	// OperatorRoles is the role ceiling of a human session that names no
-	// definition. RuntimeRoles is the same for a runtime session with none.
+	// definition. RuntimeRoles is the same for a runtime session with none; it
+	// is one list for all runtime sessions, never keyed by the argv-derived
+	// runtime id, which is self-asserted attribution within the peer uid.
 	OperatorRoles []string `yaml:"operator_roles,omitempty"`
 	RuntimeRoles  []string `yaml:"runtime_roles,omitempty"`
 	// DefinitionsDir holds one <name>.md per agent definition (YAML
