@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,22 +29,27 @@ func socketFor(flagValue string, cfg *config.Config) string {
 }
 
 // printIssued writes the bare token, or the full response with --json.
-func printIssued(out *identity.Issued, asJSON bool) error {
+// A failed write is returned so the command exits non-zero: a caller that reads
+// an empty or truncated token must not see success.
+func printIssued(w io.Writer, out *identity.Issued, asJSON bool) error {
 	if asJSON {
-		return json.NewEncoder(os.Stdout).Encode(out)
+		return json.NewEncoder(w).Encode(out)
 	}
-	fmt.Println(out.Token)
-	return nil
+	_, err := fmt.Fprintln(w, out.Token)
+	return err
 }
 
 // reportNarrowing makes a policy-narrowed child visible without --json.
-func reportNarrowing(out *identity.Issued) {
+func reportNarrowing(w io.Writer, out *identity.Issued) error {
 	if out.Narrowed == nil {
-		return
+		return nil
 	}
 	for _, step := range out.Narrowed.Steps {
-		fmt.Fprintf(os.Stderr, "narrowed by %s: dropped roles %s\n", step.Policy, strings.Join(step.Dropped, ","))
+		if _, err := fmt.Fprintf(w, "narrowed by %s: dropped roles %s\n", step.Policy, strings.Join(step.Dropped, ",")); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 func runIssueSession(args []string) error {
@@ -66,7 +72,7 @@ func runIssueSession(args []string) error {
 	if err != nil {
 		return fmt.Errorf("issue-session: %w", err)
 	}
-	return printIssued(out, *asJSON)
+	return printIssued(os.Stdout, out, *asJSON)
 }
 
 func runIssueChild(args []string) error {
@@ -100,6 +106,8 @@ func runIssueChild(args []string) error {
 	if err != nil {
 		return fmt.Errorf("issue-child: %w", err)
 	}
-	reportNarrowing(out)
-	return printIssued(out, *asJSON)
+	if err := reportNarrowing(os.Stderr, out); err != nil {
+		return fmt.Errorf("issue-child: write narrowing report: %w", err)
+	}
+	return printIssued(os.Stdout, out, *asJSON)
 }
