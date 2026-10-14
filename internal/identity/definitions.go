@@ -3,7 +3,6 @@
 package identity
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -158,26 +157,12 @@ func (d *Definitions) Load(name string) (Definition, error) {
 }
 
 func parseFrontmatter(raw []byte) (frontmatter, error) {
-	raw = bytes.ReplaceAll(raw, []byte("\r\n"), []byte("\n"))
-	if !bytes.HasPrefix(raw, []byte("---\n")) {
-		return frontmatter{}, errors.New("no YAML frontmatter")
-	}
-	rest := raw[len("---\n"):]
-	// The closing fence is a whole line equal to "---": "---junk" or "--- " is
-	// not a fence, so a malformed definition fails closed.
-	end, offset := -1, 0
-	for _, line := range bytes.SplitAfter(rest, []byte("\n")) {
-		if string(bytes.TrimSuffix(line, []byte("\n"))) == "---" {
-			end = offset
-			break
-		}
-		offset += len(line)
-	}
-	if end < 0 {
-		return frontmatter{}, errors.New("frontmatter is not closed")
+	front, _, err := SplitFrontmatter(raw)
+	if err != nil {
+		return frontmatter{}, err
 	}
 	var fm frontmatter
-	if err := yaml.Unmarshal(rest[:end], &fm); err != nil {
+	if err := yaml.Unmarshal(front, &fm); err != nil {
 		return frontmatter{}, fmt.Errorf("frontmatter: %v", err)
 	}
 	return fm, nil
