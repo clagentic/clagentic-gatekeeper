@@ -19,11 +19,15 @@ import (
 // directory short enough for a unix socket path.
 func identityDeployment(t *testing.T) (dir, key, defs string) {
 	t.Helper()
-	dir, err := os.MkdirTemp("/tmp", "gkcmd")
+	dir, err := os.MkdirTemp("", "gkcmd")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.RemoveAll(dir) })
+	// The socket lives here and a unix socket path is limited to 108 bytes.
+	if sock := filepath.Join(dir, "id.sock"); len(sock) >= 108 {
+		t.Fatalf("socket path %q is %d bytes, over the 108-byte sun_path limit; point TMPDIR at a shorter directory", sock, len(sock))
+	}
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
