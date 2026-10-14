@@ -59,6 +59,10 @@ type Config struct {
 	// is what makes the section configured; no field inside it can stand in for
 	// that.
 	identityPresent bool
+
+	// removedIdentityKeys are the removed identity keys the document still
+	// carries; see RemovedIdentityKeysWarning.
+	removedIdentityKeys []string
 }
 
 // IdentityEnabled reports whether the config has an identity section. Load has
@@ -434,6 +438,9 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
 	}
 	cfg.identityPresent = present
+	if cfg.removedIdentityKeys, err = removedKeysPresent(data); err != nil {
+		return nil, fmt.Errorf("parse config %s: %w", path, err)
+	}
 	if present {
 		if err := cfg.Identity.validate(); err != nil {
 			return nil, fmt.Errorf("config %s: %w", path, err)

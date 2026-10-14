@@ -591,7 +591,9 @@ that a same-uid process cannot produce by omitting or setting a request field
 or its own argv, and this release has no such signal: every agent on a host
 runs as the serving uid. The former `identity.operator_uid`,
 `identity.operator_name` and `identity.operator_roles` keys are removed; a
-config that still carries them has them ignored. Origin `human` is refused with
+config that still carries them has them ignored, and `serve` logs one
+deprecation line at start naming each such key, saying it has no effect and
+that `serve` issues no human assertions. Origin `human` is refused with
 `origin_forbidden`. Serving callers under other uids (allow-lists, handing
 delivery directories to a foreign uid) is tracked in lr-767925.
 

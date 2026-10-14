@@ -31,6 +31,9 @@ func runServe(args []string) error {
 	if !cfg.IdentityEnabled() {
 		return fmt.Errorf("config error: the identity section is not configured; see config.example.yaml")
 	}
+	if w := cfg.RemovedIdentityKeysWarning(); w != "" {
+		fmt.Fprintln(os.Stderr, w)
+	}
 	mode, err := identity.ParseSocketMode(cfg.Identity.SocketMode)
 	if err != nil {
 		return err

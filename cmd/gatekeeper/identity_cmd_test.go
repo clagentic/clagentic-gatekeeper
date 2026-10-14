@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -271,6 +272,61 @@ func TestServeWithOperatorKeysInConfigNeverIssuesHuman(t *testing.T) {
 	out, err := identity.Client{Socket: sock}.IssueSession(identity.SessionRequest{})
 	if err != nil || strings.HasPrefix(out.Subject, "human:") || out.Grade != "workload" || len(out.Roles) != 0 {
 		t.Fatalf("%+v %v", out, err)
+	}
+}
+
+func TestServeLogsOneWarningNamingRemovedOperatorKeys(t *testing.T) {
+	cases := []struct {
+		name, extra string
+		wantKeys    []string
+	}{
+		{"none", "", nil},
+		{"one", "  operator_name: example-operator\n", []string{"operator_name"}},
+		{"all three", "  operator_uid: 1000\n  operator_name: example-operator\n  operator_roles: [reader]\n",
+			[]string{"operator_uid", "operator_name", "operator_roles"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir, key, defs := identityDeployment(t)
+			cfg := writeConfig(t, dir, "identity:\n  key_path: "+key+"\n  definitions_dir: "+defs+"\n  spawn_root: "+filepath.Join(dir, "spawn")+"\n"+c.extra)
+			r, w, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			orig := os.Stderr
+			os.Stderr = w
+			startServe(t, cfg, filepath.Join(dir, "id.sock"))
+			os.Stderr = orig
+			w.Close()
+			raw, err := io.ReadAll(r)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var warnings []string
+			for _, line := range strings.Split(string(raw), "\n") {
+				if strings.Contains(line, "deprecated") {
+					warnings = append(warnings, line)
+				}
+			}
+			if c.wantKeys == nil {
+				if len(warnings) != 0 {
+					t.Fatalf("unexpected warning: %q", warnings)
+				}
+				return
+			}
+			if len(warnings) != 1 {
+				t.Fatalf("want exactly one warning line, got %q", warnings)
+			}
+			for _, k := range []string{"operator_uid", "operator_name", "operator_roles"} {
+				want := false
+				for _, w := range c.wantKeys {
+					want = want || w == k
+				}
+				if strings.Contains(warnings[0], k) != want {
+					t.Fatalf("key %s: named=%v, want %v in %q", k, !want, want, warnings[0])
+				}
+			}
+		})
 	}
 }
 
