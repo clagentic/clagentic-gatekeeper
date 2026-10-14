@@ -40,6 +40,14 @@ func main() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
+	case "serve", "issue-session", "issue-child", "self-check":
+		run := map[string]func([]string) error{
+			"serve": runServe, "issue-session": runIssueSession, "issue-child": runIssueChild, "self-check": runSelfCheck,
+		}[os.Args[1]]
+		if err := run(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	case "version":
 		fmt.Println("clagentic-gatekeeper dev")
 	default:
@@ -54,6 +62,10 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "commands:")
 	fmt.Fprintln(os.Stderr, "  mint --role <role> [--repo <owner/name>] [--config <path>] [--json]")
 	fmt.Fprintln(os.Stderr, "  mint-a2a --audience <audience> [--config <path>] [--json]")
+	fmt.Fprintln(os.Stderr, "  serve [--socket <path>] [--config <path>]")
+	fmt.Fprintln(os.Stderr, "  issue-session [--socket <path>] [--definition <name>] [--origin <origin>] [--runtime] [--runtime-id <id>] [--runtime-version <v>] [--json]")
+	fmt.Fprintln(os.Stderr, "  issue-child [--socket <path>] [--parent-token-file <path>] --agent-type <name> --agent-id <id> [--json]")
+	fmt.Fprintln(os.Stderr, "  self-check [--socket <path>] [--config <path>] [--max-age <duration>] [--json]")
 	fmt.Fprintln(os.Stderr, "  version")
 }
 
@@ -89,6 +101,12 @@ func runMint(args []string) error {
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
+	}
+
+	// An identity-only config (issuer-only deployment) has no roles section.
+	// Say so before building anything that could reach a broker or GitHub.
+	if len(cfg.Roles) == 0 {
+		return fmt.Errorf("mint: minting is not configured: config %s has no roles section (github, broker and roles are needed to mint; an identity-only config serves assertions only)", *cfgPath)
 	}
 
 	registry := roles.NewRegistry()
