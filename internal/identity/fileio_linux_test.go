@@ -26,7 +26,7 @@ func TestSigningKeyThroughASymlinkIsRefused(t *testing.T) {
 	if err := os.Symlink(real, link); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := LoadKeyring(link, "", nil); err == nil {
+	if _, err := LoadKeyring(link, ""); err == nil {
 		t.Fatal("a symlinked signing key was loaded")
 	}
 }
@@ -37,7 +37,7 @@ func TestSigningKeyThatIsAFIFOIsRefusedWithoutBlocking(t *testing.T) {
 		t.Skipf("cannot create a FIFO here: %v", err)
 	}
 	within(t, "LoadKeyring on a FIFO", func() {
-		if _, err := LoadKeyring(fifo, "", nil); err == nil {
+		if _, err := LoadKeyring(fifo, ""); err == nil {
 			t.Error("a FIFO signing key was loaded")
 		}
 	})

@@ -17,7 +17,6 @@ type Settings struct {
 	SocketPath     string
 	KeyPath        string
 	Alg            string
-	RetiredKeys    []string
 	JWKSPath       string
 	OperatorUID    *uint32
 	OperatorName   string
@@ -70,7 +69,7 @@ func NewIssuer(s Settings) (*Issuer, error) {
 	if !filepath.IsAbs(root) {
 		return nil, fmt.Errorf("identity.spawn_root %q must be absolute", root)
 	}
-	keys, err := LoadKeyring(s.KeyPath, s.Alg, s.RetiredKeys)
+	keys, err := LoadKeyring(s.KeyPath, s.Alg)
 	if err != nil {
 		return nil, err
 	}

@@ -15,7 +15,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
-	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -61,9 +60,9 @@ type Keyring struct {
 
 func b64(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
 
-// LoadKeyring reads the signing key and the retired keys. wantAlg may be empty,
-// in which case the key type decides; otherwise it must agree with the key.
-func LoadKeyring(keyPath, wantAlg string, retired []string) (*Keyring, error) {
+// LoadKeyring reads the signing key. wantAlg may be empty, in which case the
+// key type decides; otherwise it must agree with the key.
+func LoadKeyring(keyPath, wantAlg string) (*Keyring, error) {
 	der, err := readPrivateKeyPEM(keyPath, "PRIVATE KEY")
 	if err != nil {
 		return nil, fmt.Errorf("signing key: %w", err)
@@ -90,16 +89,6 @@ func LoadKeyring(keyPath, wantAlg string, retired []string) (*Keyring, error) {
 		return nil, fmt.Errorf("identity.alg %q does not match the %s key at %s", wantAlg, kr.current.jwk.Alg, keyPath)
 	}
 	kr.public = []publicKey{kr.current}
-	for _, p := range retired {
-		pk, err := loadRetired(p)
-		if err != nil {
-			return nil, fmt.Errorf("retired key %s: %w", p, err)
-		}
-		if pk.jwk.Kid == kr.current.jwk.Kid {
-			return nil, fmt.Errorf("retired key %s is the current signing key", p)
-		}
-		kr.public = append(kr.public, pk)
-	}
 	return kr, nil
 }
 
@@ -138,40 +127,6 @@ func readPrivateKeyPEM(path, wantType string) ([]byte, error) {
 	return block.Bytes, nil
 }
 
-// loadRetired reads a retired key. Only the public half is accepted: a retired
-// key is trusted for verification alone, so a private key here would be a
-// secret kept alive (and unchecked for ownership and mode) for no purpose.
-func loadRetired(path string) (publicKey, error) {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return publicKey{}, err
-	}
-	block, _ := pem.Decode(raw)
-	if block == nil {
-		return publicKey{}, errors.New("no PEM block")
-	}
-	if strings.HasSuffix(block.Type, "PRIVATE KEY") {
-		return publicKey{}, errors.New("contains a private key; retired_keys accept PKIX public keys only (extract the public half, e.g. openssl pkey -pubout, and remove the private copy)")
-	}
-	if block.Type != "PUBLIC KEY" {
-		return publicKey{}, fmt.Errorf("unsupported PEM type %q; want PUBLIC KEY", block.Type)
-	}
-	pub, err := x509.ParsePKIXPublicKey(block.Bytes)
-	if err != nil {
-		return publicKey{}, err
-	}
-	switch k := pub.(type) {
-	case ed25519.PublicKey:
-		return edPublic(k), nil
-	case *ecdsa.PublicKey:
-		if k.Curve != elliptic.P256() {
-			return publicKey{}, errors.New("only P-256 is supported")
-		}
-		return ecPublic(k), nil
-	}
-	return publicKey{}, fmt.Errorf("unsupported key type %T", pub)
-}
-
 // thumbprint is the RFC 7638 SHA-256 JWK thumbprint, used as the kid so two
 // keys can never share one.
 func thumbprint(required map[string]string, order []string) string {
@@ -203,7 +158,7 @@ func ecPublic(pub *ecdsa.PublicKey) publicKey {
 	return publicKey{ec: pub, jwk: JWK{Kty: "EC", Crv: "P-256", Kid: kid, Alg: AlgES256, Use: "sig", X: xs, Y: ys}}
 }
 
-// JWKS returns the published key set: the current key first, then retired ones.
+// JWKS returns the published key set: the current signing key only.
 func (k *Keyring) JWKS() JWKS {
 	out := JWKS{Keys: make([]JWK, 0, len(k.public))}
 	for _, p := range k.public {

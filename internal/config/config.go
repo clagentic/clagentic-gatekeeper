@@ -74,10 +74,6 @@ type IdentityConfig struct {
 	Alg string `yaml:"alg,omitempty"`
 	// JWKSPath is where the published key set is written at start.
 	JWKSPath string `yaml:"jwks_path,omitempty"`
-	// RetiredKeys are former signing keys as PKIX public PEM only; a private key
-	// is refused at load. They stay published until the last assertion they
-	// signed has expired (at most 12 hours after rotation).
-	RetiredKeys []string `yaml:"retired_keys,omitempty"`
 	// OperatorUID is the uid that may receive a human assertion. Unset means
 	// no peer ever does.
 	OperatorUID *uint32 `yaml:"operator_uid,omitempty"`

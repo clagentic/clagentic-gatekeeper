@@ -1,7 +1,6 @@
 package identity
 
 import (
-	"crypto"
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
@@ -41,30 +40,6 @@ func writeKey(t *testing.T, dir, name string, ec bool) string {
 	}
 	p := filepath.Join(dir, name)
 	if err := os.WriteFile(p, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return p
-}
-
-// writePublicOf writes the PKIX public half of the private key at keyPath, the
-// only form retired_keys accepts.
-func writePublicOf(t *testing.T, keyPath, dir, name string) string {
-	t.Helper()
-	raw, err := os.ReadFile(keyPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	block, _ := pem.Decode(raw)
-	priv, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-	if err != nil {
-		t.Fatal(err)
-	}
-	der, err := x509.MarshalPKIXPublicKey(priv.(interface{ Public() crypto.PublicKey }).Public())
-	if err != nil {
-		t.Fatal(err)
-	}
-	p := filepath.Join(dir, name)
-	if err := os.WriteFile(p, pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	return p
