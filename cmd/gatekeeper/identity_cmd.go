@@ -56,7 +56,7 @@ func runIssueSession(args []string) error {
 	fs := flag.NewFlagSet("issue-session", flag.ContinueOnError)
 	socket := fs.String("socket", "", "unix socket of the server (default "+identity.DefaultSocketPath+")")
 	definition := fs.String("definition", "", "agent definition name; its roles become the ceiling")
-	origin := fs.String("origin", "", "human, scheduled, loop, trigger or agent")
+	origin := fs.String("origin", "", "scheduled, loop, trigger, agent or driven (human is refused for sessions)")
 	runtime := fs.Bool("runtime", false, "declare a runtime session (informational: every assertion is a workload assertion)")
 	runtimeID := fs.String("runtime-id", "", "runtime id; must equal the attested one when given")
 	runtimeVersion := fs.String("runtime-version", "", "runtime version label")

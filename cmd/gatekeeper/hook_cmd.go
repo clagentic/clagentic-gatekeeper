@@ -178,7 +178,7 @@ func newClaudeCodeFlags(event string, out io.Writer) *claudeCodeFlags {
 		cfgPath:         fs.String("config", "", "config file whose identity.socket_path names the socket"),
 		stateDir:        fs.String("state-dir", "", "absolute directory for hook state, logs and captures (required)"),
 		modeName:        fs.String("mode", string(hook.ModeWarn), "warn (issue and capture, rewrite nothing) or enforce"),
-		origin:          fs.String("origin", "", "origin sent with issue-session: scheduled, loop, trigger or agent"),
+		origin:          fs.String("origin", "", "origin sent with issue-session: scheduled, loop, trigger, agent or driven"),
 		refresh:         fs.Duration("refresh-below", 0, "user-prompt-submit: ask for a new session assertion below this remaining lifetime (0 disables)"),
 		compose:         fs.String("compose", "", "pre-tool-use-bash: absolute path of another Bash-rewriting hook to run first (hooks-install writes it directly after the event)"),
 		upstreamTimeout: fs.String("upstream-timeout", "", "pre-tool-use-bash with --compose: the budget of the composed hook, equal to the timeout it has when registered alone; a value that is not a positive duration means the default"),
@@ -385,7 +385,7 @@ func runHookProcess(args []string, stdout io.Writer) error {
 	socket := fs.String("socket", "", "issuer unix socket (required unless --config names one)")
 	cfgPath := fs.String("config", "", "config file whose identity.socket_path names the socket")
 	definition := fs.String("definition", "", "definition the child runs as")
-	origin := fs.String("origin", "", "origin: scheduled, loop, trigger or agent")
+	origin := fs.String("origin", "", "origin: scheduled, loop, trigger, agent or driven (a session a human drives; never graded human)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -427,7 +427,7 @@ func runHooksInstall(args []string, stdout io.Writer) error {
 	cfgPath := fs.String("config", "", "config file whose identity.socket_path names the socket")
 	stateDir := fs.String("state-dir", "", "absolute hook state directory (default: a per-user cache directory)")
 	modeName := fs.String("mode", string(hook.ModeWarn), "warn (default: issue and capture, rewrite nothing) or enforce")
-	origin := fs.String("origin", "", "origin for issue-session: scheduled, loop, trigger or agent")
+	origin := fs.String("origin", "", "origin for issue-session: scheduled, loop, trigger, agent or driven")
 	refresh := fs.Duration("refresh-below", defaultRefreshBelow, "refresh the session assertion below this remaining lifetime (0 disables)")
 	compose := fs.String("compose", "", "absolute path of another Bash-rewriting hook to compose on pre-tool-use-bash")
 	binary := fs.String("binary", "", "absolute path of the gatekeeper binary (default: this binary)")
