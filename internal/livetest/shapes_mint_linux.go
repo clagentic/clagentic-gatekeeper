@@ -4,14 +4,8 @@ package livetest
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/x509"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -36,15 +30,13 @@ type mintFixture struct {
 // withAssertion is set, and otherwise one that resolves the identity named by
 // a configured environment variable.
 func (e *Env) newMintFixture(withAssertion bool) (*mintFixture, error) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]string{"token": mintToken, "expires_at": "2099-01-01T00:00:00Z"})
-	}))
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	stub := newTokenStub(nil)
+	srv := stub.srv
+	keyPEM, err := e.appKeyPEM()
 	if err != nil {
 		srv.Close()
 		return nil, err
 	}
-	keyPEM := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
 
 	env := []string{"LIVETEST_APP_ID=12345", "LIVETEST_INSTALL_ID=67890", "LIVETEST_APP_KEY=" + keyPEM, "LIVETEST_APP_SLUG=example-app"}
 	role := func(name, extra string) string {
@@ -76,7 +68,12 @@ func (e *Env) mintConfigs() []string {
 // assertionAssignment asks the process adapter for a delivery of the builder
 // definition, exactly as a launcher would, and returns the KEY=VALUE it prints.
 func (e *Env) assertionAssignment(ctx context.Context) (string, error) {
-	res, err := e.gk(ctx, runOpts{}, "hook", "process", "--socket", e.Sock, "--definition", defBuilder)
+	return e.assertionAssignmentFor(ctx, defBuilder)
+}
+
+// assertionAssignmentFor is assertionAssignment for another definition.
+func (e *Env) assertionAssignmentFor(ctx context.Context, definition string) (string, error) {
+	res, err := e.gk(ctx, runOpts{}, "hook", "process", "--socket", e.Sock, "--definition", definition)
 	if err != nil {
 		return "", err
 	}
