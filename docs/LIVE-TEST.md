@@ -93,6 +93,19 @@ shapes of the runtime to the real binary, as separate processes:
 | `adapter-claude-code/event-sequence-payload-driven` | session start, subagent start (one through a wrapper), per-agent rewrite with no permission decision and the original command byte for byte, a non-Bash tool left alone, subagent stop removing only its own directory. |
 | `adapter-claude-code/compose-synthetic-upstream` | Composed after an upstream hook the harness writes itself: an allowing upstream gets the statement in front of its command; a denying one passes through byte for byte. |
 
+Mint, always run. These run the real `gatekeeper mint` as a separate process,
+resolving identity from an assertion this run's issuer issued and delivered
+through the process adapter. Only the git host's token endpoint is stubbed, by a
+server inside the harness; credentials come from the environment broker:
+
+| Shape | What it proves |
+|-------|----------------|
+| `mint/assertion-delivered-direct` | A delivered builder assertion mints builder; `--json` carries the identity and stderr carries the audit line naming subject and grade. |
+| `mint/assertion-delivered-under-command-wrapper` | The same through a `sh -c` wrapper. |
+| `mint/role-outside-assertion-refused` | The same assertion asked for another role is refused, naming both roles, and nothing is printed. |
+| `mint/no-assertion-configured-provider-unchanged` | With no assertion configured, the configured provider and `entitled_identities` mint; `--json` has no identity member and stderr is empty. |
+| `mint/tampered-assertion-refused` | A delivered assertion whose payload no longer matches its signature is refused. |
+
 Runtime, run when the runtime CLI is found. Each is one headless session with
 an isolated settings file registered by `hooks-install` (no user or project
 settings sources), in enforce mode, with the allow rules the shape needs and
