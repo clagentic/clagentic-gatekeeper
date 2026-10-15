@@ -33,6 +33,31 @@ func TestDrivenOriginIssuesWorkloadAssertionUnderMajor2(t *testing.T) {
 	}
 }
 
+// No level of the act chain of an issued driven session names a human, and
+// finish refuses to sign one that does, at any depth.
+func TestDrivenActChainNeverNamesHuman(t *testing.T) {
+	f := newFixture(t, nil)
+	for _, def := range []string{"", "example-builder"} {
+		_, c := mustSession(t, f, selfPeer(10), SessionRequest{Origin: OriginDriven, Definition: def})
+		if actorChainNamesHuman(c.Act) {
+			t.Fatalf("definition %q: issued act chain names a human: %+v", def, c.Act)
+		}
+	}
+	chains := map[string]*Actor{
+		"depth 1": {Sub: "human:example-user"},
+		"depth 2": {Sub: "agent:example-builder", Act: &Actor{Sub: "human:example-user"}},
+		"depth 3": {Sub: "agent:example-builder", Act: &Actor{Sub: "runtime:example-runtime", Act: &Actor{Sub: "human:example-user"}}},
+	}
+	now := f.issuer.Now()
+	for name, act := range chains {
+		c := Claims{Iss: f.issuer.Issuer, Sub: "runtime:example-runtime", Grade: "workload", Orig: OriginDriven, Act: act}
+		_, err := f.issuer.finish(selfPeer(10), Binding{}, c, now, now.Add(f.issuer.SessionTTL), nil)
+		if ie, ok := IsIssueError(err); !ok || ie.Code != CodeInternal {
+			t.Errorf("%s: finish got %v, want %s", name, err, CodeInternal)
+		}
+	}
+}
+
 // Every origin a major 1 consumer already reads keeps cia 1, so the new value
 // changes nothing for them.
 func TestOtherOriginsKeepMajor1(t *testing.T) {

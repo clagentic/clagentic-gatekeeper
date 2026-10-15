@@ -70,8 +70,8 @@ const (
 	// originDrivenMajor is the first major whose origin vocabulary has driven.
 	originDrivenMajor = 2
 
-	maxAssertionLifetime = 43200
-	maxAssertionFileBytes  = 16384
+	maxAssertionLifetime  = 43200
+	maxAssertionFileBytes = 16384
 
 	// maxNumericDate is 9999-12-31T23:59:59Z, far beyond any real assertion and
 	// small enough that no sum or difference of two dates overflows.
