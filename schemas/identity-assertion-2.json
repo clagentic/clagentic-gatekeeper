@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.clagentic.ai/identity-assertion/2.json",
+  "title": "Clagentic Identity Assertion claims",
+  "description": "Claim set of the JWS payload. Contract version 2.0.0, cia 2; the major 1 claim set is identity-assertion/1.json. See docs/identity-contract.md for the verification order and failure codes. aud absent = local assertion; aud present = exchanged token for a peer.",
+  "type": "object",
+  "$defs": {
+    "actorString": {
+      "type": "string",
+      "pattern": "^(human|agent|runtime):[A-Za-z0-9._-]{1,128}$"
+    },
+    "actorSubject": {
+      "type": "string",
+      "pattern": "^(agent|runtime):[A-Za-z0-9._-]{1,128}$"
+    },
+    "actor": {
+      "type": "object",
+      "required": ["sub"],
+      "properties": {
+        "sub": { "$ref": "#/$defs/actorSubject" },
+        "act": { "$ref": "#/$defs/actor" }
+      },
+      "additionalProperties": true
+    }
+  },
+  "properties": {
+    "iss": { "type": "string", "minLength": 1 },
+    "sub": { "$ref": "#/$defs/actorString" },
+    "act": { "$ref": "#/$defs/actor" },
+    "roles": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$" },
+      "uniqueItems": true
+    },
+    "grade": { "enum": ["workload", "harness"] },
+    "rt": {
+      "type": "object",
+      "required": ["id", "version"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": true
+    },
+    "sid": { "type": "string", "minLength": 1 },
+    "spawn": { "type": "string", "minLength": 1 },
+    "origin": { "enum": ["human", "scheduled", "loop", "trigger", "agent", "driven"] },
+    "dir": { "type": "string", "pattern": "^/" },
+    "iat": { "type": "integer", "minimum": 0 },
+    "exp": { "type": "integer", "minimum": 0 },
+    "nbf": { "type": "integer", "minimum": 0 },
+    "jti": { "type": "string", "minLength": 1 },
+    "cia": { "type": "integer", "const": 2 },
+    "aud": { "type": "string", "minLength": 1 }
+  },
+  "required": ["iss", "sub", "roles", "grade", "rt", "sid", "origin", "iat", "exp", "jti", "cia"],
+  "allOf": [
+    {
+      "description": "Local assertion needs dir; an exchanged token must not carry one.",
+      "if": { "required": ["aud"] },
+      "then": { "properties": { "dir": false } },
+      "else": { "required": ["dir"] }
+    },
+    {
+      "description": "Harness grade needs the actor chain and the spawn identifier.",
+      "if": { "properties": { "grade": { "const": "harness" } }, "required": ["grade"] },
+      "then": { "required": ["act", "spawn"] }
+    },
+    {
+      "description": "Origin driven is a workload statement and never names a human as sub; every act.sub is already agent or runtime.",
+      "if": { "properties": { "origin": { "const": "driven" } }, "required": ["origin"] },
+      "then": {
+        "properties": {
+          "grade": { "const": "workload" },
+          "sub": { "pattern": "^(agent|runtime):" }
+        }
+      }
+    }
+  ],
+  "additionalProperties": true,
+  "x-contract": {
+    "version": "2.0.0",
+    "requiredAlways": ["iss", "sub", "roles", "grade", "rt", "sid", "origin", "iat", "exp", "jti", "cia"],
+    "requiredLocalAssertion": ["dir"],
+    "requiredExchanged": ["aud"],
+    "forbiddenExchanged": ["dir"],
+    "requiredByGrade": {
+      "workload": [],
+      "harness": ["act", "spawn"]
+    },
+    "maxLifetimeSeconds": 43200
+  }
+}

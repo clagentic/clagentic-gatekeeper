@@ -221,8 +221,37 @@ func TestPublishedKeysArePublicOnly(t *testing.T) {
 // The schema's x-contract summary is what a schema-driven implementation reads;
 // it must agree with the rules the reference verifier enforces.
 func TestSchemaAgreesWithVerifier(t *testing.T) {
+	// Each published schema $id describes exactly one contract major.
+	for _, tc := range []struct {
+		file, id, version string
+		cia               float64
+		driven            bool
+	}{
+		{"identity-assertion.json", "https://schemas.clagentic.ai/identity-assertion/1.json", "1.0.0", 1, false},
+		{"identity-assertion-2.json", "https://schemas.clagentic.ai/identity-assertion/2.json", "2.0.0", 2, true},
+	} {
+		t.Run(tc.file, func(t *testing.T) {
+			checkSchema(t, filepath.Join("..", "schemas", tc.file), tc.id, tc.version, tc.cia, tc.driven)
+		})
+	}
+	var disc map[string]any
+	readJSON(t, filepath.Join("..", "schemas", "jwks-discovery.json"), &disc)
+}
+
+func checkSchema(t *testing.T, p, id, version string, cia float64, driven bool) {
+	t.Helper()
 	var schema struct {
+		ID         string `json:"$id"`
+		Properties struct {
+			Cia struct {
+				Const float64 `json:"const"`
+			} `json:"cia"`
+			Origin struct {
+				Enum []string `json:"enum"`
+			} `json:"origin"`
+		} `json:"properties"`
 		Contract struct {
+			Version        string              `json:"version"`
 			RequiredAlways []string            `json:"requiredAlways"`
 			ByGrade        map[string][]string `json:"requiredByGrade"`
 			LocalOnly      []string            `json:"requiredLocalAssertion"`
@@ -231,7 +260,17 @@ func TestSchemaAgreesWithVerifier(t *testing.T) {
 			MaxLifetime    int                 `json:"maxLifetimeSeconds"`
 		} `json:"x-contract"`
 	}
-	readJSON(t, filepath.Join("..", "schemas", "identity-assertion.json"), &schema)
+	readJSON(t, p, &schema)
+	if schema.ID != id || schema.Contract.Version != version || schema.Properties.Cia.Const != cia {
+		t.Errorf("%s: $id %q version %q cia %v, want %q %q %v", p, schema.ID, schema.Contract.Version, schema.Properties.Cia.Const, id, version, cia)
+	}
+	hasDriven := false
+	for _, o := range schema.Properties.Origin.Enum {
+		hasDriven = hasDriven || o == "driven"
+	}
+	if hasDriven != driven {
+		t.Errorf("%s: origin driven accepted = %v, want %v", p, hasDriven, driven)
+	}
 	c := schema.Contract
 	a, b := append([]string(nil), c.RequiredAlways...), append([]string(nil), alwaysRequired...)
 	sort.Strings(a)
@@ -248,6 +287,4 @@ func TestSchemaAgreesWithVerifier(t *testing.T) {
 	if c.MaxLifetime != maxLifetimeSecs {
 		t.Errorf("schema max lifetime %d, verifier %d", c.MaxLifetime, maxLifetimeSecs)
 	}
-	var disc map[string]any
-	readJSON(t, filepath.Join("..", "schemas", "jwks-discovery.json"), &disc)
 }

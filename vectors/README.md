@@ -9,6 +9,13 @@ Vendor the set of the major you implement, pinned to a contract version, and
 run every vector against your own verifier built from the specification and a
 standard JWS library. Nothing here is a library to import.
 
+Schemas: `v1/` validates against
+`https://schemas.clagentic.ai/identity-assertion/1.json`
+([`identity-assertion.json`](../schemas/identity-assertion.json)), and `v2/`
+against `https://schemas.clagentic.ai/identity-assertion/2.json`
+([`identity-assertion-2.json`](../schemas/identity-assertion-2.json)). Each
+`$id` describes exactly one contract major.
+
 Major 2 ships alongside major 1, so `v1/` is unchanged: its tokens and keys
 are exactly what a consumer pinned. A verifier of major 1 runs `v1/` alone. A
 verifier of major 2 runs `v1/` and `v2/`; in `v1/` the one vector that carries

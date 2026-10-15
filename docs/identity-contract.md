@@ -54,7 +54,17 @@ not say how an issuer decides what to sign; that is the issuer's attestation
 
 ## 3. Claims
 
-The machine-readable form is [`schemas/identity-assertion.json`](../schemas/identity-assertion.json).
+The machine-readable form is one schema per contract major, each `$id` describing
+exactly one major:
+
+| Major | `$id` | File | Vectors |
+|-------|-------|------|---------|
+| 1 (`cia` = `1`) | `https://schemas.clagentic.ai/identity-assertion/1.json` | [`schemas/identity-assertion.json`](../schemas/identity-assertion.json) | `vectors/v1/` |
+| 2 (`cia` = `2`) | `https://schemas.clagentic.ai/identity-assertion/2.json` | [`schemas/identity-assertion-2.json`](../schemas/identity-assertion-2.json) | `vectors/v1/` and `vectors/v2/` |
+
+The major 1 schema is the 1.0.0 schema, unchanged: `cia` 1 only, no `driven`.
+A token with `cia` 2 or origin `driven` validates against the major 2 schema,
+not the major 1 schema.
 
 | Claim | Type | Meaning |
 |-------|------|---------|
@@ -414,6 +424,10 @@ in their own tests.
   `contract-version-unsupported`, carries `cia` 2 and is unsupported to a
   major 1 verifier only: a major 2 verifier reads that token as valid, and the
   v2 set has an equivalent vector with `cia` 3.
+- Schema `$id` follows the same rule: `identity-assertion/1.json` stays the
+  major 1 schema as published and `identity-assertion/2.json` is the major 2
+  schema (section 3). A consumer pinned to a `$id` never sees content of
+  another major.
 - Failure codes are stable identifiers. Adding a code is a MINOR change only if
   the situation previously produced `claims_invalid` or `malformed`.
 
