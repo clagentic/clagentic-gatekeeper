@@ -11,7 +11,10 @@
 //  1. Entitlement: the attested identity resolved via AttestationResolver
 //     must be listed in the role's configured EntitledIdentities. An
 //     unresolvable identity, or an identity not entitled to the requested
-//     role, fails closed before any broker read.
+//     role, fails closed before any broker read. An identity resolved from an
+//     Identity Assertion is instead entitled by its own role ceiling (the
+//     requested role must be in Identity.Roles) and must meet the role's
+//     MinGrade; EntitledIdentities then only narrows.
 //  2. Verifiable App-slug binding: after the broker resolves App credentials
 //     for the role, the App's actual slug (also broker-sourced) must match
 //     the role's configured expected slug. This is a verified equality
@@ -23,6 +26,7 @@ package mint
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/clagentic/clagentic-gatekeeper/internal/attestation"
@@ -44,6 +48,12 @@ type RoleBinding struct {
 	// rather than treating an unconfigured role as open to everyone.
 	EntitledIdentities []string
 
+	// MinGrade is the lowest assertion grade that may mint this role:
+	// "workload" or "harness". Empty means "harness", which every valid
+	// assertion meets. It applies only to identities resolved from an
+	// Identity Assertion; no other provider has a grade.
+	MinGrade string
+
 	// AppSlug is the expected GitHub App slug this role's broker-resolved
 	// App must match. AppSlugPath is the broker path holding the App's
 	// actual slug. Both must be set together to enable the App-slug
@@ -55,8 +65,61 @@ type RoleBinding struct {
 
 // entitled reports whether identity is listed in b.EntitledIdentities.
 func (b RoleBinding) entitled(identity string) bool {
-	for _, id := range b.EntitledIdentities {
-		if id == identity {
+	return containsString(b.EntitledIdentities, identity)
+}
+
+// Assertion grades, weakest first. A workload assertion is attested by
+// something the process cannot forge; a harness assertion is attribution the
+// host process reports (docs/identity-contract.md section 3).
+const (
+	gradeHarness  = "harness"
+	gradeWorkload = "workload"
+)
+
+func gradeRank(g string) int {
+	switch g {
+	case gradeWorkload:
+		return 2
+	case gradeHarness:
+		return 1
+	}
+	return 0
+}
+
+// minGrade is the effective minimum grade, defaulting to harness.
+func (b RoleBinding) minGrade() string {
+	if b.MinGrade == "" {
+		return gradeHarness
+	}
+	return b.MinGrade
+}
+
+// ValidMinGrade reports whether s is an accepted min_grade value ("" is the
+// default and is accepted).
+func ValidMinGrade(s string) bool {
+	return s == "" || s == gradeHarness || s == gradeWorkload
+}
+
+// checkAssertion applies the gates for an identity resolved from an Identity
+// Assertion: the role must be in the assertion's role ceiling, the grade must
+// meet the role's minimum, and the optional entitled_identities list, when
+// set, must also name the subject.
+func (b RoleBinding) checkAssertion(roleName string, id attestation.Identity) error {
+	if !containsString(id.Roles, roleName) {
+		return fmt.Errorf("mint role %q: the assertion for %q does not carry this role (it carries: %s)", roleName, id.Subject, strings.Join(id.Roles, ", "))
+	}
+	if min := b.minGrade(); gradeRank(id.Grade) < gradeRank(min) {
+		return fmt.Errorf("mint role %q: requires assertion grade %q or higher, the assertion for %q is grade %q", roleName, min, id.Subject, id.Grade)
+	}
+	if len(b.EntitledIdentities) > 0 && !b.entitled(id.Subject) {
+		return fmt.Errorf("mint role %q: attested identity %q is not entitled to this role", roleName, id.Subject)
+	}
+	return nil
+}
+
+func containsString(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
 			return true
 		}
 	}
@@ -118,6 +181,30 @@ type Service struct {
 	// MintFunc overrides the githubapp.Mint call. When nil, githubapp.Mint is
 	// used. Set in tests to intercept the outbound GitHub API call.
 	MintFunc func(context.Context, githubapp.MintRequest) (githubapp.Token, error)
+
+	// Audit, when set, receives one event per mint decision made for an
+	// identity resolved from an Identity Assertion, permitted or refused. It
+	// is never called for any other identity source, so a deployment without
+	// assertions sees no new output.
+	Audit func(AuditEvent)
+}
+
+// AuditEvent records a mint decision for an assertion identity.
+type AuditEvent struct {
+	Role      string
+	Subject   string
+	Source    string
+	Grade     string
+	Issuer    string
+	Permitted bool
+	// Reason is the refusal, empty when Permitted.
+	Reason string
+}
+
+// Result is a minted token together with the identity it was minted for.
+type Result struct {
+	Token    githubapp.Token
+	Identity attestation.Identity
 }
 
 // Mint is MintForDomain scoped to attestation.DomainLocal — the default mint
@@ -148,6 +235,25 @@ func (s *Service) Mint(ctx context.Context, roleName string, repos []string) (gi
 // identity not entitled to the role, or a missing/mismatched App-slug
 // binding all return an error with no token minted.
 func (s *Service) MintForDomain(ctx context.Context, domain attestation.Domain, roleName string, repos []string) (githubapp.Token, error) {
+	return s.mintForDomain(ctx, domain, roleName, repos, nil)
+}
+
+// MintAttributed is MintForDomain that also returns the identity the token was
+// minted for, so a caller can report who and at which grade.
+func (s *Service) MintAttributed(ctx context.Context, domain attestation.Domain, roleName string, repos []string) (Result, error) {
+	var res Result
+	token, err := s.mintForDomain(ctx, domain, roleName, repos, &res.Identity)
+	if err != nil {
+		return Result{}, err
+	}
+	res.Token = token
+	return res, nil
+}
+
+// mintForDomain is the shared body. When resolved is non-nil it receives the
+// attested identity as soon as one resolves, whether or not the mint then
+// succeeds.
+func (s *Service) mintForDomain(ctx context.Context, domain attestation.Domain, roleName string, repos []string, resolved *attestation.Identity) (githubapp.Token, error) {
 	role, err := s.Roles.Resolve(roleName)
 	if err != nil {
 		return githubapp.Token{}, err
@@ -180,7 +286,24 @@ func (s *Service) MintForDomain(ctx context.Context, domain attestation.Domain, 
 	if err != nil {
 		return githubapp.Token{}, fmt.Errorf("mint role %q: resolve attested identity: %w", roleName, err)
 	}
-	if !binding.entitled(identity.Subject) {
+	if resolved != nil {
+		*resolved = identity
+	}
+	if identity.Source == attestation.SourceAssertion {
+		// An assertion's roles are a ceiling the issuer set, so they replace
+		// entitled_identities as the entitlement; the list only narrows.
+		gateErr := binding.checkAssertion(roleName, identity)
+		if s.Audit != nil {
+			ev := AuditEvent{Role: roleName, Subject: identity.Subject, Source: identity.Source, Grade: identity.Grade, Issuer: identity.Issuer, Permitted: gateErr == nil}
+			if gateErr != nil {
+				ev.Reason = gateErr.Error()
+			}
+			s.Audit(ev)
+		}
+		if gateErr != nil {
+			return githubapp.Token{}, gateErr
+		}
+	} else if !binding.entitled(identity.Subject) {
 		return githubapp.Token{}, fmt.Errorf("mint role %q: attested identity %q is not entitled to this role", roleName, identity.Subject)
 	}
 

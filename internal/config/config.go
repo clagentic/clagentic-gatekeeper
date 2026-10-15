@@ -183,6 +183,36 @@ type AttestationConfig struct {
 	// lead process and a per-spawn namespace for its subagents). Resolved
 	// in list order; the first entry whose file is present wins.
 	Sidecars []AttestationSidecarConfig `yaml:"sidecars"`
+	// Assertion configures the Identity Assertion provider
+	// (docs/identity-contract.md). Nil means not configured: mint resolves
+	// identity exactly as before. Write `assertion: {}` to enable it with only
+	// the local serve issuer.
+	Assertion *AttestationAssertionConfig `yaml:"assertion,omitempty"`
+	// AllowOSUser keeps the deprecated built-in OS-user provider in the chain.
+	// Unset means true, so no existing deployment loses its identity source;
+	// false removes it. Removal of the provider is tracked separately.
+	AllowOSUser *bool `yaml:"allow_os_user,omitempty"`
+}
+
+// OSUserAllowed reports whether the deprecated OS-user provider stays in the
+// chain: true unless allow_os_user is explicitly false.
+func (a AttestationConfig) OSUserAllowed() bool {
+	return a.AllowOSUser == nil || *a.AllowOSUser
+}
+
+// AttestationAssertionConfig lists the issuers whose assertions mint trusts,
+// in addition to the local serve issuer, which is always trusted.
+type AttestationAssertionConfig struct {
+	Issuers []AttestationAssertionIssuer `yaml:"issuers,omitempty"`
+}
+
+// AttestationAssertionIssuer is one trusted issuer.
+type AttestationAssertionIssuer struct {
+	// Iss is compared exactly with the assertion's iss claim.
+	Iss string `yaml:"iss"`
+	// JWKS locates the issuer's key set: an absolute path or file: URL, an
+	// http(s) URL, or a unix: socket URL. Empty derives it from Iss.
+	JWKS string `yaml:"jwks,omitempty"`
 }
 
 // ResolveSidecars returns the effective ordered list of sidecar layer (b)
@@ -401,6 +431,11 @@ type RoleConfig struct {
 	// Identity.Subject values) permitted to mint this role. No identity is
 	// entitled by default — an empty or absent list fails closed.
 	EntitledIdentities []string `yaml:"entitled_identities,omitempty"`
+
+	// MinGrade is the lowest Identity Assertion grade that may mint this role:
+	// "workload" or "harness" (default). Ignored for identities that do not
+	// come from an assertion.
+	MinGrade string `yaml:"min_grade,omitempty"`
 
 	// AppSlug is the expected GitHub App slug this role's broker-resolved App
 	// must match. Required together with AppSlugPath to enable the App-slug
