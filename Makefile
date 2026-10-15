@@ -11,7 +11,7 @@ PREFIX ?= /usr/local
 DESTDIR ?=
 BINDIR ?= $(DESTDIR)$(PREFIX)/bin
 
-.PHONY: build test lint vet fmt check install
+.PHONY: build test lint vet fmt check install live-test
 
 build:
 	go build ./...
@@ -28,6 +28,15 @@ fmt:
 	go fmt ./...
 
 check: vet test
+
+# Builds this tree and runs the real caller shapes against an isolated serve in
+# a private temporary directory (docs/LIVE-TEST.md). One JSON line per shape on
+# stdout; the exit status is non-zero when any shape fails. Pass flags with
+#   make live-test LIVETEST_ARGS="--runtime-cli /path/to/runtime"
+LIVETEST_ARGS ?=
+
+live-test:
+	go run ./cmd/livetest $(LIVETEST_ARGS)
 
 install:
 	go build -o gatekeeper ./cmd/gatekeeper
