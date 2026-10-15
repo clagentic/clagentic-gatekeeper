@@ -10,6 +10,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/clagentic/clagentic-gatekeeper/internal/hook"
+	"github.com/clagentic/clagentic-gatekeeper/internal/identity"
 )
 
 // This file holds the mint shapes: the real binary's mint command, run as a
@@ -232,14 +235,24 @@ func (e *Env) shapeMintDriven(ctx context.Context) error {
 }
 
 // shapeProcessHumanRefused shows origin human is still no way to a session
-// assertion: the adapter exits non-zero and prints nothing for a launcher to use.
+// assertion. Each refusal is matched by its reason, not by a non-zero exit, so
+// an unknown flag or a startup failure cannot pass: the adapter refuses with
+// its own message before any request, and the issuer refuses the same origin
+// with origin_forbidden when a client sends it directly.
 func (e *Env) shapeProcessHumanRefused(ctx context.Context) error {
 	res, err := e.gk(ctx, runOpts{}, "hook", "process", "--socket", e.Sock, "--definition", defBuilder, "--origin", "human")
 	if err != nil {
 		return err
 	}
-	if res.Code == 0 || strings.TrimSpace(res.Stdout) != "" {
-		return fmt.Errorf("origin human: exit %d stdout %.200q", res.Code, res.Stdout)
+	if res.Code == 0 || strings.TrimSpace(res.Stdout) != "" || !strings.Contains(res.Stderr, hook.ErrOriginHuman.Error()) {
+		return fmt.Errorf("adapter origin human: exit %d stdout %.200q stderr %.200q", res.Code, res.Stdout, res.Stderr)
+	}
+	res, err = e.gk(ctx, runOpts{}, "issue-session", "--socket", e.Sock, "--definition", defBuilder, "--origin", "human")
+	if err != nil {
+		return err
+	}
+	if res.Code == 0 || strings.TrimSpace(res.Stdout) != "" || !strings.Contains(res.Stderr, identity.CodeOriginForbidden) {
+		return fmt.Errorf("issuer origin human: exit %d stdout %.200q stderr %.200q", res.Code, res.Stdout, res.Stderr)
 	}
 	return nil
 }
