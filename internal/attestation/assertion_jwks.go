@@ -128,18 +128,28 @@ func fetchJWKS(ctx context.Context, l locator) ([]byte, error) {
 		}
 		return getBounded(ctx, client, "http://localhost"+wellKnownJWKS)
 	case locHTTP:
-		client := &http.Client{
-			Timeout: jwksFetchTimeout,
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				if len(via) >= 3 || req.URL.Host != via[0].URL.Host {
-					return http.ErrUseLastResponse
-				}
-				return nil
-			},
-		}
+		client := &http.Client{Timeout: jwksFetchTimeout, CheckRedirect: jwksRedirectPolicy}
 		return getBounded(ctx, client, l.target)
 	}
 	return nil, fmt.Errorf("unknown locator kind")
+}
+
+// jwksRedirectPolicy lets a redirect through only when its target would itself
+// be an acceptable locator and differs from the configured one in neither
+// scheme nor host. A refused redirect leaves the 3xx response, which
+// getBounded reports as a failed fetch.
+func jwksRedirectPolicy(req *http.Request, via []*http.Request) error {
+	if len(via) >= 3 {
+		return http.ErrUseLastResponse
+	}
+	first := via[0].URL
+	if req.URL.Scheme != first.Scheme || req.URL.Host != first.Host {
+		return http.ErrUseLastResponse
+	}
+	if _, err := parseLocator(req.URL.String()); err != nil {
+		return http.ErrUseLastResponse
+	}
+	return nil
 }
 
 func getBounded(ctx context.Context, client *http.Client, target string) ([]byte, error) {
