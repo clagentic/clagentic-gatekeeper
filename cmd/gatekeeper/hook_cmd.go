@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/clagentic/clagentic-gatekeeper/internal/config"
@@ -140,7 +141,7 @@ func parseBudget(s string) time.Duration {
 // by `--upstream-timeout <duration>`. It is read before any flag is parsed, so
 // nothing later on the command line, a flag that does not parse included, can
 // keep the upstream from running. A hand-written registration that puts these
-// flags elsewhere is found only if the whole command line parses.
+// flags elsewhere is found by findCompose.
 func fixedCompose(event string, rest []string) (exe string, budget time.Duration, ok bool) {
 	if event != hook.EventPreToolUseBash || len(rest) < 2 || rest[0] != "--compose" || rest[1] == "" {
 		return "", 0, false
@@ -150,6 +151,45 @@ func fixedCompose(event string, rest []string) (exe string, budget time.Duration
 		budget = parseBudget(rest[3])
 	}
 	return rest[1], budget, true
+}
+
+// findCompose is fixedCompose for a hand-written registration: it looks for
+// --compose and --upstream-timeout anywhere on the command line, by the same
+// spellings the flag package accepts, without parsing the rest. A flag that does
+// not parse, before or after them, cannot keep the upstream from running. As with
+// the flag package the last occurrence wins and "--" ends the flags.
+func findCompose(event string, rest []string) (exe string, budget time.Duration, ok bool) {
+	if event != hook.EventPreToolUseBash {
+		return "", 0, false
+	}
+	budgetArg := ""
+	value := func(i int, name string) (string, bool) {
+		a := strings.TrimLeft(rest[i], "-")
+		if len(rest[i]) == len(a) || len(rest[i])-len(a) > 2 {
+			return "", false
+		}
+		if a == name {
+			if i+1 < len(rest) {
+				return rest[i+1], true
+			}
+			return "", false
+		}
+		if v, found := strings.CutPrefix(a, name+"="); found {
+			return v, true
+		}
+		return "", false
+	}
+	for i := 0; i < len(rest) && rest[i] != "--"; i++ {
+		if v, found := value(i, "compose"); found {
+			exe = v
+		} else if v, found := value(i, "upstream-timeout"); found {
+			budgetArg = v
+		}
+	}
+	if exe == "" {
+		return "", 0, false
+	}
+	return exe, parseBudget(budgetArg), true
 }
 
 // runHookClaudeCode serves one Claude Code event and writes its one reply.
@@ -187,12 +227,13 @@ func serveClaudeCode(args []string, stdin io.Reader, stderr io.Writer) (hook.Res
 	var diag io.Writer = stderr
 	runUpstream := func(exe string, budget time.Duration) {
 		composing, diag = true, io.Discard
-		// The upstream gets the stdin as it was read, whatever it holds and however
-		// much of it there is.
-		raw, readErr = io.ReadAll(stdin)
-		up, upErr = hook.RunUpstream(exe, raw, budget)
+		// The upstream gets the stdin as it arrives, whatever it holds and however
+		// much of it there is; raw is gatekeeper's bounded copy.
+		raw, up, upErr, readErr = hook.RunComposed(exe, stdin, budget)
 	}
 	if exe, budget, ok := fixedCompose(event, args[1:]); ok {
+		runUpstream(exe, budget)
+	} else if exe, budget, ok := findCompose(event, args[1:]); ok {
 		runUpstream(exe, budget)
 	}
 	fallback := func() hook.Result {
