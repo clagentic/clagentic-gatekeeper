@@ -33,11 +33,7 @@ func (e *Env) hook(ctx context.Context, viaWrapper bool, payload string, args []
 	if !viaWrapper {
 		return e.gkIn(ctx, payload, args...)
 	}
-	sh, err := lookShell()
-	if err != nil {
-		return procResult{}, err
-	}
-	return e.gkIn2(ctx, payload, sh, append([]string{"-c", `"$0" "$@"; echo wrapped >&2`, e.Bin}, args...)...)
+	return e.wrappedIn(ctx, payload, args...)
 }
 
 func (e *Env) gkIn(ctx context.Context, stdin string, args ...string) (procResult, error) {
@@ -166,8 +162,22 @@ func (e *Env) shapeHookSequence(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if mc.Grade != "workload" || ac.Grade != "harness" || ac.Spawn != "live-a1" || mc.Sid != ac.Sid || ac.Act == nil || ac.Act.Sub != "agent:"+defBuilder {
-		return fmt.Errorf("claims main=%+v child=%+v", mc, ac)
+	// The second subagent was started through a command wrapper; its identity is
+	// held to the same account as the first.
+	bc, err := e.claimsIn(a2)
+	if err != nil {
+		return fmt.Errorf("wrapped subagent: %w", err)
+	}
+	for _, child := range []struct {
+		c     Claims
+		spawn string
+	}{{ac, "live-a1"}, {bc, "live-a2"}} {
+		if child.c.Grade != "harness" || child.c.Spawn != child.spawn || mc.Sid != child.c.Sid || child.c.Act == nil || child.c.Act.Sub != "agent:"+defBuilder {
+			return fmt.Errorf("claims main=%+v child %s=%+v", mc, child.spawn, child.c)
+		}
+	}
+	if mc.Grade != "workload" {
+		return fmt.Errorf("main session claims %+v", mc)
 	}
 	if id, err := runtimeID(); err != nil || mc.RT.ID != id {
 		return fmt.Errorf("the session is bound to %q, want the runtime process %q", mc.RT.ID, id)
@@ -209,11 +219,12 @@ func (e *Env) claimsIn(dir string) (Claims, error) {
 // harness writes itself: an allowing upstream gets the statement added in front
 // of its command, a denying one passes through byte for byte.
 func (e *Env) shapeHookCompose(ctx context.Context) error {
-	if _, err := lookShell(); err != nil {
+	sh, err := lookShell()
+	if err != nil {
 		return err
 	}
 	state := filepath.Join(e.Dir, "compose-state")
-	if err := e.hookEvent(ctx, false, state, "session-start", `{"hook_event_name":"SessionStart","session_id":"live-s2","source":"startup","agent_type":"`+defLead+`"}`); err != nil {
+	if err = e.hookEvent(ctx, false, state, "session-start", `{"hook_event_name":"SessionStart","session_id":"live-s2","source":"startup","agent_type":"`+defLead+`"}`); err != nil {
 		return err
 	}
 	allow := `{"hookSpecificOutput":{"permissionDecision":"allow","updatedInput":{"command":"export UPSTREAM_STAMP=1; ls"}}}`
@@ -222,7 +233,7 @@ func (e *Env) shapeHookCompose(ctx context.Context) error {
 
 	call := func(name, reply string) (procResult, error) {
 		script := filepath.Join(e.Dir, name+".sh")
-		body := "#!/bin/sh\ncat >/dev/null\nprintf '%s' '" + reply + "'\n"
+		body := "#!" + sh + "\ncat >/dev/null\nprintf '%s' '" + reply + "'\n"
 		if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
 			return procResult{}, err
 		}

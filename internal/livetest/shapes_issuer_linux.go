@@ -31,13 +31,21 @@ func skipf(format string, args ...any) error { return skipError{fmt.Sprintf(form
 
 // wrapped runs the binary the way a runtime that starts hooks through a command
 // string does. The trailing echo keeps the shell from replacing itself with the
-// command, so the wrapper really is the parent.
+// command, so the wrapper really is the parent; the saved status is returned so
+// the echo never masks the wrapped command's own exit status.
+const wrapperScript = `"$0" "$@"; status=$?; echo wrapped >&2; exit $status`
+
 func (e *Env) wrapped(ctx context.Context, args ...string) (procResult, error) {
+	return e.wrappedIn(ctx, "", args...)
+}
+
+// wrappedIn is wrapped with a payload on the command's standard input.
+func (e *Env) wrappedIn(ctx context.Context, stdin string, args ...string) (procResult, error) {
 	sh, err := lookShell()
 	if err != nil {
 		return procResult{}, err
 	}
-	return e.gk2(ctx, sh, append([]string{"-c", `"$0" "$@"; echo wrapped >&2`, e.Bin}, args...)...)
+	return e.gkIn2(ctx, stdin, sh, append([]string{"-c", wrapperScript, e.Bin}, args...)...)
 }
 
 // gk2 runs an arbitrary program with the minimal environment and a bounded life.
@@ -257,7 +265,7 @@ func (e *Env) shapeChildOtherRuntime(ctx context.Context) error {
 	// A shell running a script file is a runtime of its own, never a wrapper, so
 	// the client below it belongs to a different runtime than the parent's.
 	launcher := filepath.Join(e.Dir, "launcher.sh")
-	if err := os.WriteFile(launcher, []byte("#!/bin/sh\n\"$@\"\nstatus=$?\necho launched >&2\nexit $status\n"), 0o600); err != nil {
+	if err := os.WriteFile(launcher, []byte("\"$@\"\nstatus=$?\necho launched >&2\nexit $status\n"), 0o600); err != nil {
 		return err
 	}
 	res, err := e.gk2(ctx, sh, append([]string{launcher, e.Bin}, e.childArgs(parent, "live-child-2")...)...)

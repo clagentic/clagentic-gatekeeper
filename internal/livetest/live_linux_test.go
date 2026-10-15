@@ -252,6 +252,34 @@ func TestInterruptLeavesNothingBehind(t *testing.T) {
 	}
 }
 
+// A command wrapper returns the wrapped command's own exit status, so a shape
+// that wraps a failing command fails instead of passing on the wrapper's last
+// statement.
+func TestWrapperReturnsWrappedExitStatus(t *testing.T) {
+	failing, err := exec.LookPath("false")
+	if err != nil {
+		t.Skip("no false(1) on PATH")
+	}
+	e := &Env{Dir: t.TempDir(), Bin: failing}
+	res, err := e.wrapped(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Code == 0 || !strings.Contains(res.Stderr, "wrapped") {
+		t.Fatalf("wrapper masked the command's status: %+v", res)
+	}
+	res, err = e.hook(context.Background(), true, "{}", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Code == 0 {
+		t.Fatalf("wrapped hook masked the command's status: %+v", res)
+	}
+	if err := silent("wrapped hook", res, nil); err == nil {
+		t.Fatal("a failing wrapped hook counted as silent success")
+	}
+}
+
 func TestDeliveredDirsAndDenials(t *testing.T) {
 	e := &Env{Spawn: "/x/spawn"}
 	stream := `{"a":"/x/spawn/abc-1 and /x/spawn/def_2"} {"b":"/x/spawn/abc-1"} /elsewhere/spawn/zzz`
