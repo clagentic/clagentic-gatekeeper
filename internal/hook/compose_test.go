@@ -134,9 +134,9 @@ func TestComposedAllowedOrUndecidedUpstreamGetsTheStatement(t *testing.T) {
 	}
 	for name, c := range cases {
 		h := composedHarness(t, ModeEnforce, c.body)
-		res := h.fire(EventPreToolUseBash, bashPayload("", "", "echo hi"))
+		res := h.fire(EventPreToolUseBash, bashPayload("", "", programCommand))
 		command, out := rewrittenCommand(t, res)
-		if !strings.HasSuffix(command, "; echo hi") || strings.Count(command, "export ") != 1 {
+		if !strings.HasSuffix(command, "; "+programCommand) || strings.Count(command, "export ") != 1 {
 			t.Errorf("%s: %q", name, command)
 		}
 		hso := out["hookSpecificOutput"].(map[string]any)
@@ -156,9 +156,9 @@ func TestComposedAllowedOrUndecidedUpstreamGetsTheStatement(t *testing.T) {
 func TestComposedSilentUpstreamEqualsTheStandaloneReply(t *testing.T) {
 	alone := newHarness(t, ModeEnforce)
 	startSession(t, alone, "")
-	want := alone.fire(EventPreToolUseBash, bashPayload("", "", "ls -l"))
+	want := alone.fire(EventPreToolUseBash, bashPayload("", "", programCommand))
 	h := composedHarness(t, ModeEnforce, "true")
-	got := h.fire(EventPreToolUseBash, bashPayload("", "", "ls -l"))
+	got := h.fire(EventPreToolUseBash, bashPayload("", "", programCommand))
 	cmdWant, outWant := rewrittenCommand(t, want)
 	cmdGot, outGot := rewrittenCommand(t, got)
 	if strings.Replace(cmdWant, dirOf(t, cmdWant), "D", 1) != strings.Replace(cmdGot, dirOf(t, cmdGot), "D", 1) {
