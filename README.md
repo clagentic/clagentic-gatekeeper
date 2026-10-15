@@ -262,7 +262,8 @@ The private key is read server-side only, used to sign the App JWT, and never re
 go build ./cmd/gatekeeper
 ```
 
-Requires Go 1.22+. No external dependencies beyond the standard library.
+Requires Go 1.22+. External dependencies are `gopkg.in/yaml.v3` (config) and
+`golang.org/x/sys` (handle-relative no-follow opens on every unix platform).
 
 ## Install
 

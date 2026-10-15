@@ -8,6 +8,8 @@ import (
 	"os"
 	"path"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 var (
@@ -16,7 +18,7 @@ var (
 	errFileTooLarge = errors.New("file is too large")
 )
 
-const openFileFlags = syscall.O_RDONLY | syscall.O_NOFOLLOW | syscall.O_NONBLOCK | syscall.O_CLOEXEC
+const openFileFlags = unix.O_RDONLY | unix.O_NOFOLLOW | unix.O_NONBLOCK | unix.O_CLOEXEC
 
 // afterDirValidated runs between validating the delivery directory handle and
 // opening the assertion relative to it. It is nil outside tests, where it
@@ -28,7 +30,7 @@ var afterDirValidated func()
 // and reads at most max bytes. Checking the handle rather than the path means
 // what is validated is what is read. It returns the handle's FileInfo.
 func readFileNoFollow(p string, max int) ([]byte, os.FileInfo, error) {
-	fd, err := syscall.Open(p, openFileFlags, 0)
+	fd, err := unix.Open(p, openFileFlags, 0)
 	return readOpened(fd, err, p, max)
 }
 
@@ -74,7 +76,7 @@ func readOpened(fd int, openErr error, name string, max int) ([]byte, os.FileInf
 // its final component and returns the handle. Every later check and read goes
 // through this handle, never through the path again.
 func openDeliveryDir(dir string) (*os.File, *AssertionError) {
-	fd, err := syscall.Open(dir, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
+	fd, err := unix.Open(dir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
 	switch {
 	case err == nil:
 		return os.NewFile(uintptr(fd), dir), nil
