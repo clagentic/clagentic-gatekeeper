@@ -38,10 +38,11 @@ token:
 
 # Attestation-provider chain: resolves the ATTESTED invoking identity, in
 # order (0) identity assertion (when configured) -> (a) configured -> (b)
-# sidecar(s) -> (c) OS-user fallback (deprecated; on unless allow_os_user is
-# false). All fields below are optional; a bare install with nothing set here
-# still resolves via the OS-user fallback. See internal/attestation for
-# resolution order and the full design rationale.
+# sidecar(s) -> (c) OS-user fallback (deprecated; appended only when
+# allow_os_user is true). All fields below are optional; a bare install with
+# nothing set here has no identity source, so a mint is refused until one is
+# configured. See internal/attestation for resolution order and the full
+# design rationale.
 attestation:
   # Layer (0), OPTIONAL: the Identity Assertion provider. When this section is
   # present, mint reads the assertion delivered through CLAGENTIC_IDENTITY_DIR
@@ -63,11 +64,12 @@ attestation:
   #     - iss: https://issuer.example
   #       jwks: /etc/gatekeeper/issuer-example-jwks.json
   #
-  # Deprecated opt-out of layer (c), the OS-user fallback. Unset means true so
-  # no existing deployment loses its identity source; each mint answered by the
-  # fallback logs a warning on stderr. Set false once every caller is covered
-  # by layer (0), (a) or (b); the provider itself is removed in a later release.
-  # allow_os_user: false
+  # Deprecated opt-in to layer (c), the OS-user fallback. Unset means false:
+  # the provider is not appended and a caller no other layer identifies is
+  # refused. Set true only while a caller is not yet covered by layer (0), (a)
+  # or (b); each mint it answers logs a warning on stderr. The opt-in itself is
+  # removed in a later release.
+  # allow_os_user: true
   # Layer (a): a deployment's own identity source. type: "env" | "file".
   # Leave type empty to disable this layer.
   configured:

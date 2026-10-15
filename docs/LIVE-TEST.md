@@ -124,8 +124,9 @@ named `mint-caller/<form>/<configuration>`:
 |------|------------|
 | `token-helper-<name>` | A configured token helper: the session environment inherited, no repository forwarded. The roles are builder, reviewer, merger and reader; one form passes `--json`; one passes no `--config`, so the working directory's `config.yaml` is read; `token-helper-health-probe` asks for a role the config does not know and must be refused before any identity or credential is touched. |
 | `direct-exec-<role>` | A script that executes the binary with `--repo` and `--config` and the secret-store login (`BROKER_ROLE_ID`, `BROKER_SECRET_ID`) in its environment, for builder, reviewer, merger, security and reader. The broker is the OpenBao broker against a stand-in inside the harness that checks the login, so the real login and read path runs; the token request must be scoped to the repository. |
-| `daemon-no-identity-os-user-allowed` | A daemon that passes no identity at all. Only the OS-user provider can answer, and `allow_os_user` is on (its default): the mint succeeds, stderr carries the deprecation warning, and no assertion audit line is written. |
-| `daemon-no-identity-os-user-refused` | The same with `allow_os_user: false`: the mint is refused as an unresolvable identity, nothing is printed, and no credential is read. |
+| `daemon-no-identity-os-user-default` | A daemon that passes no identity at all, with no `allow_os_user` key. Nothing can answer, since the OS-user provider is off by default: the mint is refused as an unresolvable identity, nothing is printed, and no credential is read. |
+| `daemon-no-identity-os-user-explicit-false` | The same with `allow_os_user: false`: refused identically. |
+| `daemon-no-identity-os-user-explicit-true` | The same with `allow_os_user: true`: the OS-user provider answers, the mint succeeds, stderr carries the deprecation warning, and no assertion audit line is written. |
 
 Only the git host's token endpoint (and the stand-in secret store) is not real;
 the identity, entitlement, grade and refusal decisions all run in the real

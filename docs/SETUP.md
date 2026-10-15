@@ -44,9 +44,9 @@ returns the first identity found:
 2. **Sidecar adapter** — reads a per-spawn or per-session identity file
    written by an external harness, when configured and present. Gatekeeper
    does not assume any specific harness exists.
-3. **Built-in fallback** (deprecated) — the OS-reported invoking user. On by
-   default so no deployment breaks; `attestation.allow_os_user: false` removes
-   it. See "The built-in fallback" below.
+3. **Built-in fallback** (deprecated) — the OS-reported invoking user. Off by
+   default; it is appended only under the opt-in
+   `attestation.allow_os_user: true`. See "The built-in fallback" below.
 
 The order is fixed by `NewChain` and is not configurable. What *is*
 configurable is whether layers 0, 1, 2 and 3 exist at all — an unconfigured
@@ -74,8 +74,9 @@ roles:
 How a mint resolves with it configured:
 
 1. `CLAGENTIC_IDENTITY_DIR` unset or empty: the provider declines
-   (`ErrNoIdentity`) and the configured provider, sidecars and, while it is
-   on, the OS-user fallback answer exactly as without it.
+   (`ErrNoIdentity`) and the configured provider, sidecars and, under the
+   `allow_os_user: true` opt-in, the OS-user fallback answer exactly as without
+   it.
 2. Set: the directory and `identity.jwt` are checked as the contract's
    section 6 requires (absolute path, owned by the caller with mode 0700, the
    file opened without following a symlink and a regular file, at most 16384
@@ -218,34 +219,34 @@ ratified, tome #701), and is a separate setting in that consumer repo's own
 Gatekeeper's own `config.yaml` described here — this doc covers only what
 Gatekeeper itself consumes.
 
-## The built-in fallback — and the risk of doing nothing
+## The built-in fallback — off by default
 
-If you configure nothing under `attestation:` at all, layers 1a and 1b are
-both omitted from the chain, and every mint resolves through the **built-in
-fallback**: the OS-reported invoking user (`os/user.Current()`), i.e. whatever
-Unix/Windows account the `gatekeeper` process happens to be running as.
+The **built-in fallback** is the OS-reported invoking user
+(`os/user.Current()`), i.e. whatever Unix/Windows account the `gatekeeper`
+process happens to be running as.
 
-**Deprecated.** The fallback stays on by default so that no existing
-deployment loses its identity source, and each mint it answers logs a warning
-on stderr. `attestation.allow_os_user: false` removes it from the chain; do
-that once every caller is covered by an assertion, `attestation.configured` or
-a sidecar. The provider itself is removed in a later release.
+**Deprecated, and off by default.** If you configure nothing under
+`attestation:`, no layer can identify a caller and every mint is refused as an
+unresolvable identity; nothing is printed and no credential is read. The
+fallback is appended to the chain only when you set
+`attestation.allow_os_user: true`, and each mint it answers then logs a warning
+on stderr. Set it only while a caller is not yet covered by an assertion,
+`attestation.configured` or a sidecar, and remove it once they all are. The
+opt-in itself is removed in a later release.
 
-This exists so a bare install always has *an* attested source rather than
-failing open — there's no path where Gatekeeper mints with no identity at
-all. But it means the fallback's "identity" is only as strong as whatever
-account runs the process. On a shared host, or a container image where every
-agent runs as the same user, the built-in fallback cannot distinguish one
-caller from another.
+The fallback's "identity" is only as strong as whatever account runs the
+process. On a shared host, or a container image where every agent runs as the
+same user, it cannot distinguish one caller from another, which is why it is no
+longer a default.
 
-**The risk this doc exists to head off:** a consumer who does not set
-`attestation.configured` (or `attestation.sidecars`) is running the built-in
-fallback, not real attestation — even though nothing errors and mint appears
-to work normally. If your entitlement model (`roles.<name>.entitled_identities`
-in [`docs/ROLES.md`](ROLES.md)) depends on distinguishing individual agents or
-callers, you need `attestation.configured` (or a working sidecar) pointed at a
-real per-caller identity source. The built-in fallback alone will not give you
-that.
+**The risk this doc exists to head off:** a consumer who sets
+`attestation.allow_os_user: true` instead of `attestation.configured` (or
+`attestation.sidecars`) is running the built-in fallback, not real attestation,
+and mint appears to work normally. If your entitlement model
+(`roles.<name>.entitled_identities` in [`docs/ROLES.md`](ROLES.md)) depends on
+distinguishing individual agents or callers, you need `attestation.configured`
+(or a working sidecar) pointed at a real per-caller identity source. The
+built-in fallback alone will not give you that.
 
 ## Wiring your agents
 
@@ -305,11 +306,11 @@ identity var only into the specific commands you know mint something today
 those specific commands succeed. But you cannot enumerate every command
 that will ever mint over the life of a harness — new verbs get added, and
 each one you didn't explicitly wire silently falls through the resolver to
-the built-in OS-user fallback (see "The built-in fallback" above) instead
-of erroring. The mint then either succeeds as the wrong identity, or fails
-entitlement with a "not entitled" error that looks like a permissions bug
-rather than what it actually is: a missing identity var on that one
-command. Debugging this after the fact, command by command, is exactly the
+the next layer instead of erroring: refused as an unresolvable identity by
+default, or, under `allow_os_user: true` (see "The built-in fallback" above),
+answered by the OS-user fallback. The mint then either succeeds as the wrong
+identity, or fails with an error that looks like a permissions bug rather than
+what it actually is: a missing identity var on that one command. Debugging this after the fact, command by command, is exactly the
 trap spawn-scoped env avoids — set the var once, for the whole spawn, and
 there is no command left to forget.
 
@@ -833,9 +834,10 @@ it did before.
 | 2a. A2A caller entitlement (`a2a_mapping`, lr-0ae541) | Which A2A role and peer audience(s) an A2A caller identity may request | `a2a_mapping` in `config.yaml` (`internal/a2apolicy`) | Yes — absent/empty mapping refuses every request; additive, off by default, no effect on layer 2 above |
 | 3a. A2A issuance (`a2a_provider`, lr-890fae) | OpenBao B3 issuance surface `gatekeeper mint-a2a` brokers through once 2a permits | `a2a_provider` in `config.yaml` (`internal/a2atoken` / `internal/a2amint`) | Yes — unconfigured/partial stanza refuses with a config error; reached only after 1 and 2a pass; additive, off by default, no effect on `gatekeeper mint` |
 
-If you set up nothing beyond the defaults, you get layer 1 via the built-in
-OS-user fallback and layer 2 fully closed (no role has default entitlements).
-Both are deliberate: a bare install can run, but it cannot mint anything
-until you configure real entitlements — and if you configure real
+If you set up nothing beyond the defaults, layer 1 has no identity source (the
+built-in OS-user fallback is off unless `attestation.allow_os_user: true`) and
+layer 2 is fully closed (no role has default entitlements). Both are
+deliberate: a bare install cannot mint anything until you configure a real
+identity source and real entitlements — and if you configure real
 attestation, a misconfiguration there will tell you loudly rather than
 quietly degrading to the fallback.

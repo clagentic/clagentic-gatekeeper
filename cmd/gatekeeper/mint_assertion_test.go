@@ -291,31 +291,38 @@ func TestRunMintAssertionConfiguredButNotDeliveredFallsToConfigured(t *testing.T
 	}
 }
 
-// The OS-user provider stays on unless allow_os_user is false, and says so on
-// stderr when it is the layer that answered.
-func TestRunMintOSUserProviderDefaultOnWarnsAndCanBeOmitted(t *testing.T) {
+// The OS-user provider is off by default; only the deprecated opt-in
+// allow_os_user: true appends it, and it says so on stderr when it answers.
+func TestRunMintOSUserProviderOffByDefaultAndWarnsUnderOptIn(t *testing.T) {
 	f := newAssertionFixture(t)
 	os.Unsetenv("CLAGENTIC_IDENTITY_DIR")
 
-	// Entitle whoever the OS says is running, so only the warning differs.
+	// Entitle whoever the OS says is running, so only the provider differs.
 	who := currentOSUser(t)
-	path := writeTempConfig(t, f.config("", "    entitled_identities:\n      - "+who+"\n", ""))
+	entitled := "    entitled_identities:\n      - " + who + "\n"
+
+	for name, block := range map[string]string{
+		"unset": "",
+		"false": "attestation:\n  allow_os_user: false\n",
+	} {
+		path := writeTempConfig(t, f.config(block, entitled, ""))
+		var err error
+		captureStderr(t, func() { err = runMint([]string{"--role", "builder", "--config", path}) })
+		if err == nil || !strings.Contains(err.Error(), "no identity available") {
+			t.Fatalf("allow_os_user %s: got %v, want no identity", name, err)
+		}
+	}
+
+	on := writeTempConfig(t, f.config("attestation:\n  allow_os_user: true\n", entitled, ""))
 	var stdout string
 	stderr := captureStderr(t, func() {
 		stdout = captureStdout(t, func() {
-			if err := runMint([]string{"--role", "builder", "--config", path}); err != nil {
-				t.Fatalf("runMint with the OS-user default: %v", err)
+			if err := runMint([]string{"--role", "builder", "--config", on}); err != nil {
+				t.Fatalf("runMint with allow_os_user true: %v", err)
 			}
 		})
 	})
 	if stdout != "ghs_assertion_test\n" || !strings.Contains(stderr, "deprecated OS-user provider") {
 		t.Errorf("stdout %q stderr %q", stdout, stderr)
-	}
-
-	off := writeTempConfig(t, f.config("attestation:\n  allow_os_user: false\n", "    entitled_identities:\n      - "+who+"\n", ""))
-	var err error
-	captureStderr(t, func() { err = runMint([]string{"--role", "builder", "--config", off}) })
-	if err == nil || !strings.Contains(err.Error(), "no identity available") {
-		t.Fatalf("got %v, want no identity once the OS-user provider is off", err)
 	}
 }

@@ -19,13 +19,20 @@ func loadYAML(t *testing.T, body string) *Config {
 	return cfg
 }
 
-func TestAssertionAbsentByDefaultAndOSUserOn(t *testing.T) {
+func TestAssertionAbsentByDefaultAndOSUserOff(t *testing.T) {
 	cfg := loadYAML(t, "broker:\n  type: env\n")
 	if cfg.Attestation.Assertion != nil {
 		t.Error("assertion is configured without an attestation.assertion section")
 	}
+	if cfg.Attestation.OSUserAllowed() {
+		t.Error("the OS-user provider must be off when allow_os_user is unset")
+	}
+}
+
+func TestAllowOSUserTrueOptsIn(t *testing.T) {
+	cfg := loadYAML(t, "attestation:\n  allow_os_user: true\n")
 	if !cfg.Attestation.OSUserAllowed() {
-		t.Error("the OS-user provider must stay on when allow_os_user is unset")
+		t.Error("allow_os_user: true was not honoured")
 	}
 }
 

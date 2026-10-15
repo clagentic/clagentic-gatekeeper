@@ -143,6 +143,19 @@ const (
 	brokerOpenBao brokerKind = "openbao"
 )
 
+// osUserMode is how a fixture's config treats attestation.allow_os_user.
+type osUserMode int
+
+const (
+	// osUserDefault writes no allow_os_user key.
+	osUserDefault osUserMode = iota
+	// osUserOff writes allow_os_user: false.
+	osUserOff
+	// osUserOn writes allow_os_user: true and entitles the user running the
+	// harness, so the OS-user provider's answer can mint.
+	osUserOn
+)
+
 // fixtureSpec says what deployment to build.
 type fixtureSpec struct {
 	// assertion trusts this run's issuer for identity assertions.
@@ -150,9 +163,10 @@ type fixtureSpec struct {
 	// sidecar adds a session sidecar naming callerIdentity, with the variable
 	// that selects it set in the fixture's environment.
 	sidecar bool
-	// osUser leaves the OS-user provider on (the default) and entitles the user
-	// running the harness; otherwise it is switched off.
-	osUser bool
+	// osUser says how the deprecated OS-user provider is configured. The zero
+	// value writes no allow_os_user key, which is the default: the provider is
+	// not appended.
+	osUser osUserMode
 	broker brokerKind
 	// cwdConfig writes the config as config.yaml in a working directory of its
 	// own, for a caller that passes no --config.
@@ -228,7 +242,7 @@ func (e *Env) newCallerFixture(spec fixtureSpec) (*callerFixture, error) {
 	if spec.sidecar {
 		entitled = append(entitled, callerIdentity)
 	}
-	if spec.osUser {
+	if spec.osUser == osUserOn {
 		name, err := currentUserName()
 		if err != nil {
 			stub.srv.Close()
@@ -253,7 +267,13 @@ func (e *Env) newCallerFixture(spec fixtureSpec) (*callerFixture, error) {
 			}
 		}
 	}
-	fmt.Fprintf(&cfg, "attestation:\n  allow_os_user: %v\n", spec.osUser)
+	cfg.WriteString("attestation:\n")
+	switch spec.osUser {
+	case osUserOff:
+		cfg.WriteString("  allow_os_user: false\n")
+	case osUserOn:
+		cfg.WriteString("  allow_os_user: true\n")
+	}
 	if spec.assertion {
 		fmt.Fprintf(&cfg, "  assertion:\n    issuers:\n      - iss: unix://%s\n        jwks: %s\n", e.Sock, e.JWKSFile)
 	}

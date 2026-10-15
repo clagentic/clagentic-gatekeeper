@@ -189,9 +189,9 @@ func runMint(args []string) error {
 
 	// Attestation chain resolves the ATTESTED invoking identity for the
 	// mint-time entitlement check (tome #700, layer (2)->(3)). A bare install
-	// with no attestation config still gets a resolver — the built-in
-	// fallback (layer c) is always appended — so entitlement is never
-	// silently skipped for lack of configuration.
+	// with no attestation config still gets a resolver; the built-in OS-user
+	// layer (c) is appended only under the deprecated allow_os_user opt-in,
+	// so a caller no layer identifies is refused rather than skipped.
 	//
 	// ResolveSidecars merges the legacy single `attestation.sidecar` block
 	// (back-compat) ahead of the `attestation.sidecars` list, so a
@@ -226,7 +226,7 @@ func runMint(args []string) error {
 		Sidecars:   chainSidecars,
 		OmitOSUser: !cfg.Attestation.OSUserAllowed(),
 		OSUserWarn: func(id attestation.Identity) {
-			fmt.Fprintf(os.Stderr, "attestation: warning: identity %q was resolved by the deprecated OS-user provider; configure attestation.assertion or attestation.configured, then set attestation.allow_os_user: false\n", id.Subject)
+			fmt.Fprintf(os.Stderr, "attestation: warning: identity %q was resolved by the deprecated OS-user provider; configure attestation.assertion or attestation.configured, then remove attestation.allow_os_user\n", id.Subject)
 		},
 	})
 	if err != nil {

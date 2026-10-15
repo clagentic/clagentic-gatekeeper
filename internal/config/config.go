@@ -188,16 +188,18 @@ type AttestationConfig struct {
 	// identity exactly as before. Write `assertion: {}` to enable it with only
 	// the local serve issuer.
 	Assertion *AttestationAssertionConfig `yaml:"assertion,omitempty"`
-	// AllowOSUser keeps the deprecated built-in OS-user provider in the chain.
-	// Unset means true, so no existing deployment loses its identity source;
-	// false removes it. Removal of the provider is tracked separately.
+	// AllowOSUser is the deprecated opt-in that appends the built-in OS-user
+	// provider to the chain. Unset means false: the provider is not appended
+	// and a caller no other layer can identify is refused. True appends it and
+	// logs a warning each time it answers. Removal of the opt-in is tracked
+	// separately.
 	AllowOSUser *bool `yaml:"allow_os_user,omitempty"`
 }
 
-// OSUserAllowed reports whether the deprecated OS-user provider stays in the
-// chain: true unless allow_os_user is explicitly false.
+// OSUserAllowed reports whether the deprecated OS-user provider is appended to
+// the chain: false unless allow_os_user is explicitly true.
 func (a AttestationConfig) OSUserAllowed() bool {
-	return a.AllowOSUser == nil || *a.AllowOSUser
+	return a.AllowOSUser != nil && *a.AllowOSUser
 }
 
 // AttestationAssertionConfig lists the issuers whose assertions mint trusts,

@@ -19,9 +19,9 @@
 //     external harness (e.g. the crew-manifest plugin), when present. This
 //     package does not assume any specific harness exists; the sidecar path
 //     itself is supplied by config, never hardcoded.
-//  3. Built-in fallback — the OS-reported invoking user. Deprecated: on by
-//     default so no existing deployment breaks, and switched off with
-//     attestation.allow_os_user: false (ChainConfig.OmitOSUser).
+//  3. Built-in fallback — the OS-reported invoking user. Deprecated: appended
+//     only under the opt-in attestation.allow_os_user: true; the config layer
+//     sets ChainConfig.OmitOSUser otherwise.
 //
 // No agent names, org names, or other deployment-specific identities are
 // hardcoded anywhere in this package (workspace rule 11 / build-to-share).

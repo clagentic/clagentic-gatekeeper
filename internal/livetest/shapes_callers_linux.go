@@ -92,11 +92,19 @@ func (e *Env) callerShapes() []shape {
 		}
 	}
 	// A daemon that passes no identity at all: only the OS-user provider can
-	// answer, and only while it is allowed.
+	// answer, and it is appended only under the explicit opt-in.
+	modes := []struct {
+		label string
+		mode  osUserMode
+	}{
+		{"default", osUserDefault},
+		{"explicit-false", osUserOff},
+		{"explicit-true", osUserOn},
+	}
 	for _, assertion := range []bool{false, true} {
-		for _, allowed := range []bool{true, false} {
-			name := "mint-caller/daemon-no-identity-os-user-" + map[bool]string{true: "allowed", false: "refused"}[allowed] + "/" + configName(assertion)
-			out = append(out, shape{name: name, run: e.shapeNoIdentity(assertion, allowed)})
+		for _, m := range modes {
+			name := "mint-caller/daemon-no-identity-os-user-" + m.label + "/" + configName(assertion)
+			out = append(out, shape{name: name, run: e.shapeNoIdentity(assertion, m.mode)})
 		}
 	}
 	return out
@@ -217,14 +225,15 @@ func checkScope(f callerForm, fx *callerFixture) error {
 }
 
 // shapeNoIdentity is a caller that passes no identity: no sidecar, no
-// assertion delivered, nothing in the environment but the broker. The OS-user
-// provider answers while allowed, with a warning, and the mint is refused when
-// it is not.
-func (e *Env) shapeNoIdentity(assertion, allowed bool) func(context.Context) error {
+// assertion delivered, nothing in the environment but the broker. The mint is
+// refused unless allow_os_user is explicitly true, in which case the OS-user
+// provider answers with a warning.
+func (e *Env) shapeNoIdentity(assertion bool, mode osUserMode) func(context.Context) error {
 	return func(ctx context.Context) error {
+		allowed := mode == osUserOn
 		// The secret store broker makes the refusal's "no credential read" claim
 		// observable; the environment broker would not.
-		fx, err := e.newCallerFixture(fixtureSpec{assertion: assertion, osUser: allowed, broker: brokerOpenBao})
+		fx, err := e.newCallerFixture(fixtureSpec{assertion: assertion, osUser: mode, broker: brokerOpenBao})
 		if err != nil {
 			return err
 		}
