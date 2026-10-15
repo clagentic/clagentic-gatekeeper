@@ -17,7 +17,80 @@ func (e *Env) hookShapes() []shape {
 	return []shape{
 		{"adapter-claude-code/event-sequence-payload-driven", e.shapeHookSequence},
 		{"adapter-claude-code/compose-synthetic-upstream", e.shapeHookCompose},
+		{"adapter-claude-code/read-only-commands-not-rewritten-mixed-still-delivered", e.shapeHookReadOnly},
 	}
+}
+
+// readOnlyCommands run only utilities of the closed read-only set: the hook must
+// leave them alone, so the runtime's own read-only approval still applies to them.
+var readOnlyCommands = []string{
+	"date", "pwd", "ls -la", "cat README.md", "head -n 5 README.md", "wc -l README.md",
+	"echo hello", "ls | wc -l", "grep -rn 'foo$' . 2>/dev/null",
+}
+
+// mixedCommands put something that can run a program or expand a variable next
+// to a read-only utility: every one must still be delivered the directory.
+var mixedCommands = []string{
+	"date; printenv CLAGENTIC_IDENTITY_DIR",
+	"ls && gatekeeper mint --role builder",
+	"echo $(gatekeeper mint --role builder)",
+	"cat README.md | xargs rm",
+	"ls; find . -exec sh -c x {} +",
+	"echo hi > out.txt",
+}
+
+// shapeHookReadOnly drives the read-only rule with real payloads against the live
+// issuer: a read-only command gets no reply at all (the no-decision outcome), a
+// mixed command gets the statement in front of its exact text, and composed after
+// an upstream the read-only command yields the upstream's own bytes.
+func (e *Env) shapeHookReadOnly(ctx context.Context) error {
+	state := filepath.Join(e.Dir, "readonly-state")
+	if err := e.hookEvent(ctx, false, state, "session-start", `{"hook_event_name":"SessionStart","session_id":"live-s1","source":"startup","agent_type":"`+defLead+`"}`); err != nil {
+		return err
+	}
+	for _, command := range readOnlyCommands {
+		res, err := e.hook(ctx, false, bashPayloadJSON("", command), e.hookArgs("pre-tool-use-bash", state))
+		if err := silent("read-only command "+command, res, err); err != nil {
+			return err
+		}
+	}
+	for _, command := range mixedCommands {
+		if _, err := e.bashCall(ctx, state, "", command); err != nil {
+			return fmt.Errorf("mixed command %q: %w", command, err)
+		}
+	}
+
+	sh, err := lookShell()
+	if err != nil {
+		return err
+	}
+	stamp := `{"hookSpecificOutput":{"permissionDecision":"allow","updatedInput":{"command":"ls -l"}}}`
+	script := filepath.Join(e.Dir, "readonly-upstream.sh")
+	if err := os.WriteFile(script, []byte("#!"+sh+"\ncat >/dev/null\nprintf '%s' '"+stamp+"'\n"), 0o700); err != nil {
+		return err
+	}
+	res, err := e.hook(ctx, false, bashPayloadJSON("", "date"), e.hookArgs("pre-tool-use-bash", state, "--compose", script, "--upstream-timeout", "5s"))
+	if err != nil {
+		return err
+	}
+	if res.Code != 0 || res.Stdout != stamp {
+		return fmt.Errorf("a read-only command after an upstream did not yield the upstream's bytes: exit %d stdout %.200q", res.Code, res.Stdout)
+	}
+	return nil
+}
+
+// bashPayloadJSON is the payload of one Bash call of the main session or, when
+// agentID is set, of that subagent.
+func bashPayloadJSON(agentID, command string) string {
+	payload := map[string]any{
+		"hook_event_name": "PreToolUse", "session_id": "live-s1", "tool_name": "Bash",
+		"tool_input": map[string]any{"command": command},
+	}
+	if agentID != "" {
+		payload["agent_id"], payload["agent_type"] = agentID, defBuilder
+	}
+	raw, _ := json.Marshal(payload)
+	return string(raw)
 }
 
 // hookArgs is a hook invocation in enforce mode. rest follows the event
