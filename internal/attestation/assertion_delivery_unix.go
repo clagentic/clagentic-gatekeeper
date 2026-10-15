@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build unix
 
 package attestation
 
@@ -16,23 +16,42 @@ var (
 	errFileTooLarge = errors.New("file is too large")
 )
 
+const openFileFlags = syscall.O_RDONLY | syscall.O_NOFOLLOW | syscall.O_NONBLOCK | syscall.O_CLOEXEC
+
+// afterDirValidated runs between validating the delivery directory handle and
+// opening the assertion relative to it. It is nil outside tests, where it
+// stands in for an attacker who swaps the path in that window.
+var afterDirValidated func()
+
 // readFileNoFollow opens p through one handle that never follows a link at the
 // final component and never blocks, checks that same handle is a regular file,
 // and reads at most max bytes. Checking the handle rather than the path means
 // what is validated is what is read. It returns the handle's FileInfo.
 func readFileNoFollow(p string, max int) ([]byte, os.FileInfo, error) {
-	fd, err := syscall.Open(p, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
-	if errors.Is(err, syscall.ENOENT) {
+	fd, err := syscall.Open(p, openFileFlags, 0)
+	return readOpened(fd, err, p, max)
+}
+
+// readFileAt is readFileNoFollow for name inside the directory open as dir:
+// the lookup is relative to that handle, so a rename of the directory's path
+// cannot redirect it.
+func readFileAt(dir *os.File, name string, max int) ([]byte, os.FileInfo, error) {
+	fd, err := openAt(dir, name)
+	return readOpened(fd, err, name, max)
+}
+
+func readOpened(fd int, openErr error, name string, max int) ([]byte, os.FileInfo, error) {
+	if errors.Is(openErr, syscall.ENOENT) {
 		return nil, nil, errFileMissing
 	}
-	if errors.Is(err, syscall.ELOOP) {
+	if errors.Is(openErr, syscall.ELOOP) {
 		// ELOOP is what O_NOFOLLOW reports for a symlink.
 		return nil, nil, errFileLink
 	}
-	if err != nil {
-		return nil, nil, &os.PathError{Op: "open", Path: p, Err: err}
+	if openErr != nil {
+		return nil, nil, &os.PathError{Op: "open", Path: name, Err: openErr}
 	}
-	f := os.NewFile(uintptr(fd), p)
+	f := os.NewFile(uintptr(fd), name)
 	defer f.Close()
 	fi, err := f.Stat()
 	if err != nil {
@@ -51,30 +70,51 @@ func readFileNoFollow(p string, max int) ([]byte, os.FileInfo, error) {
 	return data, fi, nil
 }
 
+// openDeliveryDir opens the delivery directory without following a link at
+// its final component and returns the handle. Every later check and read goes
+// through this handle, never through the path again.
+func openDeliveryDir(dir string) (*os.File, *AssertionError) {
+	fd, err := syscall.Open(dir, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
+	switch {
+	case err == nil:
+		return os.NewFile(uintptr(fd), dir), nil
+	case errors.Is(err, syscall.ENOENT):
+		return nil, refuseAssertion(CodeDirMissing, "%s names a directory that does not exist", IdentityDirEnv)
+	case errors.Is(err, syscall.ELOOP):
+		return nil, refuseAssertion(CodeDirUnsafe, "the delivery directory is a symlink")
+	case errors.Is(err, syscall.ENOTDIR):
+		// O_DIRECTORY|O_NOFOLLOW reports a symlink and a plain file alike.
+		if li, lerr := os.Lstat(dir); lerr == nil && li.Mode()&os.ModeSymlink != 0 {
+			return nil, refuseAssertion(CodeDirUnsafe, "the delivery directory is a symlink")
+		}
+		return nil, refuseAssertion(CodeDirMissing, "%s does not name a directory", IdentityDirEnv)
+	}
+	return nil, refuseAssertion(CodeDirUnsafe, "cannot inspect the delivery directory: %v", err)
+}
+
 // readDelivery applies the delivery checks of the contract's section 6 and
 // returns the assertion bytes without the one optional trailing newline.
 func readDelivery(dir string) ([]byte, *AssertionError) {
 	if !path.IsAbs(dir) {
 		return nil, refuseAssertion(CodeDirMissing, "%s is not an absolute path", IdentityDirEnv)
 	}
-	info, err := os.Lstat(dir)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, refuseAssertion(CodeDirMissing, "%s names a directory that does not exist", IdentityDirEnv)
+	d, aerr := openDeliveryDir(dir)
+	if aerr != nil {
+		return nil, aerr
 	}
+	defer d.Close()
+	info, err := d.Stat()
 	if err != nil {
 		return nil, refuseAssertion(CodeDirUnsafe, "cannot inspect the delivery directory: %v", err)
 	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return nil, refuseAssertion(CodeDirUnsafe, "the delivery directory is a symlink")
-	}
-	if !info.IsDir() {
-		return nil, refuseAssertion(CodeDirMissing, "%s does not name a directory", IdentityDirEnv)
-	}
 	st, ok := info.Sys().(*syscall.Stat_t)
-	if !ok || int(st.Uid) != os.Geteuid() || info.Mode().Perm()&0o077 != 0 {
+	if !ok || int(st.Uid) != os.Geteuid() || info.Mode().Perm() != 0o700 {
 		return nil, refuseAssertion(CodeDirUnsafe, "the delivery directory is not owned by this user with mode 0700")
 	}
-	data, _, err := readFileNoFollow(path.Join(dir, AssertionFile), maxAssertionFileBytes)
+	if afterDirValidated != nil {
+		afterDirValidated()
+	}
+	data, _, err := readFileAt(d, AssertionFile, maxAssertionFileBytes)
 	switch {
 	case errors.Is(err, errFileMissing):
 		return nil, refuseAssertion(CodeFileMissing, "%s is not in the delivery directory", AssertionFile)
