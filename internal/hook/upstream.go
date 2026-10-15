@@ -6,9 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -64,6 +67,12 @@ func UpstreamBudget(d time.Duration) time.Duration {
 // the deadline, and a signal death, which is reported as exit 1: the runtime
 // treats that as a failed hook that does not block.
 func RunUpstream(exe string, payload []byte, budget time.Duration) (Result, error) {
+	return runUpstreamStream(exe, bytes.NewReader(payload), budget)
+}
+
+// runUpstreamStream is RunUpstream with the stdin streamed from in rather than
+// held in memory.
+func runUpstreamStream(exe string, in io.Reader, budget time.Duration) (Result, error) {
 	if err := CheckUpstream(exe); err != nil {
 		return Result{}, err
 	}
@@ -71,17 +80,89 @@ func RunUpstream(exe string, payload []byte, budget time.Duration) (Result, erro
 	ctx, cancel := context.WithTimeout(context.Background(), budget)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, exe)
-	cmd.Stdin = bytes.NewReader(payload)
+	cmd.Stdin = in
 	cmd.WaitDelay = upstreamWaitDelay
+	// Whether this process killed the upstream is recorded where the kill happens:
+	// on Windows a killed process reports an ordinary non-negative exit code, so
+	// the exit code alone cannot tell a deadline kill from a verdict.
+	var killed atomic.Bool
+	cmd.Cancel = func() error {
+		err := cmd.Process.Kill()
+		if err == nil {
+			killed.Store(true)
+		}
+		return err
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
 	res := Result{Stdout: stdout.Bytes(), Stderr: stderr.Bytes()}
-	res, err = upstreamOutcome(res, err, ctx.Err() != nil)
+	res, err = classifyUpstream(res, err, ctx.Err() != nil, killed.Load())
 	if err != nil {
 		return Result{}, fmt.Errorf("composed hook %s: %w", exe, err)
 	}
 	return res, nil
+}
+
+// classifyUpstream is upstreamOutcome with the one fact the exit code cannot
+// carry on every GOOS: killed, that the process was killed by the deadline. A
+// killed process has no verdict whatever code it reports.
+func classifyUpstream(res Result, runErr error, expired, killed bool) (Result, error) {
+	if killed {
+		return Result{}, errors.New("no verdict before the deadline")
+	}
+	return upstreamOutcome(res, runErr, expired)
+}
+
+// capturedStdin passes the stdin through to the upstream while keeping a bounded
+// copy for gatekeeper's own part, so memory stays bounded however much arrives.
+type capturedStdin struct {
+	r     io.Reader
+	limit int
+	// mu guards the rest: the copy into the upstream's stdin can outlive Run when
+	// the upstream exits without reading and the source never ends.
+	mu  sync.Mutex
+	buf bytes.Buffer
+	eof bool
+	err error
+}
+
+// Read streams from the source. A read error is recorded and ends the stream as
+// an EOF: the upstream still gets what arrived, as it did when stdin was read
+// whole first.
+func (c *capturedStdin) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if room := c.limit - c.buf.Len(); n > 0 && room > 0 {
+		c.buf.Write(p[:min(n, room)])
+	}
+	switch {
+	case err == io.EOF:
+		c.eof = true
+	case err != nil:
+		c.err = err
+		err = io.EOF
+	}
+	return n, err
+}
+
+// RunComposed runs the composed hook on the raw stdin in, streamed to it before
+// any cap, parse or tool-name check, and returns gatekeeper's bounded copy of what
+// was read. raw is one byte over maxPayloadBytes at most, so HandleComposed
+// refuses an oversized payload without it being held. It is nil when the stdin was
+// not read to its end (the upstream stopped reading, or the read failed), because
+// a prefix of a payload must never be parsed as the payload; readErr is the read
+// failure if there was one.
+func RunComposed(exe string, in io.Reader, budget time.Duration) (raw []byte, up Result, upErr, readErr error) {
+	c := &capturedStdin{r: in, limit: maxPayloadBytes + 1}
+	up, upErr = runUpstreamStream(exe, c, budget)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.eof {
+		raw = c.buf.Bytes()
+	}
+	return raw, up, upErr, c.err
 }
 
 // upstreamOutcome classifies how the upstream ended. runErr is what Run

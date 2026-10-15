@@ -121,12 +121,12 @@ type Result struct {
 // the result of the process unless HandleComposed adds its one statement.
 func (h *ClaudeCode) Handle(event string, in io.Reader) Result {
 	if event == EventPreToolUseBash && h.Compose != "" {
-		// The upstream gets the whole stdin, before any size cap or parse.
-		raw, err := io.ReadAll(in)
-		if err != nil {
-			h.Log.Printf("%s: reading the payload: %v", event, err)
+		// The upstream gets the whole stdin, streamed before any size cap or parse;
+		// raw is gatekeeper's bounded copy.
+		raw, up, upErr, readErr := RunComposed(h.Compose, in, h.UpstreamTimeout)
+		if readErr != nil {
+			h.Log.Printf("%s: reading the payload: %v", event, readErr)
 		}
-		up, upErr := RunUpstream(h.Compose, raw, h.UpstreamTimeout)
 		if upErr != nil {
 			h.Log.Printf("%s: %v", event, upErr)
 		}
