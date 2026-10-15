@@ -32,7 +32,7 @@ func TestUnsafeDeliveryDirIsNotDelivered(t *testing.T) {
 		if err := h.hook.Store.Put(testSession, "", rec); err != nil {
 			t.Fatal(err)
 		}
-		res := h.fire(EventPreToolUseBash, bashPayload("", "", "echo hi"))
+		res := h.fire(EventPreToolUseBash, bashPayload("", "", programCommand))
 		if len(res.Stdout) != 0 || res.ExitCode != 0 {
 			t.Errorf("%q: delivered or failed: stdout %q exit %d", name, res.Stdout, res.ExitCode)
 		}

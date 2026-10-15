@@ -28,8 +28,11 @@ type retryable struct{ error }
 type runtimeSetup struct {
 	cli      string
 	settings string
-	work     string
-	agents   string
+	// bare is the settings exactly as hooks-install wrote them: the hook and its
+	// one allow rule, and no rule for any command a shape runs.
+	bare   string
+	work   string
+	agents string
 }
 
 // runtimeShape is one runtime shape: a prompt, and a check of what the run
@@ -102,11 +105,57 @@ func (e *Env) runtimeShapes() []shape {
 				return nil
 			}},
 	}
-	out := make([]shape, 0, len(specs))
+	out := make([]shape, 0, len(specs)+1)
 	for _, s := range specs {
 		out = append(out, shape{name: s.name, run: func(ctx context.Context) error { return e.runtimeShape(ctx, s, nil) }})
 	}
+	out = append(out, shape{name: readOnlyShapeName, run: e.shapeRuntimeReadOnly})
 	return out
+}
+
+const readOnlyShapeName = "runtime-claude-code/read-only-commands-no-new-prompt"
+
+// readOnlyFixture is the content of the file the read-only shape reads, so the
+// stream shows the commands ran and were not merely attempted.
+const readOnlyFixture = "gatekeeper-readonly-fixture-7f3a91"
+
+// shapeRuntimeReadOnly runs the common read-only commands in a registered
+// enforce session with no allow rule but the one hooks-install writes. The
+// delivery statement would make each of them a compound command, which the
+// runtime's own read-only approval does not cover, so a prompt (a recorded
+// denial in a headless run) means the hook rewrote a command that does not need
+// the identity.
+func (e *Env) shapeRuntimeReadOnly(ctx context.Context) error {
+	setup, err := e.runtimeSetup(ctx)
+	if err != nil {
+		return err
+	}
+	fixture := filepath.Join(setup.work, "readonly-fixture.txt")
+	if err := os.WriteFile(fixture, []byte(readOnlyFixture+"\n"), 0o600); err != nil {
+		return err
+	}
+	bare := *setup
+	bare.settings = setup.bare
+	prompt := driverPreamble + "Run these commands one at a time, each exactly as written: " +
+		"Step 1: date. Step 2: pwd. Step 3: ls. Step 4: cat readonly-fixture.txt. " +
+		"Step 5: head -n 1 readonly-fixture.txt. Step 6: wc -l readonly-fixture.txt. " +
+		"Step 7: ls | wc -l. Step 8: echo hello. Then reply with the word done."
+	var last error
+	for attempt := 1; attempt <= e.opts.RuntimeAttempts; attempt++ {
+		run, err := e.invokeRuntime(ctx, &bare, prompt, nil)
+		if err != nil {
+			return err
+		}
+		if len(run.denials) > 0 {
+			return fmt.Errorf("a read-only command prompted (the hook must leave it alone): %.300s", strings.Join(run.denials, " | "))
+		}
+		if !strings.Contains(run.stream, readOnlyFixture) {
+			last = fmt.Errorf("the read-only commands did not run (the fixture file was never printed)")
+			continue
+		}
+		return nil
+	}
+	return last
 }
 
 func (e *Env) unruledMarker() string { return filepath.Join(e.Dir, "rt", "work", "unruled-marker") }
@@ -174,6 +223,14 @@ func (e *Env) prepareRuntime(ctx context.Context) (*runtimeSetup, error) {
 	if res.Code != 0 {
 		return nil, fmt.Errorf("hooks-install: exit %d: %.300s", res.Code, res.Stderr)
 	}
+	bare := filepath.Join(rtDir, "settings-bare.json")
+	raw, err := os.ReadFile(settings)
+	if err != nil {
+		return nil, err
+	}
+	if err := writeOwnerOnly(bare, raw); err != nil {
+		return nil, err
+	}
 	// The commands the shapes run are ruled; the one the unruled shape runs is not.
 	if err := addAllowRules(settings, "Bash("+printenvCommand+")", "Bash(echo *)", "Bash(sleep *)", "Bash("+e.Bin+" mint *)"); err != nil {
 		return nil, err
@@ -186,7 +243,7 @@ func (e *Env) prepareRuntime(ctx context.Context) (*runtimeSetup, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &runtimeSetup{cli: cli, settings: settings, work: work, agents: string(agents)}, nil
+	return &runtimeSetup{cli: cli, settings: settings, bare: bare, work: work, agents: string(agents)}, nil
 }
 
 // addAllowRules appends to permissions.allow in a settings file, keeping every

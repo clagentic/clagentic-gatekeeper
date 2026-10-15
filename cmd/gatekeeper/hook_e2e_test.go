@@ -238,7 +238,7 @@ func TestHookFailsOpenWithoutAnIssuer(t *testing.T) {
 	state := filepath.Join(t.TempDir(), "state")
 	sock := filepath.Join(t.TempDir(), "absent.sock")
 	args := []string{"hook", "claude-code", "pre-tool-use-bash", "--socket", sock, "--state-dir", state, "--mode", "enforce"}
-	payload := `{"hook_event_name":"PreToolUse","session_id":"s1","tool_name":"Bash","tool_input":{"command":"ls"}}`
+	payload := `{"hook_event_name":"PreToolUse","session_id":"s1","tool_name":"Bash","tool_input":{"command":"make build"}}`
 	r := runBinary(t, payload, bin, args...)
 	if r.code != 0 || r.stdout != "" {
 		t.Fatalf("%+v", r)
@@ -309,7 +309,7 @@ func TestEveryHookReturnPathFailsOpen(t *testing.T) {
 		"issuer absent":       {"claude-code", "subagent-start", "--state-dir", state, "--socket", filepath.Join(state, "absent.sock")},
 	}
 	for name, args := range cases {
-		for _, stdin := range []string{`{"session_id":"s1","tool_name":"Bash","tool_input":{"command":"ls"}}`, "not json", ""} {
+		for _, stdin := range []string{`{"session_id":"s1","tool_name":"Bash","tool_input":{"command":"make build"}}`, "not json", ""} {
 			var out, errb bytes.Buffer
 			if code := runHook(args, strings.NewReader(stdin), &out, &errb); code != 0 || out.Len() != 0 {
 				t.Errorf("%s (stdin %q): code %d stdout %q", name, stdin, code, out.String())

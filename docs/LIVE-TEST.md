@@ -45,7 +45,7 @@ One JSON object per line on stdout, as each shape finishes, then a summary:
 ```
 {"shape":"issuer/session-direct-client","status":"pass"}
 {"shape":"runtime-claude-code/main-headless-session","status":"skip","reason":"the runtime CLI was not found; ..."}
-{"summary":{"fail":0,"pass":50,"skip":10}}
+{"summary":{"fail":0,"pass":51,"skip":11}}
 ```
 
 `status` is `pass`, `fail` or `skip`; `reason` explains a fail or a skip. The
@@ -93,6 +93,7 @@ shapes of the runtime to the real binary, as separate processes:
 |-------|----------------|
 | `adapter-claude-code/event-sequence-payload-driven` | session start, subagent start (one through a wrapper), per-agent rewrite with no permission decision and the original command byte for byte, a non-Bash tool left alone, subagent stop removing only its own directory. |
 | `adapter-claude-code/compose-synthetic-upstream` | Composed after an upstream hook the harness writes itself: an allowing upstream gets the statement in front of its command; a denying one passes through byte for byte. |
+| `adapter-claude-code/read-only-commands-not-rewritten-mixed-still-delivered` | Read-only commands (closed set, `docs/RUNTIME-HOOKS.md`) get no reply at all, as the other no-rewrite paths do; mixed commands (a read-only utility next to a program, a substitution, a write redirection or `printenv`) get the statement in front of their exact text; composed, a read-only command yields the upstream's bytes. |
 
 Mint, always run. These run the real `gatekeeper mint` as a separate process,
 resolving identity from an assertion this run's issuer issued and delivered
@@ -145,6 +146,7 @@ nothing else:
 | `runtime-claude-code/two-concurrent-subagents` | Two concurrent subagents and the main session each get a different one. |
 | `runtime-claude-code/compound-command` | A compound command is delivered the variable and not denied. |
 | `runtime-claude-code/unruled-command-still-prompts` | A command no rule covers is still denied, so the single allow rule opened nothing else. |
+| `runtime-claude-code/read-only-commands-no-new-prompt` | With only the rule `hooks-install` writes (no rule for any command the shape runs), `date`, `pwd`, `ls`, `cat`, `head`, `wc`, `ls \| wc -l` and `echo` run with no permission denial, and the file they read is printed. `compound-command` is the mixed counterpart: a read-only utility next to a program is still delivered the variable. |
 | `runtime-claude-code/foreground-subagent-mint/<configuration>` | A foreground subagent runs `mint`. With the assertion configured it mints from the assertion the hook delivered to that agent (an audit line is printed); with none it mints from the sidecar the runtime's environment selects and prints nothing else. |
 | `runtime-claude-code/background-subagent-mint/<configuration>` | The same for a background subagent. |
 

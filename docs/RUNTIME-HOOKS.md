@@ -113,7 +113,7 @@ accepted in place of `--socket`).
 |-------|--------|
 | `session-start` | `issue-session`. The definition is the payload's `agent_type` when the session runs under a harness agent; `--origin` comes from configuration. Records the delivery directory. Prints nothing (stdout of this event becomes model context). |
 | `subagent-start` | `issue-child` with the payload's `agent_type` and `agent_id`, parented on the session assertion. Prints nothing. |
-| `pre-tool-use-bash` | In enforce mode prefixes exactly one statement, `export CLAGENTIC_IDENTITY_DIR=<dir>; `, to the original command for the current `agent_id` (or the session when the payload has none). The original text follows byte for byte. No shell wrapper, no other variable, and `TMPDIR` is never touched. A command that already starts with the statement is left alone. If the agent has no directory yet (its start event never arrived), the first Bash call issues the child. |
+| `pre-tool-use-bash` | In enforce mode prefixes exactly one statement, `export CLAGENTIC_IDENTITY_DIR=<dir>; `, to the original command for the current `agent_id` (or the session when the payload has none). The original text follows byte for byte. No shell wrapper, no other variable, and `TMPDIR` is never touched. A command that already starts with the statement is left alone, and so is a command that provably cannot use the identity (see "Read-only commands are not rewritten"). If the agent has no directory yet (its start event never arrived), the first Bash call issues the child. |
 | `subagent-stop` | Removes the agent's delivery directory and record. The directory is removed only if it is named like an issuer-created directory, is a real directory owned by the user, and holds an assertion. |
 | `user-prompt-submit` | When `--refresh-below` is set and the session assertion has less than that left, asks for a new session under the same definition and records the new directory. The old directory is left for the issuer's reaper because a running command may still use it. |
 
@@ -139,6 +139,51 @@ duplicates it and never edits another rule; `--remove` deletes the hooks and
 that rule and nothing else. **A registrar that does not use `hooks-install` must
 add the rule itself**; without it a rewritten call prompts. The prompt and
 no-prompt behaviour is proven in the live run, not by the unit tests.
+
+### Read-only commands are not rewritten
+
+The leading `export` statement makes every command it is put in front of a
+compound command. On Claude Code the runtime's own read-only approval (`date`,
+`ls`, `cat` and similar run with no rule) does not apply to a compound command,
+so a rewritten `date` prompts unless an operator rule covers it. Rather than
+write allow rules for a command set (a permission-behaviour change on every
+registered host), the hook leaves such a command alone: the outcome is exactly
+that of the other no-rewrite paths (empty output, exit 0, no decision; composed,
+the upstream's bytes unchanged), so the runtime's own flow decides as it would
+without gatekeeper.
+
+The rule is closed, not a list of commands that look harmless. A command is left
+alone only when all of these hold; any doubt rewrites it (fail toward delivery):
+
+- it is one or more simple commands joined by `;`, `&&`, `||` or `|`;
+- each simple command's first word is, unquoted and by bare name, one of
+  `cat`, `date`, `echo`, `grep`, `head`, `ls`, `pwd`, `tail`, `wc`. These only
+  read files and print; none has an option that executes another program or
+  writes a file, so none can run a minting tool or hand it the environment.
+  `date` takes only display options and `+format` operands (never one that sets
+  the clock);
+- no word expands anything: no `$` or backquote outside single quotes (no
+  variable, no command substitution), no `(` `)` (no subshell, no process
+  substitution), no backslash, no unquoted `*` `?` `[`, no comment, newline or
+  control character, no background `&`;
+- no redirection except the exact words `2>/dev/null`, `>/dev/null` and `2>&1`;
+- no word contains `/proc` or `environ`, the file path by which a reader could
+  still see a delivered variable.
+
+`printenv` is deliberately not in the set: the variable lives in the
+environment, so printing it is a use of the identity. `env`, `find`, `xargs`,
+`sh`, `sort`, `sed`, `awk`, `tee`, `git`, `make` and every other program run
+the rewrite. A command such as `date; gatekeeper mint ...` or
+`echo $(gatekeeper mint ...)` is a mixed command and is rewritten.
+
+The decision is made on the command that will run: composed, that is the
+upstream's rewritten command when it gave one. The set trusts that the names
+resolve to the system utilities; a shell function or alias that shadows one of
+them is outside what a hook can see.
+
+The live run proves both sides (`docs/LIVE-TEST.md`): the common read-only
+commands in an enforce session with only the registration's own rule do not
+prompt, and a mixed command is still delivered the directory.
 
 The wildcard rule does not admit runtime-determined values (coordinator probe):
 a model-written `export CLAGENTIC_IDENTITY_DIR=` whose value contains a command

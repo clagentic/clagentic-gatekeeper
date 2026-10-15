@@ -340,6 +340,12 @@ func (h *ClaudeCode) prefix(p Payload, command string) (rewritten, decision stri
 	if AlreadyDelivers(command) {
 		return "", "already-delivered", nil
 	}
+	// No rewrite, so the call stays a simple command the runtime's own read-only
+	// approval still covers. This is the same no-decision outcome as any other
+	// path that leaves the command alone.
+	if CannotUseIdentity(command) {
+		return "", "identity-not-needed", nil
+	}
 	var rec Record
 	if p.AgentID != "" {
 		var d string

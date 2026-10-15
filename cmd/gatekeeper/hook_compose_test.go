@@ -14,7 +14,7 @@ import (
 	"github.com/clagentic/clagentic-gatekeeper/internal/hook"
 )
 
-const bashCall = `{"session_id":"s1","tool_name":"Bash","tool_input":{"command":"ls"}}`
+const bashCall = `{"session_id":"s1","tool_name":"Bash","tool_input":{"command":"make build"}}`
 
 // upstreamScript writes an executable that discards its stdin and runs body.
 func upstreamScript(t *testing.T, body string) string {

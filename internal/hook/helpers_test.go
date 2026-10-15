@@ -199,6 +199,12 @@ func (h *harness) log() string {
 
 const testSession = "sess-0001"
 
+// programCommand is the command the delivery tests send when the command itself
+// does not matter. It runs a program, so it is outside the closed read-only set
+// and is always rewritten; a command such as ls would be skipped and make a test
+// of any "no delivery" path pass without testing that path.
+const programCommand = "make build"
+
 func bashPayload(agentID, agentType, command string) map[string]any {
 	p := map[string]any{
 		"hook_event_name": "PreToolUse", "session_id": testSession, "tool_name": "Bash",

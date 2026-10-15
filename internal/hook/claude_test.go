@@ -100,7 +100,7 @@ func TestRewriteAddsExactlyOneExportStatementAndKeepsTheCommandByteForByte(t *te
 	h := newHarness(t, ModeEnforce)
 	startSession(t, h, "")
 	commands := []string{
-		"echo a; echo b",
+		"echo a; make b",
 		"make build && make test",
 		"cat file | sort | uniq -c",
 		"(cd /tmp && ls)",
@@ -139,7 +139,7 @@ func TestUnrewrittenCallsReturnNoPermissionDecision(t *testing.T) {
 	h := newHarness(t, ModeEnforce)
 	cases := map[string]Result{}
 	// No session yet.
-	cases["no session"] = h.fire(EventPreToolUseBash, bashPayload("", "", "ls"))
+	cases["no session"] = h.fire(EventPreToolUseBash, bashPayload("", "", programCommand))
 	startSession(t, h, "")
 	cases["not a bash tool"] = h.fire(EventPreToolUseBash, map[string]any{
 		"session_id": testSession, "tool_name": "Read", "tool_input": map[string]any{"file_path": "/x"},
@@ -152,10 +152,10 @@ func TestUnrewrittenCallsReturnNoPermissionDecision(t *testing.T) {
 	})
 	cases["already delivered"] = h.fire(EventPreToolUseBash, bashPayload("", "", "export "+EnvDir+"=/x; ls"))
 	cases["agent without type"] = h.fire(EventPreToolUseBash, map[string]any{
-		"session_id": testSession, "tool_name": "Bash", "agent_id": "a1", "tool_input": map[string]any{"command": "ls"},
+		"session_id": testSession, "tool_name": "Bash", "agent_id": "a1", "tool_input": map[string]any{"command": programCommand},
 	})
 	cases["unsafe session id"] = h.fire(EventPreToolUseBash, map[string]any{
-		"session_id": "../x", "tool_name": "Bash", "tool_input": map[string]any{"command": "ls"},
+		"session_id": "../x", "tool_name": "Bash", "tool_input": map[string]any{"command": programCommand},
 	})
 	for name, res := range cases {
 		if len(res.Stdout) != 0 || res.ExitCode != 0 {
@@ -195,7 +195,7 @@ func TestTwoConcurrentSubagentsEachGetTheirOwnDirectory(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			res := h.fire(EventPreToolUseBash, bashPayload(a.id, a.typ, "echo hi"))
+			res := h.fire(EventPreToolUseBash, bashPayload(a.id, a.typ, programCommand))
 			command, _, err := commandOf(res)
 			if err != nil {
 				t.Errorf("agent %q: %v", a.id, err)
@@ -236,13 +236,13 @@ func TestTwoConcurrentSubagentsEachGetTheirOwnDirectory(t *testing.T) {
 func TestFirstBashCallIssuesTheChildWhenStartWasMissed(t *testing.T) {
 	h := newHarness(t, ModeEnforce)
 	startSession(t, h, "")
-	res := h.fire(EventPreToolUseBash, bashPayload("late-agent", "example-builder", "ls"))
+	res := h.fire(EventPreToolUseBash, bashPayload("late-agent", "example-builder", programCommand))
 	command, _ := rewrittenCommand(t, res)
 	if dirOf(t, command) == "" || len(h.fake.childRequests()) != 1 {
 		t.Fatalf("children %+v", h.fake.childRequests())
 	}
 	// A second call reuses the directory.
-	res = h.fire(EventPreToolUseBash, bashPayload("late-agent", "example-builder", "ls"))
+	res = h.fire(EventPreToolUseBash, bashPayload("late-agent", "example-builder", programCommand))
 	again, _ := rewrittenCommand(t, res)
 	if dirOf(t, again) != dirOf(t, command) || len(h.fake.childRequests()) != 1 {
 		t.Fatalf("a second call issued again: %d children", len(h.fake.childRequests()))
@@ -261,7 +261,7 @@ func TestPreToolUseWithOnlyAnAgentIDFindsTheDirectoryIssuedAtStart(t *testing.T)
 	}
 	res := h.fire(EventPreToolUseBash, map[string]any{
 		"session_id": testSession, "tool_name": "Bash", "agent_id": "agent-one",
-		"tool_input": map[string]any{"command": "ls"},
+		"tool_input": map[string]any{"command": programCommand},
 	})
 	command, _ := rewrittenCommand(t, res)
 	if dirOf(t, command) != issued.Dir {
@@ -320,7 +320,7 @@ func TestRacingCallsOfOneAgentConvergeOnOneDirectory(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			res := h.fire(EventPreToolUseBash, bashPayload("racer", "example-builder", "ls"))
+			res := h.fire(EventPreToolUseBash, bashPayload("racer", "example-builder", programCommand))
 			command, _, err := commandOf(res)
 			if err != nil {
 				t.Errorf("racer: %v", err)
@@ -350,7 +350,7 @@ func TestSubagentStopRemovesTheDirectoryAndTheRecord(t *testing.T) {
 	h := newHarness(t, ModeEnforce)
 	startSession(t, h, "")
 	startAgent(t, h, "agent-one", "example-builder")
-	command, _ := rewrittenCommand(t, h.fire(EventPreToolUseBash, bashPayload("agent-one", "example-builder", "ls")))
+	command, _ := rewrittenCommand(t, h.fire(EventPreToolUseBash, bashPayload("agent-one", "example-builder", programCommand)))
 	dir := dirOf(t, command)
 	if _, err := os.Stat(dir); err != nil {
 		t.Fatal(err)
@@ -368,7 +368,7 @@ func TestSubagentStopRemovesTheDirectoryAndTheRecord(t *testing.T) {
 	}
 	// A stopped agent's old path is never handed out again: a resumed agent gets
 	// a fresh child, not the removed directory.
-	command, _ = rewrittenCommand(t, h.fire(EventPreToolUseBash, bashPayload("agent-one", "example-builder", "ls")))
+	command, _ = rewrittenCommand(t, h.fire(EventPreToolUseBash, bashPayload("agent-one", "example-builder", programCommand)))
 	if dirOf(t, command) == dir {
 		t.Fatal("the removed directory was delivered again")
 	}
@@ -385,7 +385,7 @@ func TestSubagentStopLeavesTheSessionAndSiblingsAlone(t *testing.T) {
 		if id != "" {
 			typ = "example-builder"
 		}
-		res := h.fire(EventPreToolUseBash, bashPayload(id, typ, "ls"))
+		res := h.fire(EventPreToolUseBash, bashPayload(id, typ, programCommand))
 		if len(res.Stdout) == 0 {
 			t.Errorf("%q lost its delivery", id)
 		}
@@ -487,7 +487,7 @@ func TestExpiredAssertionIsNotDelivered(t *testing.T) {
 	h := newHarness(t, ModeEnforce)
 	startSession(t, h, "")
 	h.hook.Now = func() time.Time { return time.Now().Add(2 * time.Hour) }
-	if res := h.fire(EventPreToolUseBash, bashPayload("", "", "ls")); len(res.Stdout) != 0 {
+	if res := h.fire(EventPreToolUseBash, bashPayload("", "", programCommand)); len(res.Stdout) != 0 {
 		t.Fatalf("an expired assertion was delivered: %q", res.Stdout)
 	}
 }
@@ -496,7 +496,7 @@ func TestWarnModeRewritesNothingAndCapturesShapesWithoutValues(t *testing.T) {
 	h := newHarness(t, ModeWarn)
 	startSession(t, h, "example-builder")
 	startAgent(t, h, "agent-one", "example-builder")
-	secret := "echo super-secret-value-12345"
+	secret := "make super-secret-value-12345"
 	res := h.fire(EventPreToolUseBash, bashPayload("agent-one", "example-builder", secret))
 	if len(res.Stdout) != 0 {
 		t.Fatalf("warn mode rewrote a call: %q", res.Stdout)
@@ -544,11 +544,11 @@ func TestIssuerFailuresNeverBlockOrPrint(t *testing.T) {
 	if !strings.Contains(h.log(), "definition_unknown") {
 		t.Fatalf("the failure was not logged: %q", h.log())
 	}
-	if res := h.fire(EventPreToolUseBash, bashPayload("", "", "ls")); len(res.Stdout) != 0 || res.ExitCode != 0 {
+	if res := h.fire(EventPreToolUseBash, bashPayload("", "", programCommand)); len(res.Stdout) != 0 || res.ExitCode != 0 {
 		t.Fatalf("a call after a failed session start: %+v", res)
 	}
 	startAgent(t, h, "a1", "example-builder")
-	if res := h.fire(EventPreToolUseBash, bashPayload("a1", "example-builder", "ls")); len(res.Stdout) != 0 || res.ExitCode != 0 {
+	if res := h.fire(EventPreToolUseBash, bashPayload("a1", "example-builder", programCommand)); len(res.Stdout) != 0 || res.ExitCode != 0 {
 		t.Fatalf("a call by an agent with no session: %+v", res)
 	}
 }
@@ -557,7 +557,7 @@ func TestIssuerDownIsLoggedAndHarmless(t *testing.T) {
 	h := newHarness(t, ModeEnforce)
 	h.hook.Issuer = identity.Client{Socket: filepath.Join(t.TempDir(), "absent.sock"), Timeout: time.Second}
 	startSession(t, h, "")
-	if res := h.fire(EventPreToolUseBash, bashPayload("", "", "ls")); len(res.Stdout) != 0 || res.ExitCode != 0 {
+	if res := h.fire(EventPreToolUseBash, bashPayload("", "", programCommand)); len(res.Stdout) != 0 || res.ExitCode != 0 {
 		t.Fatalf("%+v", res)
 	}
 	if !strings.Contains(h.log(), "absent.sock") {
