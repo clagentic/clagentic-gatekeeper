@@ -22,6 +22,8 @@ type Settings struct {
 	DelegableRoles []string
 	SpawnRoot      string
 	SessionTTL     time.Duration
+	// HelperExe is the path of the gatekeeper client binary; see Issuer.HelperExe.
+	HelperExe string
 }
 
 // NewIssuer validates s, verifies every trust root it names (signing key,
@@ -92,7 +94,7 @@ func NewIssuer(s Settings) (*Issuer, error) {
 		Issuer: issuer, Keys: keys, Defs: defs, Dirs: dirs,
 		Registry: NewRegistry(), Proc: ReadProc, Now: time.Now,
 		RuntimeRoles:   s.RuntimeRoles,
-		DelegableRoles: s.DelegableRoles, SessionTTL: ttl,
+		DelegableRoles: s.DelegableRoles, SessionTTL: ttl, HelperExe: s.HelperExe,
 	}, nil
 }
 

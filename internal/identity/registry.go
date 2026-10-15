@@ -7,7 +7,9 @@ import (
 	"time"
 )
 
-// issuedTo records which process an assertion was issued to.
+// issuedTo records which runtime process an assertion was issued to: the
+// process that owns the session, which for a request made by a hook or the CLI
+// is the runtime above it (bindRuntime), not the transient requester.
 type issuedTo struct {
 	// uid is the SO_PEERCRED uid, the only credential a grant may rest on; pid
 	// and startTime narrow a grant further but never widen it.
@@ -23,8 +25,8 @@ type issuedTo struct {
 // Registry remembers, in memory, the process each live assertion went to, so
 // issue-child can tie a parent token to the pid that asks for a child. It is
 // deliberately not persisted: after a restart a holder asks for a new
-// session, which keeps the pid binding from outliving the process it was made
-// for.
+// session, which keeps the runtime binding from outliving the process it was
+// made for.
 type Registry struct {
 	mu      sync.Mutex
 	entries map[string]issuedTo

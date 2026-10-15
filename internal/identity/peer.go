@@ -33,6 +33,12 @@ type ProcInfo struct {
 	// A process that exec-replaces itself keeps its pid and start time but gets
 	// a different file here.
 	ExeDev, ExeIno uint64
+	// PPID is the parent pid the kernel reported, bracketed like StartTime.
+	PPID int32
+	// UID is the effective uid of the process. HasUID is false when the reader
+	// could not supply it; ancestry binding treats that as a refusal.
+	UID    uint32
+	HasUID bool
 }
 
 // ProcReader reads ProcInfo for a pid; the default reads /proc.
@@ -62,6 +68,32 @@ func (r realProc) readFile(pid int32, name string) ([]byte, error) {
 	return os.ReadFile(r.path(pid, name))
 }
 
+// uidOf reads the effective uid from /proc/<pid>/status. The owner of the
+// /proc/<pid> directory is not used because it is root for a non-dumpable
+// process whatever uid it runs as.
+func (r realProc) uidOf(pid int32) (uint32, error) {
+	raw, err := os.ReadFile(r.path(pid, "status"))
+	if err != nil {
+		return 0, err
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		rest, ok := strings.CutPrefix(line, "Uid:")
+		if !ok {
+			continue
+		}
+		fields := strings.Fields(rest)
+		if len(fields) < 2 {
+			break
+		}
+		n, err := strconv.ParseUint(fields[1], 10, 32)
+		if err != nil {
+			return 0, err
+		}
+		return uint32(n), nil
+	}
+	return 0, errors.New("no Uid line in /proc status")
+}
+
 func (r realProc) exeIdentity(pid int32) (uint64, uint64, error) {
 	fi, err := os.Stat(r.path(pid, "exe"))
 	if err != nil {
@@ -77,18 +109,26 @@ func (r realProc) exeIdentity(pid int32) (uint64, uint64, error) {
 // ReadProc is the /proc based ProcReader.
 func ReadProc(pid int32) (ProcInfo, error) { return readProcFrom(realProc{}, pid) }
 
+// uidSource is implemented by a procFiles that can report the effective uid.
+// It is separate so the base interface, and every fake of it, is unchanged.
+type uidSource interface {
+	uidOf(pid int32) (uint32, error)
+}
+
 // Nothing read here may decide a grant: roles, grade, human versus workload and
-// directory ownership follow the SO_PEERCRED uid. /proc feeds attribution and a
-// defense-in-depth start-time comparison only, and any failure to read it is a
-// refusal.
+// directory ownership follow the SO_PEERCRED uid. /proc feeds attribution, the
+// binding of an assertion to its runtime process (bindRuntime) and a start-time
+// comparison, and any failure to read it is a refusal.
 //
 // readProcFrom reads the start time before and after exe and cmdline. The
 // separate /proc reads are not atomic, so a peer that exits mid-read and whose
 // pid is reused would otherwise yield an exe from one process and a start time
 // from another; the same start time on both sides proves one process answered
-// every read, and a vanished pid fails a read outright.
+// every read, and a vanished pid fails a read outright. The parent pid is
+// bracketed the same way, so a parent that exits mid-read (and reparents the
+// process) is refused rather than read half old, half new.
 func readProcFrom(fs procFiles, pid int32) (ProcInfo, error) {
-	before, err := startTimeOf(fs, pid)
+	before, beforePPID, err := statOf(fs, pid)
 	if err != nil {
 		return ProcInfo{}, err
 	}
@@ -104,23 +144,62 @@ func readProcFrom(fs procFiles, pid int32) (ProcInfo, error) {
 	if err != nil {
 		return ProcInfo{}, fmt.Errorf("read cmdline of pid %d: %w", pid, err)
 	}
-	after, err := startTimeOf(fs, pid)
+	var uid uint32
+	hasUID := false
+	if us, ok := fs.(uidSource); ok {
+		if uid, err = us.uidOf(pid); err != nil {
+			return ProcInfo{}, fmt.Errorf("read uid of pid %d: %w", pid, err)
+		}
+		hasUID = true
+	}
+	after, afterPPID, err := statOf(fs, pid)
 	if err != nil {
 		return ProcInfo{}, err
 	}
 	if before != after {
 		return ProcInfo{}, fmt.Errorf("pid %d changed process while it was being read (start time %d then %d)", pid, before, after)
 	}
+	if beforePPID != afterPPID {
+		return ProcInfo{}, fmt.Errorf("pid %d changed parent while it was being read (ppid %d then %d)", pid, beforePPID, afterPPID)
+	}
 	args := strings.Split(strings.TrimRight(string(cmdline), "\x00"), "\x00")
-	return ProcInfo{Exe: strings.TrimSuffix(exe, " (deleted)"), Args: args, StartTime: before, ExeDev: dev, ExeIno: ino}, nil
+	return ProcInfo{
+		Exe: strings.TrimSuffix(exe, " (deleted)"), Args: args, StartTime: before, ExeDev: dev, ExeIno: ino,
+		PPID: beforePPID, UID: uid, HasUID: hasUID,
+	}, nil
 }
 
-func startTimeOf(fs procFiles, pid int32) (uint64, error) {
+func statOf(fs procFiles, pid int32) (start uint64, ppid int32, err error) {
 	stat, err := fs.readFile(pid, "stat")
 	if err != nil {
-		return 0, fmt.Errorf("read stat of pid %d: %w", pid, err)
+		return 0, 0, fmt.Errorf("read stat of pid %d: %w", pid, err)
 	}
-	return parseStartTime(string(stat))
+	if start, err = parseStartTime(string(stat)); err != nil {
+		return 0, 0, err
+	}
+	if ppid, err = parsePPID(string(stat)); err != nil {
+		return 0, 0, err
+	}
+	return start, ppid, nil
+}
+
+// parsePPID extracts field 4 of /proc/<pid>/stat, counted from the last ')'
+// for the reason parseStartTime gives.
+func parsePPID(stat string) (int32, error) {
+	i := strings.LastIndexByte(stat, ')')
+	if i < 0 {
+		return 0, errors.New("malformed /proc stat")
+	}
+	fields := strings.Fields(stat[i+1:])
+	// fields[0] is field 3 (state), so field 4 is fields[1].
+	if len(fields) < 2 {
+		return 0, errors.New("malformed /proc stat")
+	}
+	n, err := strconv.ParseInt(fields[1], 10, 32)
+	if err != nil {
+		return 0, errors.New("malformed /proc stat")
+	}
+	return int32(n), nil
 }
 
 // parseStartTime extracts field 22 of /proc/<pid>/stat. The command name is

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -40,11 +41,18 @@ func runServe(args []string) error {
 	}
 	ic := cfg.Identity
 	sock := socketFor(*socket, cfg)
+	// The hook and CLI commands are this same binary. A peer running it is a
+	// transient helper and is bound to the runtime above it, not to itself.
+	self, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("identity: resolve own executable: %w", err)
+	}
 	issuer, err := identity.NewIssuer(identity.Settings{
 		Issuer: ic.Issuer, SocketPath: sock, KeyPath: ic.KeyPath, Alg: ic.Alg,
 		JWKSPath: ic.JWKSPath, RuntimeRoles: ic.RuntimeRoles, DefinitionsDir: ic.DefinitionsDir,
 		DelegableRoles: ic.DelegableRoles, SpawnRoot: ic.SpawnRoot,
 		SessionTTL: time.Duration(ic.SessionTTLSeconds) * time.Second,
+		HelperExe:  strings.TrimSuffix(self, " (deleted)"),
 	})
 	if err != nil {
 		return fmt.Errorf("identity: %w", err)

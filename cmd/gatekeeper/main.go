@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -48,6 +49,16 @@ func main() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
+	case "hook":
+		os.Exit(runHook(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
+	case "hooks-install", "render-agent":
+		run := map[string]func([]string, io.Writer) error{
+			"hooks-install": runHooksInstall, "render-agent": runRenderAgent,
+		}[os.Args[1]]
+		if err := run(os.Args[2:], os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	case "version":
 		fmt.Println("clagentic-gatekeeper dev")
 	default:
@@ -65,6 +76,10 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  serve [--socket <path>] [--config <path>]   (linux only)")
 	fmt.Fprintln(os.Stderr, "  issue-session [--socket <path>] [--definition <name>] [--origin <origin>] [--runtime] [--runtime-id <id>] [--runtime-version <v>] [--json]")
 	fmt.Fprintln(os.Stderr, "  issue-child [--socket <path>] [--parent-token-file <path>] --agent-type <name> --agent-id <id> [--json]")
+	fmt.Fprintln(os.Stderr, "  hook claude-code <session-start|subagent-start|pre-tool-use-bash|subagent-stop|user-prompt-submit> --socket <path> --state-dir <dir> [--mode warn|enforce]   (reads the hook JSON on stdin)")
+	fmt.Fprintln(os.Stderr, "  hook process --socket <path> [--definition <name>] [--origin <origin>]   (prints "+hookEnvName+"=<dir> for a launcher's child)")
+	fmt.Fprintln(os.Stderr, "  hooks-install --runtime claude-code --settings <path> --socket <path> [--mode warn|enforce] [--remove] [--dry-run]")
+	fmt.Fprintln(os.Stderr, "  render-agent --runtime claude-code [--definitions-dir <dir>] <definition>")
 	fmt.Fprintln(os.Stderr, "  version")
 }
 
