@@ -21,6 +21,12 @@ const (
 // DefaultSocketPath is used when neither --socket nor identity.socket_path is set.
 const DefaultSocketPath = "/run/clagentic-gatekeeper/identity.sock"
 
+// OriginDriven is the session origin of a session a human drives, such as a
+// typed session a launcher starts. The session assertion is a workload
+// assertion like any other: the value says how the session was started and is
+// never evidence that a human is present, which is read per turn.
+const OriginDriven = "driven"
+
 // DeliveryFile is the file name the contract's section 6 fixes.
 const DeliveryFile = "identity.jwt"
 

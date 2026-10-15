@@ -3,11 +3,27 @@
 Signed test vectors for the [Identity Assertion contract](../docs/identity-contract.md).
 A verifier or peer validator is conformant when it reproduces every expected
 outcome. The set is versioned by contract major version: `v1/` is for
-`cia` = `1`.
+`cia` = `1`, and `v2/` is the contract 2.0.0 supplement for `cia` = `2`.
 
-Vendor `v1/` into your own tests, pinned to a contract version, and run every
-vector against your own verifier built from the specification and a standard
-JWS library. Nothing here is a library to import.
+Vendor the set of the major you implement, pinned to a contract version, and
+run every vector against your own verifier built from the specification and a
+standard JWS library. Nothing here is a library to import.
+
+Schemas: `v1/` validates against
+`https://schemas.clagentic.ai/identity-assertion/1.json`
+([`identity-assertion.json`](../schemas/identity-assertion.json)), and `v2/`
+against `https://schemas.clagentic.ai/identity-assertion/2.json`
+([`identity-assertion-2.json`](../schemas/identity-assertion-2.json)). Each
+`$id` describes exactly one contract major.
+
+Major 2 ships alongside major 1, so `v1/` is unchanged: its tokens and keys
+are exactly what a consumer pinned. A verifier of major 1 runs `v1/` alone. A
+verifier of major 2 runs `v1/` and `v2/`; in `v1/` the one vector that carries
+`cia` 2, `contract-version-unsupported`, is read by it as a valid token (it is
+unsupported only to a major 1 verifier), and `v2/` has the equivalent vector
+with `cia` 3. `v2/` covers the `driven` origin: accepted for ES256, EdDSA and
+a peer, and refused in a `cia` 1 assertion, with a `human:` sub and at grade
+`harness`.
 
 ## Files
 

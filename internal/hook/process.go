@@ -11,6 +11,10 @@ import (
 // the child's environment. The child then holds its assertion for its whole
 // life with no per-command step.
 //
+// A launcher whose session a human drives passes origin driven: the issuer
+// grades it workload like any other launched session, and whether a human is
+// present stays a per-turn reading that this value is never evidence of.
+//
 // The assertion is bound by the issuer to the runtime above the requesting
 // process, which for a launcher is the launcher itself. The adapter never
 // requests a human grade.

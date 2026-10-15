@@ -64,9 +64,14 @@ func refuseAssertion(code AssertionCode, format string, args ...any) *AssertionE
 }
 
 const (
-	supportedContractMajor = 1
-	maxAssertionLifetime   = 43200
-	maxAssertionFileBytes  = 16384
+	// supportedContractMajor is the highest contract major this verifier
+	// implements; it accepts every major from 1 up to it.
+	supportedContractMajor = 2
+	// originDrivenMajor is the first major whose origin vocabulary has driven.
+	originDrivenMajor = 2
+
+	maxAssertionLifetime  = 43200
+	maxAssertionFileBytes = 16384
 
 	// maxNumericDate is 9999-12-31T23:59:59Z, far beyond any real assertion and
 	// small enough that no sum or difference of two dates overflows.
@@ -87,6 +92,9 @@ type verifyParams struct {
 	Mode        audienceMode
 	PeerID      string
 	ObservedDir string
+	// MaxMajor is the highest contract major accepted; zero means
+	// supportedContractMajor. A run pinned to an older conformance set lowers it.
+	MaxMajor int64
 }
 
 // keySource answers the two questions of steps 3 and 4: is the issuer trusted,
@@ -223,7 +231,7 @@ func validActorChain(v any) bool {
 
 // claimsShapeValid is section 3.1: required claims, name patterns, and the
 // per-grade and per-audience required and forbidden sets.
-func claimsShapeValid(c map[string]any) bool {
+func claimsShapeValid(c map[string]any, cia int64) bool {
 	for _, name := range alwaysRequiredClaims {
 		if _, ok := c[name]; !ok {
 			return false
@@ -252,6 +260,13 @@ func claimsShapeValid(c map[string]any) bool {
 	}
 	switch o, _ := c["origin"].(string); o {
 	case "human", "scheduled", "loop", "trigger", "agent":
+	case "driven":
+		// driven exists from major 2. It is a workload statement about a launched
+		// session and never names a human, whatever else the token claims.
+		sub, _ := c["sub"].(string)
+		if cia < originDrivenMajor || c["grade"] != "workload" || strings.HasPrefix(sub, "human:") {
+			return false
+		}
 	default:
 		return false
 	}
@@ -335,8 +350,13 @@ func verifyAssertion(ctx context.Context, token string, src keySource, p verifyP
 	if !verified {
 		return nil, refuseAssertion(CodeSignatureBad, "signature does not verify")
 	}
-	if cia, ok := asInt(claims["cia"]); !ok || cia != supportedContractMajor {
-		return nil, refuseAssertion(CodeVersionNew, "cia is not %d", supportedContractMajor)
+	maxMajor := p.MaxMajor
+	if maxMajor == 0 {
+		maxMajor = supportedContractMajor
+	}
+	cia, ok := asInt(claims["cia"])
+	if !ok || cia < 1 || cia > maxMajor {
+		return nil, refuseAssertion(CodeVersionNew, "cia is not a supported major (1 to %d)", maxMajor)
 	}
 	iat, okIat := asInt(claims["iat"])
 	exp, okExp := asInt(claims["exp"])
@@ -366,7 +386,7 @@ func verifyAssertion(ctx context.Context, token string, src keySource, p verifyP
 	if exp-iat > maxAssertionLifetime {
 		return nil, refuseAssertion(CodeTTLExceeded, "lifetime %ds exceeds %ds", exp-iat, maxAssertionLifetime)
 	}
-	if !claimsShapeValid(claims) {
+	if !claimsShapeValid(claims, cia) {
 		return nil, refuseAssertion(CodeClaimsInvalid, "claim shape does not meet section 3.1")
 	}
 	aud, hasAud := claims["aud"].(string)

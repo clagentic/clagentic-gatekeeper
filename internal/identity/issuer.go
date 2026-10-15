@@ -8,11 +8,12 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"time"
 )
 
 // origins is the contract's origin vocabulary.
-var origins = map[string]bool{"human": true, "scheduled": true, "loop": true, "trigger": true, "agent": true}
+var origins = map[string]bool{"human": true, "scheduled": true, "loop": true, "trigger": true, "agent": true, OriginDriven: true}
 
 var reVersion = regexp.MustCompile(`^[A-Za-z0-9._+-]{1,64}$`)
 
@@ -112,7 +113,7 @@ func (i *Issuer) IssueSession(peer Peer, req SessionRequest) (*Issued, error) {
 	case origin == "":
 		origin = "trigger"
 	case !origins[origin]:
-		return nil, refuse(http.StatusBadRequest, CodeBadRequest, fmt.Errorf("origin %q is not one of human, scheduled, loop, trigger, agent", origin))
+		return nil, refuse(http.StatusBadRequest, CodeBadRequest, fmt.Errorf("origin %q is not one of human, scheduled, loop, trigger, agent, driven", origin))
 	case origin == "human":
 		return nil, refuse(http.StatusForbidden, CodeOriginForbidden, fmt.Errorf("origin human requested by uid %d: no human assertions are issued", peer.UID))
 	}
@@ -233,7 +234,12 @@ func (i *Issuer) finish(peer Peer, bound Binding, c Claims, now, exp time.Time, 
 	if c.Roles == nil {
 		c.Roles = []string{}
 	}
-	c.Iat, c.Exp, c.Jti, c.Cia = now.Unix(), exp.Unix(), jti, ContractVersion
+	// A driven session is a workload assertion about a launched process and
+	// never names a human; this holds here whatever the caller of finish built.
+	if c.Orig == OriginDriven && (c.Grade != "workload" || strings.HasPrefix(c.Sub, "human:") || actorChainNamesHuman(c.Act)) {
+		return nil, refuse(http.StatusInternalServerError, CodeInternal, fmt.Errorf("origin driven with grade %q and sub %q", c.Grade, c.Sub))
+	}
+	c.Iat, c.Exp, c.Jti, c.Cia = now.Unix(), exp.Unix(), jti, contractFor(c.Orig)
 
 	dir, err := i.Dirs.Create(now)
 	if err != nil {
@@ -255,6 +261,16 @@ func (i *Issuer) finish(peer Peer, bound Binding, c Claims, now, exp time.Time, 
 		actor = c.Act.Sub
 	}
 	return &Issued{Token: token, Dir: c.Dir, ExpiresAt: c.Exp, Subject: c.Sub, Actor: actor, Grade: c.Grade, Roles: c.Roles, Narrowed: narrowed}, nil
+}
+
+// actorChainNamesHuman reports whether any level of an actor chain is a human.
+func actorChainNamesHuman(a *Actor) bool {
+	for ; a != nil; a = a.Act {
+		if strings.HasPrefix(a.Sub, "human:") {
+			return true
+		}
+	}
+	return false
 }
 
 // intersect returns the members of want that policy allows, and the ones it

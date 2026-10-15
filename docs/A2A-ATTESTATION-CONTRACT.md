@@ -6,7 +6,8 @@ contract:
 
 - [`docs/identity-contract.md`](identity-contract.md) — normative: claims, key
   discovery, local delivery, and the A2A peer section (section 9).
-- [`schemas/identity-assertion.json`](../schemas/identity-assertion.json) and
+- [`schemas/identity-assertion.json`](../schemas/identity-assertion.json) (major 1),
+  [`schemas/identity-assertion-2.json`](../schemas/identity-assertion-2.json) (major 2) and
   [`schemas/jwks-discovery.json`](../schemas/jwks-discovery.json) — schemas.
 - [`vectors/`](../vectors/README.md) — signed conformance vectors.
 

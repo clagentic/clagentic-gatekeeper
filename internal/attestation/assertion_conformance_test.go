@@ -57,6 +57,11 @@ func (v vectorKeys) keys(_ context.Context, iss string) ([]jwk, error) {
 
 func loadVectors(t *testing.T) (vectorManifest, vectorKeys) {
 	t.Helper()
+	return loadVectorsFrom(t, vectorsDir)
+}
+
+func loadVectorsFrom(t *testing.T, vectorsDir string) (vectorManifest, vectorKeys) {
+	t.Helper()
 	raw, err := os.ReadFile(filepath.Join(vectorsDir, "manifest.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -122,9 +127,25 @@ func materializeLayout(t *testing.T, l vectorLayout) (envSet bool, dir string) {
 // the expected outcome for each.
 func TestVendoredVectorsMatchProvider(t *testing.T) {
 	m, keys := loadVectors(t)
-	if m.ContractVersion != "1.0.0" || m.Cia != supportedContractMajor {
-		t.Fatalf("vectors are contract %s cia %d; this verifier supports cia %d and was written for 1.0.0", m.ContractVersion, m.Cia, supportedContractMajor)
+	if m.ContractVersion != "1.0.0" || m.Cia != 1 {
+		t.Fatalf("vectors are contract %s cia %d; this set is the pinned 1.0.0 set", m.ContractVersion, m.Cia)
 	}
+	// The v1 set is the test of a verifier that implements major 1 only.
+	runVectors(t, m, keys, 1)
+}
+
+// TestVendoredV2VectorsMatchProvider runs the contract 2.0.0 supplement through
+// the provider as configured in production, accepting majors 1 and 2.
+func TestVendoredV2VectorsMatchProvider(t *testing.T) {
+	m, keys := loadVectorsFrom(t, "../../vectors/v2")
+	if m.ContractVersion != "2.0.0" || m.Cia != supportedContractMajor {
+		t.Fatalf("vectors are contract %s cia %d; this verifier supports up to cia %d", m.ContractVersion, m.Cia, supportedContractMajor)
+	}
+	runVectors(t, m, keys, 0)
+}
+
+func runVectors(t *testing.T, m vectorManifest, keys vectorKeys, maxMajor int64) {
+	t.Helper()
 	for _, v := range m.Vectors {
 		v := v
 		t.Run(v.ID, func(t *testing.T) {
@@ -146,7 +167,7 @@ func TestVendoredVectorsMatchProvider(t *testing.T) {
 					t.Fatalf("delivered %q, want %q", data, v.Layout.Content)
 				}
 			case "token":
-				p := verifyParams{Now: v.Now, ObservedDir: v.ObservedDir, PeerID: v.PeerID}
+				p := verifyParams{Now: v.Now, ObservedDir: v.ObservedDir, PeerID: v.PeerID, MaxMajor: maxMajor}
 				if v.Mode == "peer" {
 					p.Mode = modePeer
 				}

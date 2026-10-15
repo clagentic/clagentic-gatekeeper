@@ -106,7 +106,7 @@ func TestAssertionFailuresAreHardErrorsAndNeverFallThrough(t *testing.T) {
 		"unsupported contract version": {
 			token: func(dir string) string {
 				c := localClaims(testIss, dir, "example-builder", "workload", now, "builder")
-				c["cia"] = 2
+				c["cia"] = supportedContractMajor + 1
 				return s.sign(t, c)
 			},
 			code: CodeVersionNew,

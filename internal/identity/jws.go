@@ -12,8 +12,23 @@ import (
 	"strings"
 )
 
-// ContractVersion is the `cia` claim value this issuer emits.
+// ContractVersion is the `cia` claim value this issuer emits for every origin
+// the first contract major can express.
 const ContractVersion = 1
+
+// ContractVersionDriven is the `cia` of an assertion whose origin is
+// OriginDriven, a value only major 2 of the contract defines. Emitting 2 for
+// that origin alone leaves every other assertion exactly as a major 1 consumer
+// already reads it.
+const ContractVersionDriven = 2
+
+// contractFor is the lowest contract major that can express origin.
+func contractFor(origin string) int {
+	if origin == OriginDriven {
+		return ContractVersionDriven
+	}
+	return ContractVersion
+}
 
 // MaxLifetimeSeconds is the contract's cap on exp - iat.
 const MaxLifetimeSeconds = 43200

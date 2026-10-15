@@ -25,7 +25,7 @@ import (
 // prove the vector set is consistent; it is not a supported implementation.
 
 const (
-	supportedCia    = 1
+	supportedCia    = 2 // highest major the reference verifier implements
 	maxLifetimeSecs = 43200
 	maxIdentityFile = 16384
 	audienceLocal   = "local"
@@ -189,7 +189,7 @@ func validActor(v any) bool {
 	return true
 }
 
-func claimsShapeValid(c map[string]any) bool {
+func claimsShapeValid(c map[string]any, cia int64) bool {
 	for _, name := range alwaysRequired {
 		if _, ok := c[name]; !ok {
 			return false
@@ -218,6 +218,11 @@ func claimsShapeValid(c map[string]any) bool {
 	}
 	switch o, _ := c["origin"].(string); o {
 	case "human", "scheduled", "loop", "trigger", "agent":
+	case "driven":
+		sub, _ := c["sub"].(string)
+		if cia < 2 || c["grade"] != "workload" || strings.HasPrefix(sub, "human:") {
+			return false
+		}
 	default:
 		return false
 	}
@@ -256,8 +261,16 @@ func claimsShapeValid(c map[string]any) bool {
 	return true
 }
 
-// verifyToken implements section 4 of the contract.
+// verifyToken implements section 4 of the contract, accepting every major the
+// reference verifier implements.
 func verifyToken(tr trust, v vector) (outcome, string) {
+	return verifyTokenUpTo(tr, v, supportedCia)
+}
+
+// verifyTokenUpTo is verifyToken for a verifier implementing majors 1 to
+// maxCia, which is how a conformance set is run: a set is the test of the
+// verifier of its own major.
+func verifyTokenUpTo(tr trust, v vector, maxCia int64) (outcome, string) {
 	parts := strings.Split(v.Token, ".")
 	if len(parts) != 3 {
 		return outcome{}, "malformed"
@@ -294,7 +307,8 @@ func verifyToken(tr trust, v vector) (outcome, string) {
 	if errs != nil || !verifySignature(*key, alg, []byte(parts[0]+"."+parts[1]), sig) {
 		return outcome{}, "signature_invalid"
 	}
-	if cia, ok := asInt(claims["cia"]); !ok || cia != supportedCia {
+	cia, okCia := asInt(claims["cia"])
+	if !okCia || cia < 1 || cia > maxCia {
 		return outcome{}, "contract_version_unsupported"
 	}
 	iat, okIat := asInt(claims["iat"])
@@ -322,7 +336,7 @@ func verifyToken(tr trust, v vector) (outcome, string) {
 	if exp-iat > maxLifetimeSecs {
 		return outcome{}, "ttl_exceeded"
 	}
-	if !claimsShapeValid(claims) {
+	if !claimsShapeValid(claims, cia) {
 		return outcome{}, "claims_invalid"
 	}
 	aud, hasAud := claims["aud"].(string)

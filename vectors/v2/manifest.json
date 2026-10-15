@@ -1,0 +1,151 @@
+{
+  "contract_version": "2.0.0",
+  "cia": 2,
+  "trust": {
+    "issuers": [
+      {
+        "iss": "https://issuer.example"
+      }
+    ]
+  },
+  "jwks_files": {
+    "https://issuer.example": "jwks.json"
+  },
+  "vectors": [
+    {
+      "id": "v2-valid-driven-eddsa",
+      "description": "Driven session, EdDSA, cia 2: workload grade, runtime sub, acting as an agent definition.",
+      "kind": "token",
+      "mode": "local",
+      "now": 1792000000,
+      "observed_dir": "/run/example/identity/spawn/a1",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6ImVkLTEifQ.eyJhY3QiOnsic3ViIjoiYWdlbnQ6ZXhhbXBsZS1idWlsZGVyIn0sImNpYSI6MiwiZGlyIjoiL3J1bi9leGFtcGxlL2lkZW50aXR5L3NwYXduL2ExIiwiZXhwIjoxNzkyMDM5NTQwLCJncmFkZSI6Indvcmtsb2FkIiwiaWF0IjoxNzkxOTk5OTQwLCJpc3MiOiJodHRwczovL2lzc3Vlci5leGFtcGxlIiwianRpIjoianRpLXYyLTAwMDEiLCJvcmlnaW4iOiJkcml2ZW4iLCJyb2xlcyI6WyJidWlsZGVyIl0sInJ0Ijp7ImlkIjoiZXhhbXBsZS1ydW50aW1lIiwidmVyc2lvbiI6IjEuMC4wIn0sInNpZCI6InNlc3MtMDAwMSIsInN1YiI6InJ1bnRpbWU6ZXhhbXBsZS1ydW50aW1lIn0.ty4TWKRPh_niintJGMPPW04-G7zzLQN43UztRu-GuMJ-qXLR_VaVhZJYjUFJWJPg_jvcqDTPLr8Co6BcAeKfDg",
+      "expect": {
+        "ok": true,
+        "actor": "agent:example-builder",
+        "grade": "workload"
+      }
+    },
+    {
+      "id": "v2-valid-driven-es256-no-act",
+      "description": "Driven session, ES256, no act: the actor is the runtime itself.",
+      "kind": "token",
+      "mode": "local",
+      "now": 1792000000,
+      "observed_dir": "/run/example/identity/spawn/a1",
+      "token": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImVzLTEifQ.eyJjaWEiOjIsImRpciI6Ii9ydW4vZXhhbXBsZS9pZGVudGl0eS9zcGF3bi9hMSIsImV4cCI6MTc5MjAzOTU0MCwiZ3JhZGUiOiJ3b3JrbG9hZCIsImlhdCI6MTc5MTk5OTk0MCwiaXNzIjoiaHR0cHM6Ly9pc3N1ZXIuZXhhbXBsZSIsImp0aSI6Imp0aS12Mi0wMDAyIiwib3JpZ2luIjoiZHJpdmVuIiwicm9sZXMiOlsiYnVpbGRlciJdLCJydCI6eyJpZCI6ImV4YW1wbGUtcnVudGltZSIsInZlcnNpb24iOiIxLjAuMCJ9LCJzaWQiOiJzZXNzLTAwMDEiLCJzdWIiOiJydW50aW1lOmV4YW1wbGUtcnVudGltZSJ9.UMYhsrwAJl7Kw-ps8FTEHX-9Jej6tt-rVvjEKYcls54Cc67_vBdkSJNC3g_xNJpRR90AxZgdhAsxRIChux0f4w",
+      "expect": {
+        "ok": true,
+        "actor": "runtime:example-runtime",
+        "grade": "workload"
+      }
+    },
+    {
+      "id": "v2-valid-driven-peer-eddsa",
+      "description": "Exchanged driven token for a peer; origin and cia are carried over unchanged.",
+      "kind": "token",
+      "mode": "peer",
+      "peer_id": "peer.example",
+      "now": 1792000000,
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6ImVkLTEifQ.eyJhY3QiOnsic3ViIjoiYWdlbnQ6ZXhhbXBsZS1idWlsZGVyIn0sImF1ZCI6InBlZXIuZXhhbXBsZSIsImNpYSI6MiwiZXhwIjoxNzkyMDAwODQwLCJncmFkZSI6Indvcmtsb2FkIiwiaWF0IjoxNzkxOTk5OTQwLCJpc3MiOiJodHRwczovL2lzc3Vlci5leGFtcGxlIiwianRpIjoianRpLXgtanRpLXYyLTAwMDEiLCJvcmlnaW4iOiJkcml2ZW4iLCJyb2xlcyI6WyJidWlsZGVyIl0sInJ0Ijp7ImlkIjoiZXhhbXBsZS1ydW50aW1lIiwidmVyc2lvbiI6IjEuMC4wIn0sInNpZCI6InNlc3MtMDAwMSIsInN1YiI6InJ1bnRpbWU6ZXhhbXBsZS1ydW50aW1lIn0.AmpqcG7acSCbP5xOHFJMt63bYO6VHipsyrdGLf_PKuYYyLrnQJUOuTmx-yecCadDcR_LMABgL_Emw41ty7TIDQ",
+      "expect": {
+        "ok": true,
+        "actor": "agent:example-builder",
+        "grade": "workload"
+      }
+    },
+    {
+      "id": "v2-valid-v1-origin-under-cia2",
+      "description": "A major 1 origin is also valid in a cia 2 assertion.",
+      "kind": "token",
+      "mode": "local",
+      "now": 1792000000,
+      "observed_dir": "/run/example/identity/spawn/a1",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6ImVkLTEifQ.eyJhY3QiOnsic3ViIjoiYWdlbnQ6ZXhhbXBsZS1idWlsZGVyIn0sImNpYSI6MiwiZGlyIjoiL3J1bi9leGFtcGxlL2lkZW50aXR5L3NwYXduL2ExIiwiZXhwIjoxNzkyMDM5NTQwLCJncmFkZSI6Indvcmtsb2FkIiwiaWF0IjoxNzkxOTk5OTQwLCJpc3MiOiJodHRwczovL2lzc3Vlci5leGFtcGxlIiwianRpIjoianRpLXYyLTAwMDMiLCJvcmlnaW4iOiJ0cmlnZ2VyIiwicm9sZXMiOlsiYnVpbGRlciJdLCJydCI6eyJpZCI6ImV4YW1wbGUtcnVudGltZSIsInZlcnNpb24iOiIxLjAuMCJ9LCJzaWQiOiJzZXNzLTAwMDEiLCJzdWIiOiJydW50aW1lOmV4YW1wbGUtcnVudGltZSJ9.l6WNk3J7BOnAH4M3RCNTKQoA8p_XR_0gfFizqcJCeJqOZ2RGWCcDwu-DFRy0Bs9_gHebiPHtThoZ8T8Yev14CQ",
+      "expect": {
+        "ok": true,
+        "actor": "agent:example-builder",
+        "grade": "workload"
+      }
+    },
+    {
+      "id": "v2-valid-v1-assertion-still-valid",
+      "description": "A cia 1 assertion, human origin and human sub, verifies unchanged in a major 2 verifier.",
+      "kind": "token",
+      "mode": "local",
+      "now": 1792000000,
+      "observed_dir": "/run/example/identity/spawn/a1",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6ImVkLTEifQ.eyJjaWEiOjEsImRpciI6Ii9ydW4vZXhhbXBsZS9pZGVudGl0eS9zcGF3bi9hMSIsImV4cCI6MTc5MjAzOTU0MCwiZ3JhZGUiOiJ3b3JrbG9hZCIsImlhdCI6MTc5MTk5OTk0MCwiaXNzIjoiaHR0cHM6Ly9pc3N1ZXIuZXhhbXBsZSIsImp0aSI6Imp0aS0wMDAxIiwib3JpZ2luIjoiaHVtYW4iLCJyb2xlcyI6WyJidWlsZGVyIl0sInJ0Ijp7ImlkIjoiZXhhbXBsZS1ydW50aW1lIiwidmVyc2lvbiI6IjEuMC4wIn0sInNpZCI6InNlc3MtMDAwMSIsInN1YiI6Imh1bWFuOmV4YW1wbGUtdXNlciJ9.4496rHj3Wseyn_BuSJa_ze9wHNQ9w4BmWw4-_xBqvj7Z0ImACeYGutYhCSgBWDBmtCIyRQNXZl9BmIPuXQ5EAA",
+      "expect": {
+        "ok": true,
+        "actor": "human:example-user",
+        "grade": "workload"
+      }
+    },
+    {
+      "id": "v2-driven-under-cia1",
+      "description": "origin driven in a cia 1 assertion: the value does not exist in major 1.",
+      "kind": "token",
+      "mode": "local",
+      "now": 1792000000,
+      "observed_dir": "/run/example/identity/spawn/a1",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6ImVkLTEifQ.eyJhY3QiOnsic3ViIjoiYWdlbnQ6ZXhhbXBsZS1idWlsZGVyIn0sImNpYSI6MSwiZGlyIjoiL3J1bi9leGFtcGxlL2lkZW50aXR5L3NwYXduL2ExIiwiZXhwIjoxNzkyMDM5NTQwLCJncmFkZSI6Indvcmtsb2FkIiwiaWF0IjoxNzkxOTk5OTQwLCJpc3MiOiJodHRwczovL2lzc3Vlci5leGFtcGxlIiwianRpIjoianRpLXYyLTAwMDEiLCJvcmlnaW4iOiJkcml2ZW4iLCJyb2xlcyI6WyJidWlsZGVyIl0sInJ0Ijp7ImlkIjoiZXhhbXBsZS1ydW50aW1lIiwidmVyc2lvbiI6IjEuMC4wIn0sInNpZCI6InNlc3MtMDAwMSIsInN1YiI6InJ1bnRpbWU6ZXhhbXBsZS1ydW50aW1lIn0.cNdUgn9jbHwSKiKk96uLvTJ02RZY9lZnCUbpbC0hJiyEQKhMUyw-l3bfLhED8GdFwhLU6L9PZmV5FXAkGNKDBw",
+      "expect": {
+        "ok": false,
+        "error": "claims_invalid"
+      }
+    },
+    {
+      "id": "v2-driven-human-sub",
+      "description": "origin driven with a human: sub is refused: a driven assertion never names a human.",
+      "kind": "token",
+      "mode": "local",
+      "now": 1792000000,
+      "observed_dir": "/run/example/identity/spawn/a1",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6ImVkLTEifQ.eyJjaWEiOjIsImRpciI6Ii9ydW4vZXhhbXBsZS9pZGVudGl0eS9zcGF3bi9hMSIsImV4cCI6MTc5MjAzOTU0MCwiZ3JhZGUiOiJ3b3JrbG9hZCIsImlhdCI6MTc5MTk5OTk0MCwiaXNzIjoiaHR0cHM6Ly9pc3N1ZXIuZXhhbXBsZSIsImp0aSI6Imp0aS12Mi0wMDAxIiwib3JpZ2luIjoiZHJpdmVuIiwicm9sZXMiOlsiYnVpbGRlciJdLCJydCI6eyJpZCI6ImV4YW1wbGUtcnVudGltZSIsInZlcnNpb24iOiIxLjAuMCJ9LCJzaWQiOiJzZXNzLTAwMDEiLCJzdWIiOiJodW1hbjpleGFtcGxlLXVzZXIifQ.kVLMNsOd1MnsRJS8H9fWfP6sKjGVpE8gVM1rttI2Ipnp5JYE8LGVkxMiZ4LNiB9x6o3Ocu8iR9SfO1PASZw7Cw",
+      "expect": {
+        "ok": false,
+        "error": "claims_invalid"
+      }
+    },
+    {
+      "id": "v2-driven-harness-grade",
+      "description": "origin driven with grade harness is refused: driven is a workload statement.",
+      "kind": "token",
+      "mode": "local",
+      "now": 1792000000,
+      "observed_dir": "/run/example/identity/spawn/b2",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6ImVkLTEifQ.eyJhY3QiOnsic3ViIjoiYWdlbnQ6ZXhhbXBsZS1idWlsZGVyIn0sImNpYSI6MiwiZGlyIjoiL3J1bi9leGFtcGxlL2lkZW50aXR5L3NwYXduL2IyIiwiZXhwIjoxNzkyMDM5NTQwLCJncmFkZSI6Imhhcm5lc3MiLCJpYXQiOjE3OTE5OTk5NDAsImlzcyI6Imh0dHBzOi8vaXNzdWVyLmV4YW1wbGUiLCJqdGkiOiJqdGktdjItMDAwMSIsIm9yaWdpbiI6ImRyaXZlbiIsInJvbGVzIjpbImJ1aWxkZXIiXSwicnQiOnsiaWQiOiJleGFtcGxlLXJ1bnRpbWUiLCJ2ZXJzaW9uIjoiMS4wLjAifSwic2lkIjoic2Vzcy0wMDAxIiwic3Bhd24iOiJzcGF3bi12Mi0wMDAxIiwic3ViIjoicnVudGltZTpleGFtcGxlLXJ1bnRpbWUifQ.n9D5zzr-gFRo-iA5EczTE1x8lFu8QU-4EuXwBhNM3f7CPYIIVlIgIcXImV-B5BjUr2UWe5XKoXMNpIS3TIkICg",
+      "expect": {
+        "ok": false,
+        "error": "claims_invalid"
+      }
+    },
+    {
+      "id": "v2-origin-unknown",
+      "description": "An origin outside the major 2 vocabulary.",
+      "kind": "token",
+      "mode": "local",
+      "now": 1792000000,
+      "observed_dir": "/run/example/identity/spawn/a1",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6ImVkLTEifQ.eyJhY3QiOnsic3ViIjoiYWdlbnQ6ZXhhbXBsZS1idWlsZGVyIn0sImNpYSI6MiwiZGlyIjoiL3J1bi9leGFtcGxlL2lkZW50aXR5L3NwYXduL2ExIiwiZXhwIjoxNzkyMDM5NTQwLCJncmFkZSI6Indvcmtsb2FkIiwiaWF0IjoxNzkxOTk5OTQwLCJpc3MiOiJodHRwczovL2lzc3Vlci5leGFtcGxlIiwianRpIjoianRpLXYyLTAwMDEiLCJvcmlnaW4iOiJjcm9uIiwicm9sZXMiOlsiYnVpbGRlciJdLCJydCI6eyJpZCI6ImV4YW1wbGUtcnVudGltZSIsInZlcnNpb24iOiIxLjAuMCJ9LCJzaWQiOiJzZXNzLTAwMDEiLCJzdWIiOiJydW50aW1lOmV4YW1wbGUtcnVudGltZSJ9.KDvgmGQepR8MJo-99COQTrkYPrcJVjv2uR3AY6i-brTvy1u3veXCCc7V1QPG84OlwFFBljvRxFBdxy1rTQVwBA",
+      "expect": {
+        "ok": false,
+        "error": "claims_invalid"
+      }
+    },
+    {
+      "id": "v2-contract-version-unsupported",
+      "description": "Validly signed, cia is 3.",
+      "kind": "token",
+      "mode": "local",
+      "now": 1792000000,
+      "observed_dir": "/run/example/identity/spawn/a1",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6ImVkLTEifQ.eyJhY3QiOnsic3ViIjoiYWdlbnQ6ZXhhbXBsZS1idWlsZGVyIn0sImNpYSI6MywiZGlyIjoiL3J1bi9leGFtcGxlL2lkZW50aXR5L3NwYXduL2ExIiwiZXhwIjoxNzkyMDM5NTQwLCJncmFkZSI6Indvcmtsb2FkIiwiaWF0IjoxNzkxOTk5OTQwLCJpc3MiOiJodHRwczovL2lzc3Vlci5leGFtcGxlIiwianRpIjoianRpLXYyLTAwMDEiLCJvcmlnaW4iOiJkcml2ZW4iLCJyb2xlcyI6WyJidWlsZGVyIl0sInJ0Ijp7ImlkIjoiZXhhbXBsZS1ydW50aW1lIiwidmVyc2lvbiI6IjEuMC4wIn0sInNpZCI6InNlc3MtMDAwMSIsInN1YiI6InJ1bnRpbWU6ZXhhbXBsZS1ydW50aW1lIn0.qLxleq6Agz6xTlsJB2kBBz27031gxDe6ulRGWvFBrQKoA2rOxG8cd6BVr3bpQCeiLMVOZ56PPuTX4Rh9XPlhAw",
+      "expect": {
+        "ok": false,
+        "error": "contract_version_unsupported"
+      }
+    }
+  ]
+}

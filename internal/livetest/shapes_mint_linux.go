@@ -4,11 +4,15 @@ package livetest
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/clagentic/clagentic-gatekeeper/internal/hook"
+	"github.com/clagentic/clagentic-gatekeeper/internal/identity"
 )
 
 // This file holds the mint shapes: the real binary's mint command, run as a
@@ -73,7 +77,17 @@ func (e *Env) assertionAssignment(ctx context.Context) (string, error) {
 
 // assertionAssignmentFor is assertionAssignment for another definition.
 func (e *Env) assertionAssignmentFor(ctx context.Context, definition string) (string, error) {
-	res, err := e.gk(ctx, runOpts{}, "hook", "process", "--socket", e.Sock, "--definition", definition)
+	return e.assertionAssignmentOrigin(ctx, definition, "")
+}
+
+// assertionAssignmentOrigin is assertionAssignmentFor with an explicit session
+// origin; an empty origin leaves the flag off, as a launcher that names none.
+func (e *Env) assertionAssignmentOrigin(ctx context.Context, definition, origin string) (string, error) {
+	args := []string{"hook", "process", "--socket", e.Sock, "--definition", definition}
+	if origin != "" {
+		args = append(args, "--origin", origin)
+	}
+	res, err := e.gk(ctx, runOpts{}, args...)
 	if err != nil {
 		return "", err
 	}
@@ -123,6 +137,8 @@ func (e *Env) mintShapes() []shape {
 	return []shape{
 		{"mint/assertion-delivered-direct", e.shapeMintAssertion(false)},
 		{"mint/assertion-delivered-under-command-wrapper", e.shapeMintAssertion(true)},
+		{"mint/driven-origin-assertion-verified-by-mint", e.shapeMintDriven},
+		{"mint/human-origin-session-refused-by-process-adapter", e.shapeProcessHumanRefused},
 		{"mint/role-outside-assertion-refused", e.shapeMintOtherRole},
 		{"mint/no-assertion-configured-provider-unchanged", e.shapeMintConfigured},
 		{"mint/tampered-assertion-refused", e.shapeMintForged},
@@ -162,6 +178,83 @@ func (e *Env) shapeMintAssertion(viaWrapper bool) func(context.Context) error {
 		}
 		return nil
 	}
+}
+
+// shapeMintDriven is the launcher path for a session a human drives: hook
+// process with origin driven delivers a contract major 2 workload assertion,
+// naming no human, that the real mint command verifies and mints on.
+func (e *Env) shapeMintDriven(ctx context.Context) error {
+	f, err := e.newMintFixture(true)
+	if err != nil {
+		return err
+	}
+	defer f.close()
+	assignment, err := e.assertionAssignmentOrigin(ctx, defBuilder, "driven")
+	if err != nil {
+		return err
+	}
+	raw, err := os.ReadFile(filepath.Join(strings.TrimPrefix(assignment, identityDirEnv+"="), "identity.jwt"))
+	if err != nil {
+		return err
+	}
+	parts := strings.Split(strings.TrimSpace(string(raw)), ".")
+	if len(parts) != 3 {
+		return fmt.Errorf("delivered file is not a compact JWS")
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return err
+	}
+	var claims struct {
+		Origin string `json:"origin"`
+		Grade  string `json:"grade"`
+		Sub    string `json:"sub"`
+		Cia    int    `json:"cia"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return err
+	}
+	if claims.Origin != "driven" || claims.Cia != 2 || claims.Grade != "workload" || strings.HasPrefix(claims.Sub, "human:") {
+		return fmt.Errorf("delivered claims %+v", claims)
+	}
+	res, err := e.runMint(ctx, f.cfgPath, f.env, []string{assignment}, false, "builder")
+	if err != nil {
+		return err
+	}
+	if res.Code != 0 {
+		return fmt.Errorf("mint exit %d: %.300s", res.Code, res.Stderr)
+	}
+	var out mintOutput
+	if err := json.Unmarshal([]byte(res.Stdout), &out); err != nil {
+		return fmt.Errorf("mint did not print JSON: %w", err)
+	}
+	if out.Token != mintToken || out.Identity == nil || out.Identity.Source != "assertion" || out.Identity.Grade != "workload" || strings.HasPrefix(out.Identity.Subject, "human:") {
+		return fmt.Errorf("token %q identity %+v", out.Token, out.Identity)
+	}
+	return nil
+}
+
+// shapeProcessHumanRefused shows origin human is still no way to a session
+// assertion. Each refusal is matched by its reason, not by a non-zero exit, so
+// an unknown flag or a startup failure cannot pass: the adapter refuses with
+// its own message before any request, and the issuer refuses the same origin
+// with origin_forbidden when a client sends it directly.
+func (e *Env) shapeProcessHumanRefused(ctx context.Context) error {
+	res, err := e.gk(ctx, runOpts{}, "hook", "process", "--socket", e.Sock, "--definition", defBuilder, "--origin", "human")
+	if err != nil {
+		return err
+	}
+	if res.Code == 0 || strings.TrimSpace(res.Stdout) != "" || !strings.Contains(res.Stderr, hook.ErrOriginHuman.Error()) {
+		return fmt.Errorf("adapter origin human: exit %d stdout %.200q stderr %.200q", res.Code, res.Stdout, res.Stderr)
+	}
+	res, err = e.gk(ctx, runOpts{}, "issue-session", "--socket", e.Sock, "--definition", defBuilder, "--origin", "human")
+	if err != nil {
+		return err
+	}
+	if res.Code == 0 || strings.TrimSpace(res.Stdout) != "" || !strings.Contains(res.Stderr, identity.CodeOriginForbidden) {
+		return fmt.Errorf("issuer origin human: exit %d stdout %.200q stderr %.200q", res.Code, res.Stdout, res.Stderr)
+	}
+	return nil
 }
 
 // newRefusalFixture is the assertion deployment whose secret store and git host
