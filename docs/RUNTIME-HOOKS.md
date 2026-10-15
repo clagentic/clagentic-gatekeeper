@@ -162,8 +162,10 @@ A failed, erroring or slow hook never blocks a tool call and never hangs a
 session start. Every error is appended to `<state-dir>/hook.log` (ids and causes
 only, never a token or payload value) and the hook exits 0 with no output, so
 the command runs without the export. Each call to the issuer is bounded by
-`--timeout` (default 3s) and the process exits on its own shortly after,
-whatever it is waiting for. The registration gives the runtime a 5s timeout.
+`--timeout` (default 3s; a value that is not positive means the default), and
+gatekeeper's whole part of a hook runs under one deadline of that plus 2s, after
+which the hook answers with what it already has. The registration gives the
+runtime a 5s timeout.
 
 Consumers must fail closed on an absent or invalid `CLAGENTIC_IDENTITY_DIR`; the
 hook's delivery is best effort by design.
@@ -200,6 +202,39 @@ that hook produced.
 
 In warn mode the composed hook's reply is returned unchanged.
 
+The rule is one invariant: in compose mode the upstream's result (stdout, stderr
+and exit code) is the process result, unless gatekeeper's own bounded part adds
+the statement to an upstream allow or no-decision. Every other path yields the
+upstream's bytes and exit code exactly: a flag that does not parse, an unknown
+event or mode, a state directory that is missing or relative, an issuer that
+cannot be reached, an oversized or unparseable payload, a tool that is not
+`Bash`, a panic, a missed deadline, a reply that cannot be written (the exit
+code is still the upstream's). Details:
+
+- The upstream runs **first**, on the raw stdin, before any size cap, payload
+  parse or tool-name check. `hooks-install` writes it at a fixed position
+  directly after the event (`pre-tool-use-bash --compose <path>
+  --upstream-timeout <duration> ...`), where it is found before any other flag is
+  parsed. A hand-written registration that puts `--compose` elsewhere gets the
+  upstream only if the whole command line parses.
+- `--upstream-timeout` that is not a positive duration means the registered
+  default (5s), never an expired deadline.
+- An upstream that exited has given its verdict, whatever its exit code and even
+  when the exit lands on its deadline. Only a process still running at the
+  deadline, which is killed, has no verdict; the hook then emits nothing, as a
+  failed hook does, and never an allow.
+- Gatekeeper's own part runs after the upstream under one deadline (the issuer
+  call timeout plus 2s) and falls back to the upstream's bytes.
+- Gatekeeper writes nothing of its own to stderr while composing; its reasons go
+  to the hook log.
+- The composed entry's runtime timeout is the upstream's budget plus 8s.
+  `hooks-install` sets it. **A hand-written registration must set the longer
+  limit too** (the upstream's own timeout plus 8s), or the runtime may cut the
+  hook off before the upstream's verdict is emitted.
+- Known difference from the upstream registered alone: the output of the
+  upstream is read until it exits plus a 250ms window for pipes a background
+  descendant keeps open, where the runtime would wait for those pipes to close.
+
 ### Registration
 
 ```
@@ -222,7 +257,8 @@ It also adds the one allow rule `Bash(export CLAGENTIC_IDENTITY_DIR=*)` to
 
 `--remove` is the rollback: it deletes exactly the adapter's entries, the groups
 that held only them, and that one allow rule (an allow list or permissions
-object it leaves empty goes with it).
+object that removing the rule leaves empty goes with it). A permissions object
+that holds no such rule is never touched.
 
 ### Limitations
 
@@ -233,7 +269,8 @@ object it leaves empty goes with it).
 - A hook command must run `gatekeeper` directly (as `hooks-install` writes it).
   A hook that runs a wrapper script makes the script's shell the runtime.
 - Windows and macOS build the client commands; `serve` and the binding are
-  linux-only.
+  linux-only. On Windows `render-agent` refuses to read a definition: a file
+  cannot be opened there without following a final-component link.
 
 ## `render-agent`
 

@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/clagentic/clagentic-gatekeeper/internal/identity"
@@ -95,32 +94,12 @@ type ClaudeCode struct {
 	Now             func() time.Time
 	// HookPID is the pid whose ancestry is captured.
 	HookPID int
-
-	heldMu  sync.Mutex
-	held    Result
-	hasHeld bool
 }
 
 // ErrOriginHuman is the one message for a request that names origin human. The
 // adapter never asks for, or synthesises, a human grade; it refuses before any
 // request leaves the process.
 var ErrOriginHuman = errors.New("origin human is never requested by the adapter")
-
-// hold records the composed hook's verdict as soon as it is known, so a hook
-// that is later cut short (watchdog, panic) can still emit exactly what the
-// upstream said instead of losing it.
-func (h *ClaudeCode) hold(r Result) {
-	h.heldMu.Lock()
-	defer h.heldMu.Unlock()
-	h.held, h.hasHeld = r, true
-}
-
-// Held returns the composed hook's verdict when one was obtained.
-func (h *ClaudeCode) Held() (Result, bool) {
-	h.heldMu.Lock()
-	defer h.heldMu.Unlock()
-	return h.held, h.hasHeld
-}
 
 func (h *ClaudeCode) now() time.Time {
 	if h.Now != nil {
@@ -138,9 +117,21 @@ type Result struct {
 
 // Handle processes one event. It fails open: every error is logged and yields an
 // empty result, so a failing, erroring or slow hook never blocks a tool call. The
-// one exception is a composed upstream hook that itself denies, whose verdict is
-// passed through unchanged.
+// one exception is a composed upstream hook, whose result (a deny included) is
+// the result of the process unless HandleComposed adds its one statement.
 func (h *ClaudeCode) Handle(event string, in io.Reader) Result {
+	if event == EventPreToolUseBash && h.Compose != "" {
+		// The upstream gets the whole stdin, before any size cap or parse.
+		raw, err := io.ReadAll(in)
+		if err != nil {
+			h.Log.Printf("%s: reading the payload: %v", event, err)
+		}
+		up, upErr := RunUpstream(h.Compose, raw, h.UpstreamTimeout)
+		if upErr != nil {
+			h.Log.Printf("%s: %v", event, upErr)
+		}
+		return h.HandleComposed(raw, up, upErr)
+	}
 	raw, err := io.ReadAll(io.LimitReader(in, maxPayloadBytes+1))
 	if err != nil || len(raw) > maxPayloadBytes {
 		h.Log.Printf("%s: cannot read the payload: %v", event, err)
@@ -163,10 +154,16 @@ func (h *ClaudeCode) Handle(event string, in io.Reader) Result {
 	case EventSubagentStop:
 		decision, err = h.subagentStop(p)
 	case EventPreToolUseBash:
-		res, decision, err = h.preToolUseBash(p, raw)
+		res, decision, err = h.preToolUseBash(p)
 	default:
 		err = fmt.Errorf("unknown event %q", event)
 	}
+	h.finish(event, p, decision, err)
+	return res
+}
+
+// finish logs a failed event and, in warn mode, captures its shape.
+func (h *ClaudeCode) finish(event string, p Payload, decision string, err error) {
 	if err != nil {
 		h.Log.Printf("%s session=%s agent=%s: %v", event, p.SessionID, p.AgentID, err)
 		if decision == "" {
@@ -176,7 +173,6 @@ func (h *ClaudeCode) Handle(event string, in io.Reader) Result {
 	if h.Mode == ModeWarn {
 		h.Capture.Record(event, p, decision, Ancestry(h.HookPID))
 	}
-	return res
 }
 
 // request asks the issuer for a session, always without a human grade: the
@@ -331,12 +327,9 @@ func (h *ClaudeCode) subagentStop(p Payload) (string, error) {
 // preToolUseBash decides the rewrite of one Bash call. The reply carries no
 // permission decision, ever: a rewrite is updatedInput alone and every other
 // outcome is empty output, so the runtime's own permission flow decides.
-func (h *ClaudeCode) preToolUseBash(p Payload, raw []byte) (Result, string, error) {
+func (h *ClaudeCode) preToolUseBash(p Payload) (Result, string, error) {
 	if p.ToolName != "Bash" {
 		return Result{}, "not-bash", nil
-	}
-	if h.Compose != "" {
-		return h.composedPreToolUse(p, raw)
 	}
 	return h.standalone(p)
 }

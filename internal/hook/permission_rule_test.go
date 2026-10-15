@@ -133,6 +133,21 @@ func TestRemoveDeletesExactlyTheAllowRule(t *testing.T) {
 	}
 }
 
+// A removal that finds none of our rule changes nothing, so an empty permissions
+// object (or one with an empty allow list) a user wrote is left exactly as it was.
+func TestRemoveLeavesAnEmptyPermissionsObjectAlone(t *testing.T) {
+	for _, body := range []string{`{"permissions":{}}`, `{"permissions":{"allow":[]}}`, `{"permissions":{"deny":[]},"theme":"dark"}`} {
+		path := writeSettings(t, body)
+		changed, _, err := ApplySettingsFile(path, nil, true, false)
+		if err != nil || changed {
+			t.Fatalf("%s: changed=%v err=%v", body, changed, err)
+		}
+		if raw, _ := os.ReadFile(path); string(raw) != body {
+			t.Fatalf("%s: the file was rewritten: %s", body, raw)
+		}
+	}
+}
+
 // A settings file that holds only the rule (hooks already removed by hand) is
 // still cleaned by remove.
 func TestRemoveDeletesTheRuleWhenNoHooksRemain(t *testing.T) {

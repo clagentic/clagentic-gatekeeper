@@ -451,6 +451,23 @@ func TestComposedRegistrationCarriesTheUpstreamBudget(t *testing.T) {
 	}
 }
 
+// The composed hook is written directly after the event, ahead of every other
+// flag, so the hook finds it before it parses anything that could fail.
+func TestComposedRegistrationPutsTheUpstreamAtTheFixedPosition(t *testing.T) {
+	in := testInstall(t)
+	in.Compose = "/opt/crew/inject-spawn-agent-env.py"
+	in.Origin = "agent"
+	prefix := in.Binary + " hook claude-code pre-tool-use-bash --compose /opt/crew/inject-spawn-agent-env.py --upstream-timeout 5s --socket "
+	if cmd := in.Command(EventPreToolUseBash); !strings.HasPrefix(cmd, prefix) {
+		t.Fatalf("%q does not start with %q", cmd, prefix)
+	}
+	for _, ev := range []string{EventSessionStart, EventSubagentStop} {
+		if strings.Contains(in.Command(ev), "--compose") {
+			t.Errorf("%s carries --compose", ev)
+		}
+	}
+}
+
 // Reverting a composed registration is registration only: unregistering the
 // gatekeeper entries and restoring the crew's direct entry leaves the settings
 // exactly as the crew registered them, with nothing else to undo.

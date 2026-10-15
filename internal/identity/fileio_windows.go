@@ -3,26 +3,18 @@
 package identity
 
 import (
-	"fmt"
+	"errors"
 	"os"
 )
 
-// OpenRegularFile opens the file at path and returns it with the fstat of the
-// same handle. Windows has no FIFO to stall the open, so the handle check is the
-// whole rule. See the linux implementation.
+// errOpenRegularUnsupported is the one answer on Windows. A final-component
+// symlink or reparse point cannot be refused through the handle os.Open returns,
+// so a read that must not follow a link cannot be honoured here; refusing is the
+// only answer that keeps the contract of the other platforms.
+var errOpenRegularUnsupported = errors.New("opening a file without following a final-component link is not supported on windows")
+
+// OpenRegularFile always refuses on Windows. See the linux implementation for
+// the contract it cannot meet here.
 func OpenRegularFile(path string) (*os.File, os.FileInfo, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, nil, err
-	}
-	fi, err := f.Stat()
-	if err != nil {
-		f.Close()
-		return nil, nil, err
-	}
-	if !fi.Mode().IsRegular() {
-		f.Close()
-		return nil, nil, fmt.Errorf("%s: not a regular file", path)
-	}
-	return f, fi, nil
+	return nil, nil, errOpenRegularUnsupported
 }

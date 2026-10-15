@@ -70,8 +70,12 @@ func addAllowRule(root settings) (bool, error) {
 }
 
 // removeAllowRule deletes every exact copy of AllowRule and nothing else. An
-// allow list or permissions object it leaves empty is dropped, so a register
-// followed by a removal restores the settings.
+// allow list or permissions object that removing the rule leaves empty is
+// dropped, so a register followed by a removal restores a file that had no
+// permissions. A removal that finds no rule changes nothing at all, so a
+// permissions object the user left empty is never touched by it. (A user's empty
+// object that held our rule and nothing else cannot be told from one the
+// registration created, and is dropped with it.)
 func removeAllowRule(root settings) (bool, error) {
 	p, err := permissionsOf(root, false)
 	if err != nil || p == nil {

@@ -36,9 +36,12 @@ type Install struct {
 }
 
 // composeAllowanceSeconds is the time the runtime gives the composed entry on
-// top of the upstream's budget: room for this hook's own issuer call and its
-// watchdog, so the runtime never cuts the hook off while the upstream is still
-// within its budget or before the upstream's verdict can be emitted.
+// top of the upstream's budget: room for gatekeeper's own part, which runs after
+// the upstream under one deadline (the issuer call timeout plus a short slack,
+// 5s by default) and then falls back to the upstream's bytes. The runtime
+// therefore never cuts the hook off before the upstream's verdict is emitted.
+// A registration written by hand instead of by hooks-install must set the
+// longer limit too: the upstream's own timeout plus this allowance.
 const composeAllowanceSeconds = 8
 
 // timeoutFor is the runtime-side timeout registered for event.
@@ -96,8 +99,15 @@ func (in Install) Validate() error {
 
 // Command returns the command line registered for event.
 func (in Install) Command(event string) string {
-	parts := []string{shellQuote(in.Binary), "hook", "claude-code", event,
-		"--socket", shellQuote(in.Socket), "--state-dir", shellQuote(in.StateDir), "--mode", string(in.Mode)}
+	parts := []string{shellQuote(in.Binary), "hook", "claude-code", event}
+	if event == EventPreToolUseBash && in.Compose != "" {
+		// Fixed position, directly after the event: the hook finds the composed
+		// hook here before it parses any other flag, so no later flag can keep the
+		// upstream from running.
+		parts = append(parts, "--compose", shellQuote(in.Compose),
+			"--upstream-timeout", strconv.Itoa(in.TimeoutSeconds)+"s")
+	}
+	parts = append(parts, "--socket", shellQuote(in.Socket), "--state-dir", shellQuote(in.StateDir), "--mode", string(in.Mode))
 	if in.Origin != "" {
 		parts = append(parts, "--origin", shellQuote(in.Origin))
 	}
@@ -107,10 +117,6 @@ func (in Install) Command(event string) string {
 			parts = append(parts, "--refresh-below", in.RefreshBelow.String())
 		}
 	case EventPreToolUseBash:
-		if in.Compose != "" {
-			parts = append(parts, "--compose", shellQuote(in.Compose),
-				"--upstream-timeout", strconv.Itoa(in.TimeoutSeconds)+"s")
-		}
 	}
 	return strings.Join(parts, " ")
 }

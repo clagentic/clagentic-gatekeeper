@@ -24,6 +24,9 @@ type Record struct {
 }
 
 // Store keeps Records between hook processes, one directory per runtime session.
+// A Store whose Root is empty or not absolute is disabled: every method refuses
+// before touching the filesystem, so a bad root never resolves against the
+// working directory.
 type Store struct {
 	Root string
 }

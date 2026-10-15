@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sync"
 	"time"
 
 	"github.com/clagentic/clagentic-gatekeeper/internal/config"
@@ -21,9 +20,10 @@ const hookEnvName = hook.EnvDir
 const (
 	// hookCallTimeout bounds each call to the issuer socket.
 	hookCallTimeout = 3 * time.Second
-	// hookWatchdogSlack is how long past the call timeout a hook process may live
-	// before it exits on its own, whatever it is waiting for.
-	hookWatchdogSlack = 2 * time.Second
+	// hookOwnSlack is how long past the issuer call timeout gatekeeper's own part
+	// of a hook may take before the hook gives up on it and answers with what it
+	// already has.
+	hookOwnSlack = 2 * time.Second
 	// defaultHookTimeoutSeconds is the runtime-side timeout a registration sets.
 	defaultHookTimeoutSeconds = 5
 	defaultRefreshBelow       = 30 * time.Minute
@@ -50,9 +50,9 @@ func explicitSocket(flagValue, cfgPath string) (string, error) {
 }
 
 // runHook dispatches `gatekeeper hook <adapter> ...`. It returns the process
-// exit code. No path here exits 2: in a runtime's hook protocol 2 is a blocking
-// verdict, and a verdict is not gatekeeper's to give. A command that is not a
-// usable hook invocation exits 1, which a runtime reports without blocking.
+// exit code. No path here exits 2 on its own: in a runtime's hook protocol 2 is a
+// blocking verdict, and a verdict is not gatekeeper's to give. A command that is
+// not a usable hook invocation exits 1, which a runtime reports without blocking.
 func runHook(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, "usage: gatekeeper hook claude-code <event> [flags] | gatekeeper hook process [flags]")
@@ -72,141 +72,198 @@ func runHook(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	return 1
 }
 
-// hookWatchdog bounds a hook process whatever it is waiting for. When the
-// deadline passes it emits what the composed upstream already said, if it said
-// anything, and exits with the upstream's own exit code; otherwise it exits 0
-// with no output. emit is the one place the process writes its reply, so the
-// watchdog and the normal path cannot both write.
-type hookWatchdog struct {
-	once   sync.Once
-	stdout io.Writer
-	stderr io.Writer
-}
-
-func (w *hookWatchdog) emit(res hook.Result, log hook.Log, event string) int {
-	code := 0
-	w.once.Do(func() {
-		if len(res.Stderr) > 0 {
-			_, _ = w.stderr.Write(res.Stderr)
-		}
-		if len(res.Stdout) > 0 {
-			if _, err := w.stdout.Write(res.Stdout); err != nil {
-				log.Printf("%s: write reply: %v", event, err)
-				return
-			}
-		}
-		code = res.ExitCode
-	})
-	return code
-}
-
-// failOpen records why a hook is doing nothing and yields the outcome of a hook
-// that has no opinion: exit 0 and no output. The reason goes to the hook log when
-// the state directory is usable and always to stderr, which a runtime shows only
-// for a failing hook and ignores at exit 0.
-func failOpen(stderr io.Writer, log hook.Log, event, format string, args ...any) int {
+// failOpen records why a hook is doing nothing. The reason goes to the hook log
+// when the state directory is usable and to diag, which is the process stderr
+// except when a composed upstream owns it.
+func failOpen(diag io.Writer, log hook.Log, event, format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	log.Printf("%s: %s", event, msg)
-	fmt.Fprintf(stderr, "gatekeeper hook %s: %s\n", event, msg)
-	return 0
+	fmt.Fprintf(diag, "gatekeeper hook %s: %s\n", event, msg)
 }
 
-// runHookClaudeCode serves one Claude Code event. It never blocks the runtime:
-// whatever goes wrong inside gatekeeper, including a bad flag, an unknown event
-// or a panic, the exit code is 0, nothing is printed on stdout, and the reason is
-// logged. The only non-zero exit is a composed upstream hook's own, passed
-// through unchanged.
-func runHookClaudeCode(args []string, stdin io.Reader, stdout, stderr io.Writer) (code int) {
+// writeResult is the one place a hook process writes its reply. The exit code is
+// the result's whether or not the writes succeed: a failed write is logged and
+// never turns an upstream's blocking exit into 0.
+func writeResult(res hook.Result, stdout, stderr io.Writer, log hook.Log, event string) int {
+	if len(res.Stderr) > 0 {
+		if _, err := stderr.Write(res.Stderr); err != nil {
+			log.Printf("%s: write stderr: %v", event, err)
+		}
+	}
+	if len(res.Stdout) > 0 {
+		if _, err := stdout.Write(res.Stdout); err != nil {
+			log.Printf("%s: write reply: %v", event, err)
+		}
+	}
+	return res.ExitCode
+}
+
+// runBounded runs gatekeeper's own part of a hook under one deadline. It is the
+// only place a hook recovers a panic: a panic, like a missed deadline, yields
+// fallback, which is the composed upstream's result when there is one and empty
+// otherwise. Without the recover a panic would exit 2, a blocking verdict.
+func runBounded(deadline time.Duration, fallback hook.Result, log hook.Log, event string, work func() hook.Result) hook.Result {
+	done := make(chan hook.Result, 1)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("%s: panic: %v", event, r)
+				done <- fallback
+			}
+		}()
+		done <- work()
+	}()
+	timer := time.NewTimer(deadline)
+	defer timer.Stop()
+	select {
+	case res := <-done:
+		return res
+	case <-timer.C:
+		log.Printf("%s: gatekeeper's part exceeded %s; answering with the upstream result", event, deadline)
+		return fallback
+	}
+}
+
+// parseBudget reads an --upstream-timeout value. A value that is not a positive
+// duration is the registered default: a bad budget never costs the upstream its
+// verdict.
+func parseBudget(s string) time.Duration {
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return hook.DefaultUpstreamTimeout
+	}
+	return hook.UpstreamBudget(d)
+}
+
+// fixedCompose finds the composed hook at the one argv position hooks-install
+// writes it: directly after the event, as `--compose <path>` optionally followed
+// by `--upstream-timeout <duration>`. It is read before any flag is parsed, so
+// nothing later on the command line, a flag that does not parse included, can
+// keep the upstream from running. A hand-written registration that puts these
+// flags elsewhere is found only if the whole command line parses.
+func fixedCompose(event string, rest []string) (exe string, budget time.Duration, ok bool) {
+	if event != hook.EventPreToolUseBash || len(rest) < 2 || rest[0] != "--compose" || rest[1] == "" {
+		return "", 0, false
+	}
+	budget = hook.DefaultUpstreamTimeout
+	if len(rest) >= 4 && rest[2] == "--upstream-timeout" {
+		budget = parseBudget(rest[3])
+	}
+	return rest[1], budget, true
+}
+
+// runHookClaudeCode serves one Claude Code event and writes its one reply.
+func runHookClaudeCode(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	res, log, event := serveClaudeCode(args, stdin, stderr)
+	return writeResult(res, stdout, stderr, log, event)
+}
+
+// serveClaudeCode computes the reply to one Claude Code event. It never blocks
+// the runtime: whatever goes wrong inside gatekeeper, including a bad flag, an
+// unknown event or a panic, the result carries no decision and exit 0, and the
+// reason is logged.
+//
+// In compose mode the composed upstream hook runs first, on the raw stdin, and
+// its result is the process result unless gatekeeper's own bounded part adds its
+// one statement to an upstream allow or no-decision. Every other path, including
+// every gatekeeper failure, yields the upstream's bytes and exit code exactly,
+// so a registration that composes loses nothing of the hook it replaced.
+func serveClaudeCode(args []string, stdin io.Reader, stderr io.Writer) (hook.Result, hook.Log, string) {
 	if len(args) == 0 {
-		return failOpen(stderr, hook.Log{}, "claude-code", "no event named")
+		failOpen(stderr, hook.Log{}, "claude-code", "no event named")
+		return hook.Result{}, hook.Log{}, "claude-code"
 	}
 	event := args[0]
+
+	var (
+		composing bool
+		raw       []byte
+		up        hook.Result
+		upErr     error
+		readErr   error
+	)
+	// diag is where gatekeeper's own diagnostics go. With an upstream composed the
+	// stderr belongs to the upstream's reply and carries only its bytes.
+	var diag io.Writer = stderr
+	runUpstream := func(exe string, budget time.Duration) {
+		composing, diag = true, io.Discard
+		// The upstream gets the stdin as it was read, whatever it holds and however
+		// much of it there is.
+		raw, readErr = io.ReadAll(stdin)
+		up, upErr = hook.RunUpstream(exe, raw, budget)
+	}
+	if exe, budget, ok := fixedCompose(event, args[1:]); ok {
+		runUpstream(exe, budget)
+	}
+	fallback := func() hook.Result {
+		if composing && upErr == nil {
+			return up
+		}
+		return hook.Result{}
+	}
+
 	fs := flag.NewFlagSet("hook claude-code "+event, flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	fs.SetOutput(diag)
 	socket := fs.String("socket", "", "issuer unix socket (required unless --config names one)")
 	cfgPath := fs.String("config", "", "config file whose identity.socket_path names the socket")
 	stateDir := fs.String("state-dir", "", "absolute directory for hook state, logs and captures (required)")
 	modeName := fs.String("mode", string(hook.ModeWarn), "warn (issue and capture, rewrite nothing) or enforce")
 	origin := fs.String("origin", "", "origin sent with issue-session: scheduled, loop, trigger or agent")
 	refresh := fs.Duration("refresh-below", 0, "user-prompt-submit: ask for a new session assertion below this remaining lifetime (0 disables)")
-	compose := fs.String("compose", "", "pre-tool-use-bash: absolute path of another Bash-rewriting hook to run first")
-	upstreamTimeout := fs.Duration("upstream-timeout", hook.DefaultUpstreamTimeout, "pre-tool-use-bash with --compose: the budget of the composed hook, equal to the timeout it has when registered alone")
+	compose := fs.String("compose", "", "pre-tool-use-bash: absolute path of another Bash-rewriting hook to run first (hooks-install writes it directly after the event)")
+	upstreamTimeout := fs.String("upstream-timeout", "", "pre-tool-use-bash with --compose: the budget of the composed hook, equal to the timeout it has when registered alone; a value that is not a positive duration means the default")
 	timeout := fs.Duration("timeout", hookCallTimeout, "bound on each call to the issuer")
-	wd := &hookWatchdog{stdout: stdout, stderr: stderr}
-	composing := func() bool { return *compose != "" && event == hook.EventPreToolUseBash }
-	// degrade ends a hook that cannot do its own work. It yields no decision and no
-	// output, except that a composed upstream still gets to speak: gatekeeper
-	// failing must not cost the other hook its verdict.
-	degrade := func(log hook.Log, format string, a ...any) int {
-		failOpen(stderr, log, event, format, a...)
-		if !composing() {
-			return 0
+	if err := fs.Parse(args[1:]); err != nil {
+		if !errors.Is(err, flag.ErrHelp) {
+			failOpen(diag, hook.Log{}, event, "flags: %v", err)
 		}
-		return wd.emit(hook.PassThrough(*compose, stdin, *upstreamTimeout, log), log, event)
+		return fallback(), hook.Log{}, event
+	}
+	if !composing && event == hook.EventPreToolUseBash && *compose != "" {
+		runUpstream(*compose, parseBudget(*upstreamTimeout))
 	}
 
-	if err := fs.Parse(args[1:]); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return 0
-		}
-		return degrade(hook.Log{}, "flags: %v", err)
-	}
-	// Paths derived from the state directory exist only when it is absolute, so a
-	// bad value writes nothing relative to wherever the runtime happened to run.
-	log, capture := hook.Log{}, hook.Capture{}
+	// Paths derived from the state directory exist only when it is absolute; a
+	// missing or relative one disables the store, the log and the capture
+	// entirely, so a bad value reads and writes nothing relative to wherever the
+	// runtime happened to run.
+	log, capture, root := hook.Log{}, hook.Capture{}, ""
 	if filepath.IsAbs(*stateDir) {
-		log = hook.Log{Path: filepath.Join(*stateDir, "hook.log")}
-		capture = hook.Capture{Path: filepath.Join(*stateDir, "shapes.jsonl")}
+		root = *stateDir
+		log = hook.Log{Path: filepath.Join(root, "hook.log")}
+		capture = hook.Capture{Path: filepath.Join(root, "shapes.jsonl")}
+	}
+	if readErr != nil {
+		log.Printf("%s: reading the payload: %v", event, readErr)
+	}
+	if upErr != nil {
+		log.Printf("%s: %v", event, upErr)
 	}
 	if !knownEvent(event) {
-		return degrade(log, "unknown claude-code event")
+		failOpen(diag, log, event, "unknown claude-code event")
+		return fallback(), log, event
 	}
-	if *timeout <= 0 || *upstreamTimeout <= 0 {
-		return degrade(log, "--timeout and --upstream-timeout must be positive")
+	callTimeout := *timeout
+	if callTimeout <= 0 {
+		failOpen(diag, log, event, "--timeout must be positive; using %s", hookCallTimeout)
+		callTimeout = hookCallTimeout
 	}
 	// A mode that cannot be read becomes warn, which rewrites nothing.
 	mode, err := hook.ParseMode(*modeName)
 	if err != nil {
-		failOpen(stderr, log, event, "%v; running as warn", err)
+		failOpen(diag, log, event, "%v; running as warn", err)
 		mode = hook.ModeWarn
 	}
-	if !filepath.IsAbs(*stateDir) {
-		failOpen(stderr, log, event, "--state-dir must be an absolute path; keeping no state")
+	if root == "" {
+		failOpen(diag, log, event, "--state-dir must be an absolute path; keeping no state")
 	}
 
 	h := &hook.ClaudeCode{
-		Store: hook.Store{Root: *stateDir},
-		Mode:  mode, Origin: *origin, RefreshBelow: *refresh, Compose: *compose, UpstreamTimeout: *upstreamTimeout,
+		Store: hook.Store{Root: root},
+		Mode:  mode, Origin: *origin, RefreshBelow: *refresh,
 		Log: log, Capture: capture,
 		HookPID: os.Getpid(),
 	}
-
-	// Everything below fails open. The watchdog never fires before the composed
-	// hook's budget is spent, and then leaves time for the issuer call that
-	// follows it.
-	deadline := *timeout + hookWatchdogSlack
-	if *compose != "" && event == hook.EventPreToolUseBash {
-		deadline += *upstreamTimeout
-	}
-	done := make(chan struct{})
-	defer close(done)
-	go func() {
-		select {
-		case <-done:
-		case <-time.After(deadline):
-			log.Printf("%s: exceeded %s; emitting only what the composed hook said", event, deadline)
-			held, _ := h.Held()
-			os.Exit(wd.emit(held, log, event))
-		}
-	}()
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("%s: panic: %v", event, r)
-			held, _ := h.Held()
-			code = wd.emit(held, log, event)
-		}
-	}()
-
 	// An issuer that cannot be named is an issuer that always refuses: the event
 	// still runs, so a composed upstream still speaks, and the reason is logged
 	// with every failed issue.
@@ -214,9 +271,16 @@ func runHookClaudeCode(args []string, stdin io.Reader, stdout, stderr io.Writer)
 	if err != nil {
 		h.Issuer = hook.UnavailableIssuer{Err: err}
 	} else {
-		h.Issuer = identity.Client{Socket: sock, Timeout: *timeout}
+		h.Issuer = identity.Client{Socket: sock, Timeout: callTimeout}
 	}
-	return wd.emit(h.Handle(event, stdin), log, event)
+
+	res := runBounded(callTimeout+hookOwnSlack, fallback(), log, event, func() hook.Result {
+		if composing {
+			return h.HandleComposed(raw, up, upErr)
+		}
+		return h.Handle(event, stdin)
+	})
+	return res, log, event
 }
 
 func knownEvent(event string) bool {

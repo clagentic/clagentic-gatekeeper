@@ -6,7 +6,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -224,18 +226,6 @@ func TestComposedOutputIsTheUpstreamsOwnWhenTheGatekeeperPartDoesNothing(t *test
 	})
 }
 
-func TestComposedHoldsTheUpstreamVerdictForAHookThatIsCutShort(t *testing.T) {
-	h := composedHarness(t, ModeEnforce, printing(upstreamRewrite))
-	if _, ok := h.hook.Held(); ok {
-		t.Fatal("a verdict before any upstream ran")
-	}
-	h.fire(EventPreToolUseBash, bashPayload("", "", "ls -l"))
-	held, ok := h.hook.Held()
-	if !ok || string(held.Stdout) != upstreamRewrite {
-		t.Fatalf("held %+v %v", held, ok)
-	}
-}
-
 // An upstream that cannot start or has no verdict in time produces nothing, as a
 // failed hook does: the call proceeds unchanged and nothing is blocked.
 func TestComposedUpstreamWithoutAVerdictYieldsNothing(t *testing.T) {
@@ -259,9 +249,6 @@ func TestComposedUpstreamWithoutAVerdictYieldsNothing(t *testing.T) {
 		res := h.fire(EventPreToolUseBash, bashPayload("", "", "ls"))
 		if len(res.Stdout) != 0 || res.ExitCode != 0 {
 			t.Errorf("%s: %+v", name, res)
-		}
-		if _, ok := h.hook.Held(); ok {
-			t.Errorf("%s: a verdict was held", name)
 		}
 	}
 	if !strings.Contains(h.log(), "composed hook") {
@@ -314,13 +301,100 @@ func TestComposedUpstreamGetsNoArguments(t *testing.T) {
 	}
 }
 
-func TestPassThroughReturnsTheUpstreamVerdictOrNothing(t *testing.T) {
+func TestRunUpstreamReturnsTheUpstreamVerdictOrAnError(t *testing.T) {
 	exe := writeUpstream(t, "echo out; echo err >&2; exit 2")
-	got := PassThrough(exe, strings.NewReader("{}"), 2*time.Second, Log{})
-	if string(got.Stdout) != "out\n" || string(got.Stderr) != "err\n" || got.ExitCode != 2 {
+	got, err := RunUpstream(exe, []byte("{}"), 2*time.Second)
+	if err != nil || string(got.Stdout) != "out\n" || string(got.Stderr) != "err\n" || got.ExitCode != 2 {
+		t.Fatalf("%+v %v", got, err)
+	}
+	if _, err := RunUpstream(filepath.Join(t.TempDir(), "absent"), []byte("{}"), time.Second); err == nil {
+		t.Fatal("an upstream that cannot start gave a verdict")
+	}
+}
+
+// A budget that is not positive is the registered default, never a deadline that
+// has already passed.
+func TestRunUpstreamWithABadBudgetUsesTheDefault(t *testing.T) {
+	exe := writeUpstream(t, "echo out; exit 2")
+	for _, budget := range []time.Duration{0, -time.Second} {
+		got, err := RunUpstream(exe, []byte("{}"), budget)
+		if err != nil || got.ExitCode != 2 || string(got.Stdout) != "out\n" {
+			t.Errorf("budget %s: %+v %v", budget, got, err)
+		}
+	}
+	if UpstreamBudget(0) != DefaultUpstreamTimeout || UpstreamBudget(-1) != DefaultUpstreamTimeout || UpstreamBudget(time.Second) != time.Second {
+		t.Fatal("UpstreamBudget")
+	}
+}
+
+// An upstream that exited is its verdict, even when the deadline had passed by
+// the time the exit was seen: only a process killed at the deadline has none.
+func TestUpstreamThatExitedAtTheDeadlineKeepsItsExitCode(t *testing.T) {
+	exited := func(script string) error {
+		err := exec.Command("sh", "-c", script).Run()
+		if err == nil {
+			t.Fatalf("%q exited 0", script)
+		}
+		return err
+	}
+	deny := Result{Stdout: []byte("blocked\n"), Stderr: []byte("why\n")}
+	got, err := upstreamOutcome(deny, exited("exit 2"), true)
+	if err != nil || got.ExitCode != 2 || string(got.Stdout) != "blocked\n" || string(got.Stderr) != "why\n" {
+		t.Fatalf("exit 2 at the deadline: %+v %v", got, err)
+	}
+	if _, err := upstreamOutcome(Result{}, exited("kill -9 $$"), true); err == nil {
+		t.Fatal("a process killed at the deadline gave a verdict")
+	}
+	got, err = upstreamOutcome(Result{}, exited("kill -9 $$"), false)
+	if err != nil || got.ExitCode != 1 {
+		t.Fatalf("signal death before the deadline: %+v %v", got, err)
+	}
+}
+
+// The upstream sees the raw stdin whatever it holds: bytes that are not JSON, a
+// payload over the size cap, and a tool that is not Bash all still reach it, and
+// its result is the result.
+func TestComposedUpstreamRunsOnPayloadsGatekeeperWillNotParse(t *testing.T) {
+	seen := filepath.Join(t.TempDir(), "stdin")
+	h := newHarness(t, ModeEnforce)
+	startSession(t, h, "")
+	// writeUpstream's own `cat >/dev/null` would consume stdin, so this upstream
+	// is its own script and records how many bytes it was given.
+	reader := filepath.Join(t.TempDir(), "reader.sh")
+	script := "#!/bin/sh\nwc -c > " + seen + "\nprintf 'up'\nexit 2\n"
+	if err := os.WriteFile(reader, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	h.hook.Compose, h.hook.UpstreamTimeout = reader, 5*time.Second
+	huge := strings.Repeat("x", maxPayloadBytes+10)
+	for name, stdin := range map[string]string{
+		"not json":  "not json",
+		"empty":     "",
+		"oversized": huge,
+		"not bash":  `{"session_id":"` + testSession + `","tool_name":"Read","tool_input":{"file_path":"/x"}}`,
+	} {
+		res := h.hook.Handle(EventPreToolUseBash, strings.NewReader(stdin))
+		if string(res.Stdout) != "up" || res.ExitCode != 2 {
+			t.Errorf("%s: %+v", name, res)
+		}
+		raw, err := os.ReadFile(seen)
+		if err != nil || strings.TrimSpace(string(raw)) != strconv.Itoa(len(stdin)) {
+			t.Errorf("%s: upstream read %q (%v), want %d bytes", name, raw, err, len(stdin))
+		}
+	}
+}
+
+// Whatever gatekeeper's part cannot read or decide, the upstream's own bytes and
+// exit code are the result, and an upstream with no verdict never becomes one.
+func TestHandleComposedNeverLosesTheUpstreamResult(t *testing.T) {
+	up := Result{Stdout: []byte("v"), Stderr: []byte("e"), ExitCode: 2}
+	h := newHarness(t, ModeEnforce)
+	// A payload that is not a JSON object.
+	if got := h.hook.HandleComposed([]byte("nope"), up, nil); string(got.Stdout) != "v" || got.ExitCode != 2 {
 		t.Fatalf("%+v", got)
 	}
-	got = PassThrough(filepath.Join(t.TempDir(), "absent"), strings.NewReader("{}"), time.Second, Log{})
+	// An upstream with no verdict is empty, never an allow.
+	got := h.hook.HandleComposed([]byte(`{"session_id":"`+testSession+`","tool_name":"Bash","tool_input":{"command":"ls"}}`), Result{}, os.ErrDeadlineExceeded)
 	if len(got.Stdout) != 0 || got.ExitCode != 0 {
 		t.Fatalf("%+v", got)
 	}
