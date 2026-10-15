@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/clagentic/clagentic-gatekeeper/internal/config"
@@ -140,7 +141,7 @@ func parseBudget(s string) time.Duration {
 // by `--upstream-timeout <duration>`. It is read before any flag is parsed, so
 // nothing later on the command line, a flag that does not parse included, can
 // keep the upstream from running. A hand-written registration that puts these
-// flags elsewhere is found only if the whole command line parses.
+// flags elsewhere is found by findCompose.
 func fixedCompose(event string, rest []string) (exe string, budget time.Duration, ok bool) {
 	if event != hook.EventPreToolUseBash || len(rest) < 2 || rest[0] != "--compose" || rest[1] == "" {
 		return "", 0, false
@@ -150,6 +151,94 @@ func fixedCompose(event string, rest []string) (exe string, budget time.Duration
 		budget = parseBudget(rest[3])
 	}
 	return rest[1], budget, true
+}
+
+// claudeCodeFlags is the flag set of one claude-code event and where its values
+// land. One definition serves the parse and findCompose, so what findCompose
+// takes for a flag or a flag's value is what the parse takes.
+type claudeCodeFlags struct {
+	fs              *flag.FlagSet
+	socket          *string
+	cfgPath         *string
+	stateDir        *string
+	modeName        *string
+	origin          *string
+	refresh         *time.Duration
+	compose         *string
+	upstreamTimeout *string
+	timeout         *time.Duration
+}
+
+func newClaudeCodeFlags(event string, out io.Writer) *claudeCodeFlags {
+	fs := flag.NewFlagSet("hook claude-code "+event, flag.ContinueOnError)
+	fs.SetOutput(out)
+	return &claudeCodeFlags{
+		fs:              fs,
+		socket:          fs.String("socket", "", "issuer unix socket (required unless --config names one)"),
+		cfgPath:         fs.String("config", "", "config file whose identity.socket_path names the socket"),
+		stateDir:        fs.String("state-dir", "", "absolute directory for hook state, logs and captures (required)"),
+		modeName:        fs.String("mode", string(hook.ModeWarn), "warn (issue and capture, rewrite nothing) or enforce"),
+		origin:          fs.String("origin", "", "origin sent with issue-session: scheduled, loop, trigger or agent"),
+		refresh:         fs.Duration("refresh-below", 0, "user-prompt-submit: ask for a new session assertion below this remaining lifetime (0 disables)"),
+		compose:         fs.String("compose", "", "pre-tool-use-bash: absolute path of another Bash-rewriting hook to run first (hooks-install writes it directly after the event)"),
+		upstreamTimeout: fs.String("upstream-timeout", "", "pre-tool-use-bash with --compose: the budget of the composed hook, equal to the timeout it has when registered alone; a value that is not a positive duration means the default"),
+		timeout:         fs.Duration("timeout", hookCallTimeout, "bound on each call to the issuer"),
+	}
+}
+
+// findCompose is fixedCompose for a hand-written registration: it reads
+// --compose and --upstream-timeout from the command line without parsing the
+// rest, so a flag that does not parse cannot keep the upstream from running.
+// A token is one of them exactly when the flag package would take it for one: the
+// scan walks the flags the way Parse does, so a token that is the value of another
+// flag (--origin --compose) is a value, and it stops where Parse stops, at "--",
+// at "-" and at the first argument that is not a flag. The last occurrence wins.
+// The one difference from Parse is deliberate: a flag it does not know is skipped,
+// not an error, so the upstream still gets its verdict.
+func findCompose(event string, rest []string) (exe string, budget time.Duration, ok bool) {
+	if event != hook.EventPreToolUseBash {
+		return "", 0, false
+	}
+	fs := newClaudeCodeFlags(event, io.Discard).fs
+	budgetArg := ""
+	for i := 0; i < len(rest); i++ {
+		a := rest[i]
+		if len(a) < 2 || a[0] != '-' {
+			break
+		}
+		name := strings.TrimPrefix(a[1:], "-")
+		if name == "" {
+			break
+		}
+		if name[0] == '-' || name[0] == '=' || len(a)-len(name) > 2 {
+			continue
+		}
+		name, v, hasValue := strings.Cut(name, "=")
+		f := fs.Lookup(name)
+		if f == nil {
+			continue
+		}
+		if b, isBool := f.Value.(interface{ IsBoolFlag() bool }); isBool && b.IsBoolFlag() {
+			continue
+		}
+		if !hasValue {
+			if i+1 >= len(rest) {
+				break
+			}
+			i++
+			v = rest[i]
+		}
+		switch name {
+		case "compose":
+			exe = v
+		case "upstream-timeout":
+			budgetArg = v
+		}
+	}
+	if exe == "" {
+		return "", 0, false
+	}
+	return exe, parseBudget(budgetArg), true
 }
 
 // runHookClaudeCode serves one Claude Code event and writes its one reply.
@@ -187,12 +276,13 @@ func serveClaudeCode(args []string, stdin io.Reader, stderr io.Writer) (hook.Res
 	var diag io.Writer = stderr
 	runUpstream := func(exe string, budget time.Duration) {
 		composing, diag = true, io.Discard
-		// The upstream gets the stdin as it was read, whatever it holds and however
-		// much of it there is.
-		raw, readErr = io.ReadAll(stdin)
-		up, upErr = hook.RunUpstream(exe, raw, budget)
+		// The upstream gets the stdin as it arrives, whatever it holds and however
+		// much of it there is; raw is gatekeeper's bounded copy.
+		raw, up, upErr, readErr = hook.RunComposed(exe, stdin, budget)
 	}
 	if exe, budget, ok := fixedCompose(event, args[1:]); ok {
+		runUpstream(exe, budget)
+	} else if exe, budget, ok := findCompose(event, args[1:]); ok {
 		runUpstream(exe, budget)
 	}
 	fallback := func() hook.Result {
@@ -202,17 +292,10 @@ func serveClaudeCode(args []string, stdin io.Reader, stderr io.Writer) (hook.Res
 		return hook.Result{}
 	}
 
-	fs := flag.NewFlagSet("hook claude-code "+event, flag.ContinueOnError)
-	fs.SetOutput(diag)
-	socket := fs.String("socket", "", "issuer unix socket (required unless --config names one)")
-	cfgPath := fs.String("config", "", "config file whose identity.socket_path names the socket")
-	stateDir := fs.String("state-dir", "", "absolute directory for hook state, logs and captures (required)")
-	modeName := fs.String("mode", string(hook.ModeWarn), "warn (issue and capture, rewrite nothing) or enforce")
-	origin := fs.String("origin", "", "origin sent with issue-session: scheduled, loop, trigger or agent")
-	refresh := fs.Duration("refresh-below", 0, "user-prompt-submit: ask for a new session assertion below this remaining lifetime (0 disables)")
-	compose := fs.String("compose", "", "pre-tool-use-bash: absolute path of another Bash-rewriting hook to run first (hooks-install writes it directly after the event)")
-	upstreamTimeout := fs.String("upstream-timeout", "", "pre-tool-use-bash with --compose: the budget of the composed hook, equal to the timeout it has when registered alone; a value that is not a positive duration means the default")
-	timeout := fs.Duration("timeout", hookCallTimeout, "bound on each call to the issuer")
+	f := newClaudeCodeFlags(event, diag)
+	fs := f.fs
+	socket, cfgPath, stateDir, modeName, origin := f.socket, f.cfgPath, f.stateDir, f.modeName, f.origin
+	refresh, compose, upstreamTimeout, timeout := f.refresh, f.compose, f.upstreamTimeout, f.timeout
 	if err := fs.Parse(args[1:]); err != nil {
 		if !errors.Is(err, flag.ErrHelp) {
 			failOpen(diag, hook.Log{}, event, "flags: %v", err)

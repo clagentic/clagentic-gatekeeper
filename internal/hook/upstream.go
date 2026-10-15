@@ -6,9 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -64,6 +67,12 @@ func UpstreamBudget(d time.Duration) time.Duration {
 // the deadline, and a signal death, which is reported as exit 1: the runtime
 // treats that as a failed hook that does not block.
 func RunUpstream(exe string, payload []byte, budget time.Duration) (Result, error) {
+	return runUpstreamStream(exe, bytes.NewReader(payload), budget)
+}
+
+// runUpstreamStream is RunUpstream with the stdin streamed from in rather than
+// held in memory.
+func runUpstreamStream(exe string, in io.Reader, budget time.Duration) (Result, error) {
 	if err := CheckUpstream(exe); err != nil {
 		return Result{}, err
 	}
@@ -71,17 +80,147 @@ func RunUpstream(exe string, payload []byte, budget time.Duration) (Result, erro
 	ctx, cancel := context.WithTimeout(context.Background(), budget)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, exe)
-	cmd.Stdin = bytes.NewReader(payload)
+	// The stdin is fed through our own pipe, not cmd.Stdin: exec waits for a copy
+	// goroutine it owns, and one blocked reading a source that never ends (the
+	// upstream exited without reading) would hold Run past the upstream's exit.
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return Result{}, fmt.Errorf("composed hook %s: %w", exe, err)
+	}
 	cmd.WaitDelay = upstreamWaitDelay
+	// A kill is recorded where it is sent: on Windows a killed process reports an
+	// ordinary non-negative exit code, so the exit code alone cannot tell a deadline
+	// kill from a verdict. A Kill that returned nil is only a kill sent: a process
+	// that had exited but was not yet reaped accepts it too, so the wait status
+	// must also show the kill was what ended the process.
+	var killSent atomic.Bool
+	cmd.Cancel = func() error {
+		err := cmd.Process.Kill()
+		if err == nil {
+			killSent.Store(true)
+		}
+		return err
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	err := cmd.Run()
+	if err := cmd.Start(); err != nil {
+		return Result{}, fmt.Errorf("composed hook %s: %w", exe, err)
+	}
+	go func() {
+		// A write to an upstream that has stopped reading fails; that ends the copy
+		// and is not an error of the run.
+		_, _ = io.Copy(stdin, in)
+		_ = stdin.Close()
+	}()
+	err = cmd.Wait()
 	res := Result{Stdout: stdout.Bytes(), Stderr: stderr.Bytes()}
-	res, err = upstreamOutcome(res, err, ctx.Err() != nil)
+	killed := killSent.Load() && cmd.ProcessState != nil && endedByKill(cmd.ProcessState)
+	res, err = classifyUpstream(res, err, ctx.Err() != nil, killed)
 	if err != nil {
 		return Result{}, fmt.Errorf("composed hook %s: %w", exe, err)
 	}
 	return res, nil
+}
+
+// classifyUpstream is upstreamOutcome with the one fact the exit code cannot
+// carry on every GOOS: killed, that the process was killed by the deadline. A
+// killed process has no verdict whatever code it reports.
+func classifyUpstream(res Result, runErr error, expired, killed bool) (Result, error) {
+	if killed {
+		return Result{}, errors.New("no verdict before the deadline")
+	}
+	return upstreamOutcome(res, runErr, expired)
+}
+
+// capturedStdin passes the stdin through to the upstream while keeping a bounded
+// copy for gatekeeper's own part, so memory stays bounded however much arrives.
+type capturedStdin struct {
+	r     io.Reader
+	limit int
+	// rmu serializes reads of the source, so the copy into the upstream and the
+	// drain after it never interleave and the copy stays in order.
+	rmu sync.Mutex
+	// mu guards the rest: the copy into the upstream's stdin can outlive Run when
+	// the upstream exits without reading and the source never ends.
+	mu  sync.Mutex
+	buf bytes.Buffer
+	eof bool
+	err error
+}
+
+// Read streams from the source. A read error is recorded and ends the stream as
+// an EOF: the upstream still gets what arrived, as it did when stdin was read
+// whole first.
+func (c *capturedStdin) Read(p []byte) (int, error) {
+	c.rmu.Lock()
+	defer c.rmu.Unlock()
+	n, err := c.r.Read(p)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if room := c.limit - c.buf.Len(); n > 0 && room > 0 {
+		c.buf.Write(p[:min(n, room)])
+	}
+	switch {
+	case err == io.EOF:
+		c.eof = true
+	case err != nil:
+		c.err = err
+		err = io.EOF
+	}
+	return n, err
+}
+
+// drain reads what the upstream left unread, up to the cap, waiting at most wait
+// for it. Gatekeeper's copy is thereby complete whenever the stdin reaches its end
+// within the cap, however little the upstream read.
+func (c *capturedStdin) drain(wait time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		buf := make([]byte, 32<<10)
+		for {
+			c.mu.Lock()
+			finished := c.eof || c.err != nil || c.buf.Len() >= c.limit
+			c.mu.Unlock()
+			if finished {
+				return
+			}
+			if _, err := c.Read(buf); err != nil {
+				return
+			}
+		}
+	}()
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+	}
+}
+
+// stdinDrainWait bounds the wait for the rest of a stdin the upstream stopped
+// reading. A runtime writes the whole payload and closes the pipe before it waits
+// on the hook, so the rest is normally already there.
+const stdinDrainWait = 500 * time.Millisecond
+
+// RunComposed runs the composed hook on the raw stdin in, streamed to it before
+// any cap, parse or tool-name check, and returns gatekeeper's bounded copy of what
+// was read. raw is one byte over maxPayloadBytes at most, so HandleComposed
+// refuses an oversized payload without it being held. The copy is complete
+// whenever the stdin ends within the cap, whatever the upstream read of it. raw is
+// nil when the stdin did not end (it is over the cap, did not end in time, or the
+// read failed), because a prefix of a payload must never be parsed as the
+// payload; readErr is the read failure if there was one.
+func RunComposed(exe string, in io.Reader, budget time.Duration) (raw []byte, up Result, upErr, readErr error) {
+	c := &capturedStdin{r: in, limit: maxPayloadBytes + 1}
+	up, upErr = runUpstreamStream(exe, c, budget)
+	c.drain(stdinDrainWait)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.eof {
+		raw = c.buf.Bytes()
+	}
+	return raw, up, upErr, c.err
 }
 
 // upstreamOutcome classifies how the upstream ended. runErr is what Run
