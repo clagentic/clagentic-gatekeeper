@@ -140,6 +140,12 @@ that rule and nothing else. **A registrar that does not use `hooks-install` must
 add the rule itself**; without it a rewritten call prompts. The prompt and
 no-prompt behaviour is proven in the live run, not by the unit tests.
 
+The wildcard rule does not admit runtime-determined values (coordinator probe):
+a model-written `export CLAGENTIC_IDENTITY_DIR=` whose value contains a command
+substitution, in the `$(...)` or backquote form, was denied by the harness before
+execution even with the rule present. The rule therefore covers the issued
+literal path and not a value a command computes.
+
 The value of `CLAGENTIC_IDENTITY_DIR` must be a plain absolute path of letters,
 digits and `._/+-`. A directory path that carries anything else is not
 delivered (the refusal is logged and the command runs unchanged), so the one
