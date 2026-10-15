@@ -115,4 +115,11 @@ func TestRefusedChecksRequireARefusalThatReachedNothing(t *testing.T) {
 	if checkRefused(procResult{Code: 1, Stderr: "x"}, fx, "") == nil {
 		t.Error("a refusal after a token exchange was accepted")
 	}
+	stub.mu.Lock()
+	stub.exchanges = nil
+	stub.reads++
+	stub.mu.Unlock()
+	if checkRefused(procResult{Code: 1, Stderr: "x"}, fx, "") == nil {
+		t.Error("a refusal after a credential read was accepted")
+	}
 }

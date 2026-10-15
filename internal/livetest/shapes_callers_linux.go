@@ -148,8 +148,8 @@ func checkRefused(res procResult, fx *callerFixture, wantStderr string) error {
 	if res.Stderr == "" || !strings.Contains(res.Stderr, wantStderr) {
 		return fmt.Errorf("refused without the expected reason %q: %.300s", wantStderr, res.Stderr)
 	}
-	if n := len(fx.stub.exchangeBodies()); n != 0 || fx.stub.loginCount() != 0 {
-		return fmt.Errorf("a refused mint still reached the credential store or the git host (%d exchanges, %d logins)", n, fx.stub.loginCount())
+	if n := len(fx.stub.exchangeBodies()); n != 0 || fx.stub.loginCount() != 0 || fx.stub.readCount() != 0 {
+		return fmt.Errorf("a refused mint still reached the credential store or the git host (%d exchanges, %d logins, %d reads)", n, fx.stub.loginCount(), fx.stub.readCount())
 	}
 	return nil
 }
@@ -222,7 +222,9 @@ func checkScope(f callerForm, fx *callerFixture) error {
 // it is not.
 func (e *Env) shapeNoIdentity(assertion, allowed bool) func(context.Context) error {
 	return func(ctx context.Context) error {
-		fx, err := e.newCallerFixture(fixtureSpec{assertion: assertion, osUser: allowed})
+		// The secret store broker makes the refusal's "no credential read" claim
+		// observable; the environment broker would not.
+		fx, err := e.newCallerFixture(fixtureSpec{assertion: assertion, osUser: allowed, broker: brokerOpenBao})
 		if err != nil {
 			return err
 		}

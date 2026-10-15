@@ -90,9 +90,9 @@ func (e *Env) assertionAssignmentFor(ctx context.Context, definition string) (st
 const identityDirEnv = "CLAGENTIC_IDENTITY_DIR"
 
 // runMint runs `mint` as the caller would, directly or under a command wrapper.
-func (e *Env) runMint(ctx context.Context, f *mintFixture, extraEnv []string, viaWrapper bool, role string) (procResult, error) {
-	args := []string{"mint", "--role", role, "--config", f.cfgPath, "--json"}
-	env := append(append([]string{}, f.env...), extraEnv...)
+func (e *Env) runMint(ctx context.Context, cfgPath string, baseEnv, extraEnv []string, viaWrapper bool, role string) (procResult, error) {
+	args := []string{"mint", "--role", role, "--config", cfgPath, "--json"}
+	env := append(append([]string{}, baseEnv...), extraEnv...)
 	if !viaWrapper {
 		return e.gk(ctx, runOpts{Env: env}, args...)
 	}
@@ -140,7 +140,7 @@ func (e *Env) shapeMintAssertion(viaWrapper bool) func(context.Context) error {
 		if err != nil {
 			return err
 		}
-		res, err := e.runMint(ctx, f, []string{assignment}, viaWrapper, "builder")
+		res, err := e.runMint(ctx, f.cfgPath, f.env, []string{assignment}, viaWrapper, "builder")
 		if err != nil {
 			return err
 		}
@@ -164,8 +164,15 @@ func (e *Env) shapeMintAssertion(viaWrapper bool) func(context.Context) error {
 	}
 }
 
+// newRefusalFixture is the assertion deployment whose secret store and git host
+// are both observable, so a refusal can be shown to have reached neither. The
+// environment broker would leave the credential read unobservable.
+func (e *Env) newRefusalFixture() (*callerFixture, error) {
+	return e.newCallerFixture(fixtureSpec{assertion: true, broker: brokerOpenBao})
+}
+
 func (e *Env) shapeMintOtherRole(ctx context.Context) error {
-	f, err := e.newMintFixture(true)
+	f, err := e.newRefusalFixture()
 	if err != nil {
 		return err
 	}
@@ -174,12 +181,12 @@ func (e *Env) shapeMintOtherRole(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	res, err := e.runMint(ctx, f, []string{assignment}, false, "merger")
+	res, err := e.runMint(ctx, f.cfgPath, f.env, []string{assignment}, false, "merger")
 	if err != nil {
 		return err
 	}
-	if res.Code == 0 || res.Stdout != "" {
-		return fmt.Errorf("a builder assertion minted merger (exit %d, stdout %.100q)", res.Code, res.Stdout)
+	if err := checkRefused(res, f, ""); err != nil {
+		return fmt.Errorf("a builder assertion minted merger: %w", err)
 	}
 	if !strings.Contains(res.Stderr, "merger") || !strings.Contains(res.Stderr, "builder") {
 		return fmt.Errorf("refused, but not naming both roles: %.300s", res.Stderr)
@@ -196,7 +203,7 @@ func (e *Env) shapeMintConfigured(ctx context.Context) error {
 		return err
 	}
 	defer f.close()
-	res, err := e.runMint(ctx, f, nil, false, "builder")
+	res, err := e.runMint(ctx, f.cfgPath, f.env, nil, false, "builder")
 	if err != nil {
 		return err
 	}
@@ -219,7 +226,7 @@ func (e *Env) shapeMintConfigured(ctx context.Context) error {
 // shapeMintForged changes the payload of a delivered assertion so it no longer
 // matches its signature: mint must refuse, not mint and not fall back.
 func (e *Env) shapeMintForged(ctx context.Context) error {
-	f, err := e.newMintFixture(true)
+	f, err := e.newRefusalFixture()
 	if err != nil {
 		return err
 	}
@@ -245,12 +252,12 @@ func (e *Env) shapeMintForged(ctx context.Context) error {
 	if err := os.WriteFile(file, []byte(tampered+"\n"), 0o600); err != nil {
 		return err
 	}
-	res, err := e.runMint(ctx, f, []string{assignment}, false, "builder")
+	res, err := e.runMint(ctx, f.cfgPath, f.env, []string{assignment}, false, "builder")
 	if err != nil {
 		return err
 	}
-	if res.Code == 0 || res.Stdout != "" {
-		return fmt.Errorf("a tampered assertion minted (exit %d, stdout %.100q)", res.Code, res.Stdout)
+	if err := checkRefused(res, f, ""); err != nil {
+		return fmt.Errorf("a tampered assertion was not cleanly refused: %w", err)
 	}
 	if !strings.Contains(res.Stderr, "signature_invalid") && !strings.Contains(res.Stderr, "malformed") {
 		return fmt.Errorf("refused, but not as an assertion failure: %.300s", res.Stderr)

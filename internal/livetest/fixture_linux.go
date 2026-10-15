@@ -49,6 +49,7 @@ type tokenStub struct {
 	mu        sync.Mutex
 	exchanges []string
 	logins    int
+	reads     int
 }
 
 func newTokenStub(secrets map[string]string) *tokenStub {
@@ -85,6 +86,9 @@ func (s *tokenStub) login(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *tokenStub) read(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	s.reads++
+	s.mu.Unlock()
 	if r.Header.Get("X-Vault-Token") != stubClientToken {
 		http.Error(w, "denied", http.StatusForbidden)
 		return
@@ -108,6 +112,14 @@ func (s *tokenStub) loginCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.logins
+}
+
+// readCount is the number of secret reads attempted, whether or not they
+// carried a valid login.
+func (s *tokenStub) readCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.reads
 }
 
 // appKeyPEM is the App private key every fixture of this run signs with.
