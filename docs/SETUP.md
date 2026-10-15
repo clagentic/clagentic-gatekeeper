@@ -36,17 +36,118 @@ credentials that role gets (layer 2 -> 3).
 `internal/attestation.Resolver` tries a **fixed order** of providers and
 returns the first identity found:
 
+0. **Identity assertion** — when `attestation.assertion` is configured, the
+   signed assertion delivered through `CLAGENTIC_IDENTITY_DIR` is verified
+   and used first. See "Identity Assertion provider" below.
 1. **Configured provider** — your own identity source, pointed at via
-   `config.yaml`. Takes precedence when set. See below.
+   `config.yaml`. Takes precedence over the layers below when set. See below.
 2. **Sidecar adapter** — reads a per-spawn or per-session identity file
    written by an external harness, when configured and present. Gatekeeper
    does not assume any specific harness exists.
-3. **Built-in fallback** — the OS-reported invoking user. Always available,
-   no configuration required. See "The built-in fallback" below.
+3. **Built-in fallback** (deprecated) — the OS-reported invoking user. On by
+   default so no deployment breaks; `attestation.allow_os_user: false` removes
+   it. See "The built-in fallback" below.
 
 The order is fixed by `NewChain` and is not configurable. What *is*
-configurable is whether layers 1 and 2 exist at all — an unconfigured layer
-is omitted from the chain, not stubbed in.
+configurable is whether layers 0, 1, 2 and 3 exist at all — an unconfigured
+layer is omitted from the chain, not stubbed in.
+
+## Identity Assertion provider
+
+The assertion provider lets `gatekeeper mint` take the caller's identity, roles
+and grade from the signed Identity Assertion defined in
+[`identity-contract.md`](identity-contract.md), instead of a name that a sidecar
+file or environment variable merely states.
+
+```yaml
+attestation:
+  assertion: {}            # trust the local `gatekeeper serve` issuer only
+  # assertion:
+  #   issuers:             # and these, in addition
+  #     - iss: https://issuer.example
+  #       jwks: /etc/gatekeeper/issuer-example-jwks.json   # optional
+roles:
+  merger:
+    min_grade: workload    # optional; "workload" or "harness" (default)
+```
+
+How a mint resolves with it configured:
+
+1. `CLAGENTIC_IDENTITY_DIR` unset or empty: the provider declines
+   (`ErrNoIdentity`) and the configured provider, sidecars and, while it is
+   on, the OS-user fallback answer exactly as without it.
+2. Set: the directory and `identity.jwt` are checked as the contract's
+   section 6 requires (absolute path, owned by the caller with mode 0700, the
+   file opened without following a symlink and a regular file, at most 16384
+   bytes), then the assertion is verified in the contract's section 4 order:
+   `EdDSA` or `ES256`, `iss` matched exactly against the trusted issuers, the
+   key found by `kid` in that issuer's key set, `cia` equal to 1, `exp`, `nbf`
+   and `iat` with zero leeway, the claim shape, no `aud`, and `dir` equal to the
+   directory it was read from.
+3. **Any failure here is a hard error.** The mint is refused and no later
+   provider is consulted, so a forged, expired or misdirected assertion is never
+   replaced by a weaker identity. An unreachable key set is also a refusal.
+
+The trusted issuers are the local serve issuer, which is always trusted (its
+`iss` is `identity.issuer`, else `unix://<socket path>`, and its key set is
+`identity.jwks_path` when set, else fetched from the socket), plus each entry in
+`attestation.assertion.issuers`. Trust is exactly that list; nothing a token
+names is trusted. A key set locator is an absolute path or `file:` URL, an
+`http(s)` URL (plain `http` only for a loopback host) or a `unix:` socket URL;
+left out it is derived from `iss` by the contract's section 5.1. Network reads
+time out, are capped at 65536 bytes and do not follow a redirect to another
+host; a key set file must be a regular file that group and other cannot write.
+
+What mint then decides, for an identity that came from an assertion:
+
+- **Entitlement is the assertion's roles.** The requested role must be in them;
+  otherwise the mint is refused naming the requested role and the roles the
+  assertion carries. The roles are a ceiling the issuer set, so being in them is
+  what entitles, not `entitled_identities`.
+- **`roles.<name>.min_grade`** refuses an assertion of a lower grade, naming both
+  grades. `workload` ranks above `harness`; the default is `harness`, which every
+  valid assertion meets.
+- **`entitled_identities` only narrows.** When it is set for the role, the
+  assertion's subject (`act.sub`, else `sub`) must also be listed.
+- Every decision for an assertion identity writes one audit line to stderr naming
+  the subject, grade, issuer and role: `mint audit: subject=... grade=...`.
+  `gatekeeper mint --json` also returns `identity` (`subject`, `source`, `grade`)
+  next to `token` and `app_slug`. Neither the audit line nor `identity` appears
+  unless `attestation.assertion` is configured, so a deployment without it sees
+  the output it saw before.
+
+An identity from any other provider is entitled exactly as before, by
+`entitled_identities`; `min_grade` does not apply to it.
+
+A spawned subagent whose mint runs in the per-spawn domain tries the assertion
+first and then its per-spawn sidecar; a miss on both still refuses.
+
+### Standalone and integrated
+
+- **Standalone:** one host runs `gatekeeper serve` and `gatekeeper mint` from
+  the same `config.yaml`. `assertion: {}` is enough: mint verifies against the
+  key set the local serve publishes.
+- **Integrated:** assertions come from an issuer that is not this host's serve
+  (another service, another host). List its `iss` and, when it cannot be derived,
+  its key set locator under `attestation.assertion.issuers`. Gatekeeper never
+  needs to import that issuer's code: the contract and the vectors are the whole
+  interface.
+
+### Conformance
+
+The provider is tested against the vendored conformance vectors in
+[`vectors/v1`](../vectors/README.md), contract version 1.0.0 (`cia` 1): every
+vector's expected outcome must match (`TestVendoredVectorsMatchProvider`). A
+vector set of a different contract version fails that test until the provider is
+updated to it. The verifier is written from the contract with the Go standard
+library; it adds no dependency.
+
+### Platforms
+
+Delivery checks need file ownership and no-follow opens, so the provider works
+on linux and darwin. On windows an assertion cannot be proven safe: with
+`CLAGENTIC_IDENTITY_DIR` set the mint is refused, and with it unset the provider
+declines as above.
 
 ## Binding is fail-closed
 
@@ -123,6 +224,12 @@ If you configure nothing under `attestation:` at all, layers 1a and 1b are
 both omitted from the chain, and every mint resolves through the **built-in
 fallback**: the OS-reported invoking user (`os/user.Current()`), i.e. whatever
 Unix/Windows account the `gatekeeper` process happens to be running as.
+
+**Deprecated.** The fallback stays on by default so that no existing
+deployment loses its identity source, and each mint it answers logs a warning
+on stderr. `attestation.allow_os_user: false` removes it from the chain; do
+that once every caller is covered by an assertion, `attestation.configured` or
+a sidecar. The provider itself is removed in a later release.
 
 This exists so a bare install always has *an* attested source rather than
 failing open — there's no path where Gatekeeper mints with no identity at

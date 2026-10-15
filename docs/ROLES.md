@@ -132,6 +132,38 @@ whether its broker paths and permissions are otherwise valid. This is
 intentional: a bare install (nothing configured beyond broker paths) must
 fail closed rather than mint an unverified token for an unverified caller.
 
+### Entitlement from an Identity Assertion
+
+When `attestation.assertion` is configured (see
+[`docs/SETUP.md`](SETUP.md#identity-assertion-provider)) and the caller's
+identity comes from a verified assertion, gate 1 changes shape. The assertion's
+own `roles` are the entitlement:
+
+- The requested role must be in the assertion's roles. Otherwise the mint is
+  refused naming the requested role and the roles the assertion carries (a
+  `builder` assertion asked for `merger` is refused naming both). The roles are
+  a ceiling the issuer set: being listed is what entitles the caller, and a role
+  not listed is never granted.
+- `min_grade` (`workload` or `harness`, default `harness`) sets the lowest
+  assertion grade that may mint the role. `workload` ranks above `harness`. A
+  lower-grade assertion is refused naming the required grade and the grade it
+  holds. An unknown value is a config error at startup.
+- `entitled_identities` only narrows. When it is set for the role, the
+  assertion's subject (`act.sub`, else `sub`) must also be listed; when it is
+  empty, the assertion's roles alone entitle. A role used only by assertion
+  callers may leave it out.
+
+```yaml
+roles:
+  merger:
+    min_grade: workload         # a harness-grade assertion cannot mint merger
+    # entitled_identities: [...]  # optional extra allowlist for assertion callers
+```
+
+Gate 2 (the App-slug binding) is unchanged and still required. An identity from
+the configured provider, a sidecar or the OS-user fallback is entitled by
+`entitled_identities` exactly as above, and `min_grade` does not apply to it.
+
 ### Returned identity: the verified App slug travels with the token
 
 The App-slug binding above is not only a gate — its result is also handed
@@ -153,7 +185,11 @@ Two surfaces carry this value:
 - **CLI**: `gatekeeper mint --role <role> --json` emits
   `{"token": "...", "expires_at": "...", "app_slug": "..."}` instead of the
   bare token string. `app_slug` is omitted from the JSON object when the
-  role has no App-slug binding configured (gate 2 is off for that role).
+  role has no App-slug binding configured (gate 2 is off for that role). When
+  `attestation.assertion` is configured the object also carries
+  `"identity": {"subject": "...", "source": "assertion", "grade": "..."}`, the
+  identity the token was minted for; without that configuration the output is
+  byte-identical to before.
 
 **Backward compatible in both directions.** The default `gatekeeper mint`
 invocation (no `--json`) is unchanged: a bare token string on stdout, same
