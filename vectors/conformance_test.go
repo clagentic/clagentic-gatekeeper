@@ -27,8 +27,13 @@ func readJSON(t *testing.T, p string, into any) {
 
 func loadManifest(t *testing.T) (manifest, trust) {
 	t.Helper()
+	return loadManifestFrom(t, vectorDir)
+}
+
+func loadManifestFrom(t *testing.T, dirName string) (manifest, trust) {
+	t.Helper()
 	var m manifest
-	readJSON(t, filepath.Join(vectorDir, "manifest.json"), &m)
+	readJSON(t, filepath.Join(dirName, "manifest.json"), &m)
 	tr := trust{}
 	for _, iss := range m.Trust.Issuers {
 		file, ok := m.JWKSFiles[iss.Iss]
@@ -36,7 +41,7 @@ func loadManifest(t *testing.T) (manifest, trust) {
 			t.Fatalf("no jwks file for trusted issuer %q", iss.Iss)
 		}
 		var doc jwksDoc
-		readJSON(t, filepath.Join(vectorDir, file), &doc)
+		readJSON(t, filepath.Join(dirName, file), &doc)
 		tr[iss.Iss] = doc
 	}
 	return m, tr
@@ -87,8 +92,8 @@ func materialize(t *testing.T, l layout) (envSet bool, dir string) {
 
 func TestVectorsMatchReferenceVerifier(t *testing.T) {
 	m, tr := loadManifest(t)
-	if m.Cia != supportedCia {
-		t.Fatalf("manifest cia %d, verifier supports %d", m.Cia, supportedCia)
+	if m.Cia != 1 {
+		t.Fatalf("manifest cia %d, this set is the pinned major 1 set", m.Cia)
 	}
 	for _, v := range m.Vectors {
 		v := v
@@ -104,7 +109,7 @@ func TestVectorsMatchReferenceVerifier(t *testing.T) {
 					t.Fatalf("delivered %q, want %q", data, v.Layout.Content)
 				}
 			case "token":
-				got, code = verifyToken(tr, v)
+				got, code = verifyTokenUpTo(tr, v, int64(m.Cia))
 			default:
 				t.Fatalf("unknown kind %q", v.Kind)
 			}

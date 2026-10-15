@@ -1,6 +1,9 @@
 # Clagentic Identity Assertion contract
 
-Contract version: **1.0.0** (assertion version claim `cia` = `1`).
+Contract version: **2.0.0** (assertion version claim `cia` = `1` or `2`).
+Major 2 adds one `origin` value, `driven` (section 3.3), and ships alongside
+major 1: both verify, every major 1 assertion and vector stays valid, and the
+version policy is in section 11.
 
 This document is normative. It defines one artifact, the **Identity
 Assertion**: a signed statement of which actor is acting, on whose behalf,
@@ -63,13 +66,13 @@ The machine-readable form is [`schemas/identity-assertion.json`](../schemas/iden
 | `rt` | object | The runtime: `id` (string) and `version` (string). |
 | `sid` | string | Session identifier. A child carries its parent's session identifier. |
 | `spawn` | string | Identifier of one spawn of a child actor. |
-| `origin` | string | What started the turn: `human`, `scheduled`, `loop`, `trigger` or `agent`. |
+| `origin` | string | What started the session or turn: `human`, `scheduled`, `loop`, `trigger` or `agent`; with `cia` 2 also `driven` (section 3.3). |
 | `dir` | string | Absolute path of the delivery directory this assertion is bound to (section 6). |
 | `iat` | integer | Issued at, NumericDate (seconds). |
 | `exp` | integer | Expiry, NumericDate (seconds). |
 | `nbf` | integer | Optional not-before, NumericDate. |
 | `jti` | string | Unique token identifier. |
-| `cia` | integer | Contract major version. This document is `1`. |
+| `cia` | integer | Contract major version of the assertion: `1`, or `2` when the assertion needs a major 2 feature (section 11). |
 | `aud` | string | Absent locally. The peer identifier when the token was exchanged for a peer (section 9). |
 
 Name patterns: the `<name>` part of an actor string matches
@@ -100,7 +103,40 @@ Always required: `iss`, `sub`, `roles`, `grade`, `rt`, `sid`, `origin`, `iat`,
 
 A verifier MUST ignore claims it does not know. It MUST refuse an unknown value
 of `grade` or `origin` (`claims_invalid`); adding a value is a major version
-change (section 11).
+change (section 11). The origin vocabulary of an assertion is the one of its
+own `cia` (section 3.3).
+
+### 3.3 Origin vocabulary
+
+| `cia` | Valid `origin` values |
+|-------|-----------------------|
+| `1` | `human`, `scheduled`, `loop`, `trigger`, `agent` |
+| `2` | those, and `driven` |
+
+`driven` is the origin of a **session that a human drives**, such as a typed
+session a launcher starts. It exists because the per-turn human signal and the
+session assertion are different things: the session is a launched process, and
+it gets a workload assertion whoever types into it.
+
+- An assertion with origin `driven` MUST have `grade` `workload` and MUST NOT
+  have a `sub` that is a `human:` actor. A verifier refuses a token that does
+  otherwise, and a `driven` value in a `cia` 1 assertion, as `claims_invalid`.
+  The `act` chain, when present, holds only `agent:` and `runtime:` actors, as
+  everywhere in this contract.
+- `driven` is never evidence that a human is present. Whether a human started
+  or is typing a turn is a per-turn reading outside the assertion; a consumer
+  that needs it reads it there and never infers it from this value or its
+  absence.
+- A verifier tells `driven` from the automated origins (`scheduled`, `loop`,
+  `trigger`) and from `human` by the value alone. `human` keeps its meaning
+  for an issuer that has a positive signal of a human; an issuer without one
+  never emits it.
+- An issuer emits the lowest `cia` that can express the claims: `2` for origin
+  `driven` and `1` for every other assertion, so existing consumers see no
+  change. A verifier implementing only major 1 refuses a `driven` assertion
+  as `contract_version_unsupported`, which is a refusal and never a
+  misreading.
+- An exchange (section 9) carries `origin` and `cia` over unchanged.
 
 ### 3.2 Reading the chain
 
@@ -127,8 +163,9 @@ code for a token with several faults.
    the header `kid`. No such key: `key_not_found`.
 5. Verify the signature over `header.payload` as sent. Failure, or a key whose
    type does not match `alg`: `signature_invalid`.
-6. `cia` MUST equal a contract major version the verifier supports. Otherwise
-   `contract_version_unsupported`.
+6. `cia` MUST be a contract major version the verifier supports (since 2.0.0 a
+   verifier supports every major from 1 up to the one it implements).
+   Otherwise `contract_version_unsupported`.
 7. Time. `iat` and `exp` MUST be present and `nbf`, when present, MUST be an
    integer NumericDate (a JSON number with no fraction or exponent). A string,
    a fractional number, or any other type is `claims_invalid`; no comparison
@@ -168,7 +205,7 @@ verifier.
 | `expired` | `exp <= now`. |
 | `not_yet_valid` | `nbf` in the future, or `iat` in the future. |
 | `ttl_exceeded` | `exp - iat` is greater than 43200 seconds. |
-| `claims_invalid` | Wrong type, bad pattern, unknown `grade` or `origin`, a required claim missing, or a forbidden claim present. |
+| `claims_invalid` | Wrong type, bad pattern, unknown `grade` or `origin` (for the assertion's `cia`), origin `driven` with a `human:` sub or a grade other than `workload`, a required claim missing, or a forbidden claim present. |
 | `audience_unexpected` | Local mode and `aud` is present. |
 | `audience_mismatch` | Peer mode and `aud` is absent or not the peer's own identifier. |
 | `dir_mismatch` | Local mode and `dir` differs from the directory the token was read from. |
@@ -345,10 +382,11 @@ complete peer-side validation contract.
 
 ## 10. Conformance
 
-The vector set in [`vectors/`](../vectors/README.md) is the test of a
-verifier. It covers every code in section 4.1, both algorithms, a child
-assertion, and peer-mode tokens. A verifier is conformant when it reproduces
-every expected outcome. The vectors are signed with throwaway keys; the
+The vector sets in [`vectors/`](../vectors/README.md) are the test of a
+verifier. `v1` covers every code in section 4.1, both algorithms, a child
+assertion, and peer-mode tokens; `v2` adds the `driven` origin. A verifier is
+conformant when it reproduces every expected outcome of the sets of the
+majors it implements. The vectors are signed with throwaway keys; the
 private halves are never published, only the public JWKS the vectors verify
 against.
 
@@ -365,8 +403,17 @@ in their own tests.
   verification order, to failure codes, or a new value of `grade` or `origin`.
 - Vector sets are versioned by MAJOR in their path (`vectors/v1/`). A MAJOR
   version keeps its vector set for as long as the version is supported.
-- An issuer emits one `cia`. A verifier accepts the set of majors it
-  implements; during a transition it MAY accept two adjacent majors.
+- An issuer emits the lowest `cia` that can express an assertion (section 3.3),
+  so an assertion that needs no newer feature stays at its old major. A
+  verifier accepts the set of majors it implements; during a transition it
+  MAY accept two adjacent majors.
+- Major 2 ships alongside major 1, never as a replacement. A verifier that
+  implements major 2 MUST also accept major 1. The `vectors/v1/` set is
+  unchanged and stays the test of a major 1 verifier; `vectors/v2/` is a
+  supplement that a major 2 verifier runs in addition. One v1 vector,
+  `contract-version-unsupported`, carries `cia` 2 and is unsupported to a
+  major 1 verifier only: a major 2 verifier reads that token as valid, and the
+  v2 set has an equivalent vector with `cia` 3.
 - Failure codes are stable identifiers. Adding a code is a MINOR change only if
   the situation previously produced `claims_invalid` or `malformed`.
 

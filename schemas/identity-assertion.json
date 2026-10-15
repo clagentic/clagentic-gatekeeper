@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://schemas.clagentic.ai/identity-assertion/1.json",
   "title": "Clagentic Identity Assertion claims",
-  "description": "Claim set of the JWS payload. Contract version 1.0.0; see docs/identity-contract.md for the verification order and failure codes. aud absent = local assertion; aud present = exchanged token for a peer.",
+  "description": "Claim set of the JWS payload. Contract version 2.0.0 (cia 1 or 2); see docs/identity-contract.md for the verification order and failure codes. aud absent = local assertion; aud present = exchanged token for a peer.",
   "type": "object",
   "$defs": {
     "actorString": {
@@ -44,13 +44,13 @@
     },
     "sid": { "type": "string", "minLength": 1 },
     "spawn": { "type": "string", "minLength": 1 },
-    "origin": { "enum": ["human", "scheduled", "loop", "trigger", "agent"] },
+    "origin": { "enum": ["human", "scheduled", "loop", "trigger", "agent", "driven"] },
     "dir": { "type": "string", "pattern": "^/" },
     "iat": { "type": "integer", "minimum": 0 },
     "exp": { "type": "integer", "minimum": 0 },
     "nbf": { "type": "integer", "minimum": 0 },
     "jti": { "type": "string", "minLength": 1 },
-    "cia": { "type": "integer", "const": 1 },
+    "cia": { "enum": [1, 2] },
     "aud": { "type": "string", "minLength": 1 }
   },
   "required": ["iss", "sub", "roles", "grade", "rt", "sid", "origin", "iat", "exp", "jti", "cia"],
@@ -65,11 +65,22 @@
       "description": "Harness grade needs the actor chain and the spawn identifier.",
       "if": { "properties": { "grade": { "const": "harness" } }, "required": ["grade"] },
       "then": { "required": ["act", "spawn"] }
+    },
+    {
+      "description": "Origin driven exists from contract major 2, is a workload statement and never names a human.",
+      "if": { "properties": { "origin": { "const": "driven" } }, "required": ["origin"] },
+      "then": {
+        "properties": {
+          "cia": { "const": 2 },
+          "grade": { "const": "workload" },
+          "sub": { "pattern": "^(agent|runtime):" }
+        }
+      }
     }
   ],
   "additionalProperties": true,
   "x-contract": {
-    "version": "1.0.0",
+    "version": "2.0.0",
     "requiredAlways": ["iss", "sub", "roles", "grade", "rt", "sid", "origin", "iat", "exp", "jti", "cia"],
     "requiredLocalAssertion": ["dir"],
     "requiredExchanged": ["aud"],
