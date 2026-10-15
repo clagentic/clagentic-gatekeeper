@@ -128,9 +128,8 @@ func PassThrough(exe string, payload io.Reader, budget time.Duration, log Log) R
 //     for byte;
 //   - upstream allows or makes no decision and its command is known (its
 //     updatedInput.command, else the payload's): the statement is added in front
-//     of that command. Its reply is kept, its decision included. Where it made
-//     no decision the reply carries allow with the rewrite, as it does when this
-//     hook runs alone.
+//     of that command. Its reply is kept, its decision included; where it made
+//     no decision the reply carries none either.
 //
 // Warn mode, an issuer failure, an already-delivered command: byte for byte the
 // upstream's own output.

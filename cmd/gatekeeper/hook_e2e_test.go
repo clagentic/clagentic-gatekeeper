@@ -129,7 +129,7 @@ func dirFromRewrite(t *testing.T, stdout string) (dir, command string) {
 	if err := json.Unmarshal([]byte(stdout), &reply); err != nil {
 		t.Fatalf("reply %q: %v", stdout, err)
 	}
-	if reply.Specific.Decision != "allow" {
+	if reply.Specific.Decision != "" {
 		t.Fatalf("decision %q", reply.Specific.Decision)
 	}
 	command = reply.Specific.Updated.Command

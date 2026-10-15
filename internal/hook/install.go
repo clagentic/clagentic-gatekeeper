@@ -254,15 +254,23 @@ func (in Install) Apply(root settings) (bool, error) {
 		}
 		h[r.runtime] = groups
 	}
-	return changed, nil
+	ruleAdded, err := addAllowRule(root)
+	if err != nil {
+		return false, err
+	}
+	return changed || ruleAdded, nil
 }
 
 // Remove unregisters every entry of this adapter and reports whether root
 // changed. Groups it empties are dropped; nothing else is touched.
 func Remove(root settings) (bool, error) {
+	ruleRemoved, err := removeAllowRule(root)
+	if err != nil {
+		return false, err
+	}
 	h, err := hooksOf(root, false)
 	if err != nil || h == nil {
-		return false, err
+		return ruleRemoved, err
 	}
 	changed := false
 	for _, r := range registrations {
@@ -302,7 +310,7 @@ func Remove(root settings) (bool, error) {
 	if changed && len(h) == 0 {
 		delete(root, "hooks")
 	}
-	return changed, nil
+	return changed || ruleRemoved, nil
 }
 
 // ApplySettingsFile edits the settings file at path. remove selects

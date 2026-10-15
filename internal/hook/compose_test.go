@@ -116,8 +116,8 @@ func TestComposedUpstreamOutcomesPassThroughByteForByte(t *testing.T) {
 	}
 }
 
-// An upstream that allows, or that made no decision, gets the statement; an
-// allow the upstream did not give appears only as the rewrite's own.
+// An upstream that allows, or that made no decision, gets the statement; its
+// decision is kept as given and none is added where it gave none.
 func TestComposedAllowedOrUndecidedUpstreamGetsTheStatement(t *testing.T) {
 	cases := map[string]struct {
 		body         string
@@ -126,9 +126,9 @@ func TestComposedAllowedOrUndecidedUpstreamGetsTheStatement(t *testing.T) {
 		wantExtra    string
 	}{
 		"allow without a rewrite": {printing(`{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"theirs"}}`), "allow", "theirs", ""},
-		"silent":                  {"true", "allow", rewriteReason, ""},
-		"empty object":            {printing(`{}`), "allow", rewriteReason, ""},
-		"context only":            {printing(`{"systemMessage":"note","hookSpecificOutput":{"additionalContext":"c"}}`), "allow", rewriteReason, "note"},
+		"silent":                  {"true", "", "", ""},
+		"empty object":            {printing(`{}`), "", "", ""},
+		"context only":            {printing(`{"systemMessage":"note","hookSpecificOutput":{"additionalContext":"c"}}`), "", "", "note"},
 	}
 	for name, c := range cases {
 		h := composedHarness(t, ModeEnforce, c.body)
@@ -138,7 +138,9 @@ func TestComposedAllowedOrUndecidedUpstreamGetsTheStatement(t *testing.T) {
 			t.Errorf("%s: %q", name, command)
 		}
 		hso := out["hookSpecificOutput"].(map[string]any)
-		if hso["permissionDecision"] != c.wantDecision || hso["permissionDecisionReason"] != c.wantReason {
+		gotDecision, _ := hso["permissionDecision"].(string)
+		gotReason, _ := hso["permissionDecisionReason"].(string)
+		if gotDecision != c.wantDecision || gotReason != c.wantReason {
 			t.Errorf("%s: %+v", name, hso)
 		}
 		if c.wantExtra != "" && out["systemMessage"] != c.wantExtra {

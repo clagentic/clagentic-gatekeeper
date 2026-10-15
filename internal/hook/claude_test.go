@@ -95,7 +95,7 @@ func TestSubagentGetsAChildOfTheSessionAndItsOwnDirectory(t *testing.T) {
 	}
 }
 
-// The reply for a rewritten call is the only place a permission decision appears.
+// The reply for a rewritten call carries updatedInput and no permission decision.
 func TestRewriteAddsExactlyOneExportStatementAndKeepsTheCommandByteForByte(t *testing.T) {
 	h := newHarness(t, ModeEnforce)
 	startSession(t, h, "")
@@ -123,7 +123,7 @@ func TestRewriteAddsExactlyOneExportStatementAndKeepsTheCommandByteForByte(t *te
 			t.Errorf("more than one delivery statement: %q", command)
 		}
 		hso := out["hookSpecificOutput"].(map[string]any)
-		if hso["permissionDecision"] != "allow" || hso["hookEventName"] != "PreToolUse" {
+		if _, has := hso["permissionDecision"]; has || hso["hookEventName"] != "PreToolUse" {
 			t.Errorf("reply %+v", hso)
 		}
 		updated := hso["updatedInput"].(map[string]any)

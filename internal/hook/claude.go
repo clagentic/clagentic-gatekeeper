@@ -328,9 +328,9 @@ func (h *ClaudeCode) subagentStop(p Payload) (string, error) {
 	return "agent-removed", nil
 }
 
-// preToolUseBash decides the rewrite of one Bash call. The reply carries a
-// permission decision only when the command is rewritten; every other outcome is
-// empty output, which leaves the runtime's own permission flow untouched.
+// preToolUseBash decides the rewrite of one Bash call. The reply carries no
+// permission decision, ever: a rewrite is updatedInput alone and every other
+// outcome is empty output, so the runtime's own permission flow decides.
 func (h *ClaudeCode) preToolUseBash(p Payload, raw []byte) (Result, string, error) {
 	if p.ToolName != "Bash" {
 		return Result{}, "not-bash", nil
@@ -377,18 +377,15 @@ func (h *ClaudeCode) prefix(p Payload, command string) (rewritten, decision stri
 	return stmt + command, "delivered", nil
 }
 
-const rewriteReason = "gatekeeper: prefixed " + EnvDir + " for this call"
-
 // mergeRewrite builds the PreToolUse reply for a rewritten call from reply, the
 // members of an upstream reply (empty when standalone), specific, its
 // hookSpecificOutput, and base, the tool input the rewrite starts from. base is
 // copied whole so members other than the command (timeout, description,
 // run_in_background) survive, and every other member of reply is kept.
 //
-// Allow is the only decision this hook ever adds, and only here, tied to the
-// rewrite it makes: the harness re-checks a rewritten command, so without it a
-// rewritten call would fall into the operator's permission flow. A decision the
-// upstream already gave is never replaced.
+// No permission decision is ever added: the harness checks the rewritten
+// command part by part, and the leading export is covered by the one allow rule
+// hooks-install registers. A decision the upstream gave is kept as it was.
 func mergeRewrite(reply, specific, base map[string]json.RawMessage, command string) ([]byte, error) {
 	updated := make(map[string]json.RawMessage, len(base)+1)
 	for k, v := range base {
@@ -413,16 +410,6 @@ func mergeRewrite(reply, specific, base map[string]json.RawMessage, command stri
 	if _, ok := specific["hookEventName"]; !ok {
 		if err := set(specific, "hookEventName", "PreToolUse"); err != nil {
 			return nil, err
-		}
-	}
-	if stringMember(specific, "permissionDecision") == "" {
-		if err := set(specific, "permissionDecision", "allow"); err != nil {
-			return nil, err
-		}
-		if _, ok := specific["permissionDecisionReason"]; !ok {
-			if err := set(specific, "permissionDecisionReason", rewriteReason); err != nil {
-				return nil, err
-			}
 		}
 	}
 	if err := set(reply, "hookSpecificOutput", specific); err != nil {

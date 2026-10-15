@@ -119,13 +119,36 @@ accepted in place of `--socket`).
 
 ### No new permission prompts
 
-The reply of `pre-tool-use-bash` carries `permissionDecision: "allow"` **only**
-when it rewrites the command: the harness re-checks a rewritten command, so
-without it every rewritten call would fall into the operator's permission flow.
-Every other event, and every Bash call that is not rewritten (no session, a
-non-Bash tool, expired assertion, warn mode), exits 0 with empty output and
-leaves the runtime's own permission flow untouched. The hook never wraps the
-command in `sh -c` or `bash -c`.
+The hook never returns a `permissionDecision`. A rewritten call is
+`updatedInput` alone; every other event, and every Bash call that is not
+rewritten (no session, a non-Bash tool, expired assertion, warn mode), exits 0
+with empty output. The runtime's own permission flow decides every call.
+
+Delivery relies on **one permissions allow rule**:
+
+```
+Bash(export CLAGENTIC_IDENTITY_DIR=*)
+```
+
+The harness evaluates the rewritten command part by part (the coordinator
+probe), so the leading `export` statement is matched against that rule and the
+original command is checked against the operator's rules exactly as it would
+have been without the hook. `hooks-install` writes the rule into the settings
+`permissions.allow` list next to the hook registration. It adds it once, never
+duplicates it and never edits another rule; `--remove` deletes the hooks and
+that rule and nothing else. **A registrar that does not use `hooks-install` must
+add the rule itself**; without it a rewritten call prompts. The prompt and
+no-prompt behaviour is proven in the live run, not by the unit tests.
+
+The value of `CLAGENTIC_IDENTITY_DIR` must be a plain absolute path of letters,
+digits and `._/+-`. A directory path that carries anything else is not
+delivered (the refusal is logged and the command runs unchanged), so the one
+statement the rule admits can never carry shell syntax.
+
+When another hook is composed with `--compose`, the other hook's `allow`, `deny`
+or `ask` passes through exactly as it gave it. Gatekeeper adds no decision and
+prefixes the statement only when the other hook allowed or made no decision. The
+hook never wraps the command in `sh -c` or `bash -c`.
 
 ### Failure behaviour
 
@@ -161,10 +184,13 @@ that hook produced.
 
 - the other hook exits non-zero: its stdout, stderr and exit code pass through
   and nothing is added, so a deny stays a deny;
-- it cannot be run, or exceeds 3s: the call is handled as if not composed;
-- it returns no rewrite: its reply passes through unchanged;
-- it rewrites: the statement goes in front of its command and the rest of its
-  reply, its permission decision included, is kept.
+- it cannot be run, or exceeds its budget: nothing is emitted and the call
+  proceeds unchanged;
+- it denies, asks, defers or stops the run: its reply passes through byte for
+  byte;
+- it allows or makes no decision: the statement goes in front of its command (or
+  the payload's), and the rest of its reply, its permission decision included, is
+  kept; no decision is added where it gave none.
 
 In warn mode the composed hook's reply is returned unchanged.
 
@@ -185,8 +211,12 @@ own entries in place; duplicates collapse to one. Foreign hooks and settings are
 never edited. The settings file is parsed and rewritten as JSON, so object keys
 come out sorted and formatting is normalized on the first write.
 
-`--remove` is the rollback: it deletes exactly the adapter's entries and the
-groups that held only them.
+It also adds the one allow rule `Bash(export CLAGENTIC_IDENTITY_DIR=*)` to
+`permissions.allow` (see "No new permission prompts").
+
+`--remove` is the rollback: it deletes exactly the adapter's entries, the groups
+that held only them, and that one allow rule (an allow list or permissions
+object it leaves empty goes with it).
 
 ### Limitations
 
