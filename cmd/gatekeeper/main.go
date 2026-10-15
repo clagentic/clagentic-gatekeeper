@@ -91,10 +91,22 @@ func usage() {
 // against the role's configured expectation before minting; it is never the
 // configured expectation itself, and it is empty when the role has no
 // App-slug binding configured (verification gate off for that role).
+//
+// Identity is present only when the deployment configures the assertion
+// provider, so a deployment without it keeps byte-identical --json output.
 type mintResult struct {
-	Token     string `json:"token"`
-	ExpiresAt string `json:"expires_at"`
-	AppSlug   string `json:"app_slug,omitempty"`
+	Token     string        `json:"token"`
+	ExpiresAt string        `json:"expires_at"`
+	AppSlug   string        `json:"app_slug,omitempty"`
+	Identity  *mintIdentity `json:"identity,omitempty"`
+}
+
+// mintIdentity is the attested identity a token was minted for. Grade is empty
+// for an identity that does not come from an assertion.
+type mintIdentity struct {
+	Subject string `json:"subject"`
+	Source  string `json:"source"`
+	Grade   string `json:"grade,omitempty"`
 }
 
 // runMint parses flags, builds the service graph, and mints a token.
@@ -103,7 +115,7 @@ func runMint(args []string) error {
 	roleName := fs.String("role", "", "role to mint (required)")
 	repo := fs.String("repo", "", "repository to scope the token to (owner/name); omit for all installed repos")
 	cfgPath := fs.String("config", "config.yaml", "path to config.yaml")
-	jsonOutput := fs.Bool("json", false, "emit {token, expires_at, app_slug} JSON instead of the bare token string; app_slug is the broker-verified value, empty when the role has no App-slug binding configured")
+	jsonOutput := fs.Bool("json", false, "emit {token, expires_at, app_slug} JSON instead of the bare token string; app_slug is the broker-verified value, empty when the role has no App-slug binding configured; identity {subject, source, grade} is added when attestation.assertion is configured")
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -145,6 +157,7 @@ func runMint(args []string) error {
 			InstallationIDPath: rc.InstallationIDPath,
 			PrivateKeyPath:     rc.PrivateKeyPath,
 			EntitledIdentities: rc.EntitledIdentities,
+			MinGrade:           rc.MinGrade,
 			AppSlug:            rc.AppSlug,
 			AppSlugPath:        rc.AppSlugPath,
 		}
@@ -157,6 +170,9 @@ func runMint(args []string) error {
 	for name, rc := range cfg.Roles {
 		if len(rc.Permissions) == 0 && !roles.IsReference(name) {
 			return fmt.Errorf("config error: role %q has a broker binding but no permissions defined", name)
+		}
+		if !mint.ValidMinGrade(rc.MinGrade) {
+			return fmt.Errorf("config error: role %q has min_grade %q; it must be workload or harness", name, rc.MinGrade)
 		}
 	}
 
@@ -173,9 +189,9 @@ func runMint(args []string) error {
 
 	// Attestation chain resolves the ATTESTED invoking identity for the
 	// mint-time entitlement check (tome #700, layer (2)->(3)). A bare install
-	// with no attestation config still gets a resolver — the built-in
-	// fallback (layer c) is always appended — so entitlement is never
-	// silently skipped for lack of configuration.
+	// with no attestation config still gets a resolver; the built-in OS-user
+	// layer (c) is appended only under the deprecated allow_os_user opt-in,
+	// so a caller no layer identifies is refused rather than skipped.
 	//
 	// ResolveSidecars merges the legacy single `attestation.sidecar` block
 	// (back-compat) ahead of the `attestation.sidecars` list, so a
@@ -193,12 +209,25 @@ func runMint(args []string) error {
 		}
 	}
 
+	// The assertion provider is tried before every other layer when configured
+	// and is nil otherwise, which leaves the chain exactly as it was.
+	assertionProvider, err := buildAssertionProvider(cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "attestation: %v\n", err)
+		os.Exit(2)
+	}
+
 	resolver, err := attestation.NewChain(attestation.ChainConfig{
+		Assertion: assertionProvider,
 		Configured: attestation.ConfiguredConfig{
 			Type:   attestation.ConfiguredType(cfg.Attestation.Configured.Type),
 			Source: cfg.Attestation.Configured.Source,
 		},
-		Sidecars: chainSidecars,
+		Sidecars:   chainSidecars,
+		OmitOSUser: !cfg.Attestation.OSUserAllowed(),
+		OSUserWarn: func(id attestation.Identity) {
+			fmt.Fprintf(os.Stderr, "attestation: warning: identity %q was resolved by the deprecated OS-user provider; configure attestation.assertion or attestation.configured, then remove attestation.allow_os_user\n", id.Subject)
+		},
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "attestation: %v\n", err)
@@ -222,7 +251,14 @@ func runMint(args []string) error {
 			os.Exit(2)
 		}
 		if perSpawnProvider != nil {
-			domainResolver.PerSpawn = attestation.NewResolver(perSpawnProvider)
+			// A spawned subagent's assertion is delivered to it directly, so
+			// the assertion is tried first here too; an unset delivery then
+			// falls to the per-spawn sidecar and a MISS there still refuses.
+			perSpawn := []attestation.Provider{perSpawnProvider}
+			if assertionProvider != nil {
+				perSpawn = []attestation.Provider{assertionProvider, perSpawnProvider}
+			}
+			domainResolver.PerSpawn = attestation.NewResolver(perSpawn...)
 		}
 	}
 
@@ -254,6 +290,12 @@ func runMint(args []string) error {
 		Broker:         br,
 		Bindings:       bindings,
 		DomainResolver: domainResolver,
+		// The audit line goes to stderr so stdout stays the token contract. It
+		// is emitted only for assertion identities (see mint.Service.Audit).
+		Audit: func(ev mint.AuditEvent) {
+			fmt.Fprintf(os.Stderr, "mint audit: subject=%q source=%q grade=%q issuer=%q role=%q permitted=%v reason=%q\n",
+				ev.Subject, ev.Source, ev.Grade, ev.Issuer, ev.Role, ev.Permitted, ev.Reason)
+		},
 	}
 
 	var repos []string
@@ -265,18 +307,22 @@ func runMint(args []string) error {
 		repos = []string{bare}
 	}
 
-	token, err := svc.MintForDomain(context.Background(), mintDomain, *roleName, repos)
+	res, err := svc.MintAttributed(context.Background(), mintDomain, *roleName, repos)
 	if err != nil {
 		return fmt.Errorf("mint: %w", err)
 	}
+	token := res.Token
 
 	if *jsonOutput {
-		enc := json.NewEncoder(os.Stdout)
-		return enc.Encode(mintResult{
+		out := mintResult{
 			Token:     token.Value,
 			ExpiresAt: token.ExpiresAt.Format(time.RFC3339),
 			AppSlug:   token.AppSlug,
-		})
+		}
+		if assertionProvider != nil {
+			out.Identity = &mintIdentity{Subject: res.Identity.Subject, Source: res.Identity.Source, Grade: res.Identity.Grade}
+		}
+		return json.NewEncoder(os.Stdout).Encode(out)
 	}
 
 	// Default output is unchanged from before this field existed: the bare

@@ -44,6 +44,8 @@ type runtimeShape struct {
 type runtimeRun struct {
 	dirs    []string
 	denials []string
+	// stream is the whole record the runtime printed, tool results included.
+	stream string
 }
 
 const printenvCommand = "printenv CLAGENTIC_IDENTITY_DIR"
@@ -102,7 +104,7 @@ func (e *Env) runtimeShapes() []shape {
 	}
 	out := make([]shape, 0, len(specs))
 	for _, s := range specs {
-		out = append(out, shape{name: s.name, run: func(ctx context.Context) error { return e.runtimeShape(ctx, s) }})
+		out = append(out, shape{name: s.name, run: func(ctx context.Context) error { return e.runtimeShape(ctx, s, nil) }})
 	}
 	return out
 }
@@ -110,15 +112,17 @@ func (e *Env) runtimeShapes() []shape {
 func (e *Env) unruledMarker() string { return filepath.Join(e.Dir, "rt", "work", "unruled-marker") }
 
 // runtimeShape runs one spec, retrying while the model did not do what it was
-// asked, and turns a runtime that cannot run a turn at all into a skip.
-func (e *Env) runtimeShape(ctx context.Context, s runtimeShape) error {
+// asked, and turns a runtime that cannot run a turn at all into a skip. env is
+// added to the runtime process's environment, for a shape whose agents need
+// state of the caller's own.
+func (e *Env) runtimeShape(ctx context.Context, s runtimeShape, env []string) error {
 	setup, err := e.runtimeSetup(ctx)
 	if err != nil {
 		return err
 	}
 	var last error
 	for attempt := 1; attempt <= e.opts.RuntimeAttempts; attempt++ {
-		run, err := e.invokeRuntime(ctx, setup, s.prompt(e))
+		run, err := e.invokeRuntime(ctx, setup, s.prompt(e), env)
 		if err != nil {
 			return err
 		}
@@ -171,7 +175,7 @@ func (e *Env) prepareRuntime(ctx context.Context) (*runtimeSetup, error) {
 		return nil, fmt.Errorf("hooks-install: exit %d: %.300s", res.Code, res.Stderr)
 	}
 	// The commands the shapes run are ruled; the one the unruled shape runs is not.
-	if err := addAllowRules(settings, "Bash("+printenvCommand+")", "Bash(echo *)", "Bash(sleep *)"); err != nil {
+	if err := addAllowRules(settings, "Bash("+printenvCommand+")", "Bash(echo *)", "Bash(sleep *)", "Bash("+e.Bin+" mint *)"); err != nil {
 		return nil, err
 	}
 	agents, err := json.Marshal(map[string]any{defBuilder: map[string]any{
@@ -214,10 +218,11 @@ func addAllowRules(path string, rules ...string) error {
 
 // invokeRuntime runs one headless session with the isolated settings and reads
 // the stream it prints.
-func (e *Env) invokeRuntime(ctx context.Context, s *runtimeSetup, prompt string) (*runtimeRun, error) {
+func (e *Env) invokeRuntime(ctx context.Context, s *runtimeSetup, prompt string, extraEnv []string) (*runtimeRun, error) {
 	ctx, cancel := context.WithTimeout(ctx, e.opts.RuntimeTimeout)
 	defer cancel()
-	res, err := e.run(ctx, runOpts{Stdin: prompt, Full: true, Env: e.opts.RuntimeEnv, Dir: s.work}, s.cli,
+	env := append(append([]string{}, e.opts.RuntimeEnv...), extraEnv...)
+	res, err := e.run(ctx, runOpts{Stdin: prompt, Full: true, Env: env, Dir: s.work}, s.cli,
 		"-p", "--settings", s.settings, "--setting-sources", "", "--output-format", "stream-json", "--verbose",
 		"--permission-mode", "default", "--no-session-persistence", "--agents", s.agents)
 	if err != nil {
@@ -240,7 +245,7 @@ func (e *Env) invokeRuntime(ctx context.Context, s *runtimeSetup, prompt string)
 		sub, _ := final["subtype"].(string)
 		return nil, skipf("the runtime could not complete a model turn (%s)", sub)
 	}
-	return &runtimeRun{dirs: e.deliveredDirs(res.Stdout), denials: denialsOf(final)}, nil
+	return &runtimeRun{dirs: e.deliveredDirs(res.Stdout), denials: denialsOf(final), stream: res.Stdout}, nil
 }
 
 // denialsOf lists the commands of the permission denials of a finished run.

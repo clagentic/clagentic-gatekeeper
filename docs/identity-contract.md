@@ -156,7 +156,7 @@ verifier.
 | Code | Raised when |
 |------|-------------|
 | `identity_dir_missing` | The delivery variable is unset, empty, not absolute, or names a directory that does not exist or is not a directory. |
-| `identity_dir_unsafe` | The delivery directory is a symlink, is not owned by the verifier's user, or has any group or other permission bit. |
+| `identity_dir_unsafe` | The delivery directory is a symlink, is not owned by the verifier's user, or its mode is not exactly `0700` (any group or other permission bit, or a missing owner bit). |
 | `identity_file_missing` | `identity.jwt` does not exist in the delivery directory. |
 | `identity_file_symlink` | `identity.jwt` is a symlink or not a regular file. |
 | `malformed` | Not a three-segment compact JWS, header or payload not exactly one JSON object (trailing content included), a `crit` header, or a file over 16384 bytes. |

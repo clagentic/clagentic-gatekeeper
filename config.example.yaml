@@ -37,11 +37,39 @@ token:
   ttl_minutes: 60
 
 # Attestation-provider chain: resolves the ATTESTED invoking identity, in
-# order (a) configured -> (b) sidecar(s) -> (c) built-in fallback (always
-# on, no config needed). All fields below are optional; a bare install with
-# nothing set here still resolves via the built-in fallback. See
-# internal/attestation for resolution order and the full design rationale.
+# order (0) identity assertion (when configured) -> (a) configured -> (b)
+# sidecar(s) -> (c) OS-user fallback (deprecated; appended only when
+# allow_os_user is true). All fields below are optional; a bare install with
+# nothing set here has no identity source, so a mint is refused until one is
+# configured. See internal/attestation for resolution order and the full
+# design rationale.
 attestation:
+  # Layer (0), OPTIONAL: the Identity Assertion provider. When this section is
+  # present, mint reads the assertion delivered through CLAGENTIC_IDENTITY_DIR
+  # (docs/identity-contract.md section 6) and verifies it, then takes the
+  # caller's identity, roles and grade from it. Variable unset: the next layer
+  # answers, so a caller with no assertion keeps working. Any other failure
+  # (forged, expired, wrong directory, unreachable key set) refuses the mint and
+  # no later layer is consulted. Absent section: this layer does not exist and
+  # mint behaves exactly as without it. Write `assertion: {}` to trust only the
+  # local `gatekeeper serve` issuer (identity.issuer, else unix://<socket>,
+  # with identity.jwks_path as its key set when set), which is always trusted.
+  # assertion:
+  #   issuers:
+  #     # Extra trusted issuers. iss is matched exactly. jwks is optional: an
+  #     # absolute path or file: URL (the key set document), an http(s) URL (the
+  #     # document; plain http only for loopback), or a unix: URL (the socket
+  #     # serving /.well-known/jwks.json). Left out, it is derived from iss as
+  #     # docs/identity-contract.md section 5.1 describes.
+  #     - iss: https://issuer.example
+  #       jwks: /etc/gatekeeper/issuer-example-jwks.json
+  #
+  # Deprecated opt-in to layer (c), the OS-user fallback. Unset means false:
+  # the provider is not appended and a caller no other layer identifies is
+  # refused. Set true only while a caller is not yet covered by layer (0), (a)
+  # or (b); each mint it answers logs a warning on stderr. The opt-in itself is
+  # removed in a later release.
+  # allow_os_user: true
   # Layer (a): a deployment's own identity source. type: "env" | "file".
   # Leave type empty to disable this layer.
   configured:
@@ -138,6 +166,12 @@ attestation:
 # is why the example values below are filled in rather than left commented
 # out: a role block copied from this file with the verification fields
 # removed will refuse to mint until they are added back.
+#
+# With attestation.assertion configured, a caller whose identity comes from an
+# assertion is entitled by the assertion's own roles instead: the requested
+# role must be in them. entitled_identities then only narrows (when set, the
+# assertion's subject must also be listed) and may be left out for a role that
+# only assertion callers use. app_slug/app_slug_path stay required.
 roles:
   builder:
     # Broker paths for this role's App credentials. The private key is read
@@ -171,6 +205,11 @@ roles:
     private_key_path: secret/gatekeeper/merger/private-key
     entitled_identities:
       - your-merger-agent-identity
+    # Optional: the lowest Identity Assertion grade that may mint this role,
+    # "workload" or "harness" (default). A workload assertion is attested by
+    # something the process cannot forge; a harness assertion is what a host
+    # process reports. Applies only to identities that come from an assertion.
+    # min_grade: workload
     app_slug: your-merger-app-slug
     app_slug_path: secret/gatekeeper/merger/app-slug
 

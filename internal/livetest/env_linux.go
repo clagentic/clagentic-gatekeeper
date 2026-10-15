@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -27,6 +28,9 @@ import (
 const (
 	defLead    = "example-lead"
 	defBuilder = "example-builder"
+	// defOps carries the roles the other two do not, so every role a caller
+	// mints has a definition whose assertion can be delivered for it.
+	defOps = "example-ops"
 )
 
 // maxSocketPath is the sun_path limit of a unix socket.
@@ -50,6 +54,12 @@ type Env struct {
 	// rt and rtErr cache the one-time runtime preparation shared by its shapes.
 	rt    *runtimeSetup
 	rtErr error
+
+	// appKey is one App private key generated on first use and shared by every
+	// mint fixture: generating an RSA key per shape would dominate the run.
+	appKeyOnce sync.Once
+	appKey     string
+	appKeyErr  error
 }
 
 const minute = time.Minute
@@ -121,7 +131,7 @@ func (e *Env) setup(ctx context.Context) error {
 	if err := os.Mkdir(defs, 0o700); err != nil {
 		return err
 	}
-	for name, roles := range map[string]string{defLead: "[builder, reviewer]", defBuilder: "[builder]"} {
+	for name, roles := range map[string]string{defLead: "[builder, reviewer]", defBuilder: "[builder]", defOps: "[merger, security, reader]"} {
 		body := fmt.Sprintf("---\nname: %s\nroles: %s\n---\nSynthetic definition for the live harness.\n", name, roles)
 		if err := writeOwnerOnly(filepath.Join(defs, name+".md"), []byte(body)); err != nil {
 			return err

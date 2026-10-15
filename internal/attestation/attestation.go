@@ -9,6 +9,9 @@
 //
 // Resolution order, per deployment:
 //
+//  0. Identity Assertion — when configured, the signed assertion delivered
+//     through CLAGENTIC_IDENTITY_DIR is tried first. Unset delivery falls
+//     through; any other failure is a hard error and no later provider runs.
 //  1. Configured provider — a deployment points Resolver at its own
 //     identity source (env var or file) via config.yaml. Takes precedence
 //     when configured.
@@ -16,8 +19,9 @@
 //     external harness (e.g. the crew-manifest plugin), when present. This
 //     package does not assume any specific harness exists; the sidecar path
 //     itself is supplied by config, never hardcoded.
-//  3. Built-in fallback — the OS-reported invoking user. Always available,
-//     so a bare install has an attested source rather than failing open.
+//  3. Built-in fallback — the OS-reported invoking user. Deprecated: appended
+//     only under the opt-in attestation.allow_os_user: true; the config layer
+//     sets ChainConfig.OmitOSUser otherwise.
 //
 // No agent names, org names, or other deployment-specific identities are
 // hardcoded anywhere in this package (workspace rule 11 / build-to-share).
@@ -38,6 +42,14 @@ type Identity struct {
 	// "sidecar", "builtin"), for audit/debugging. It is not itself part of
 	// the trust decision.
 	Source string
+
+	// Roles, Grade and Issuer are set only by the assertion provider
+	// (SourceAssertion). Roles is the assertion's role ceiling: mint grants a
+	// role only if it is listed. Grade is "workload" or "harness". Issuer is
+	// the verified iss. Every other provider leaves all three empty.
+	Roles  []string
+	Grade  string
+	Issuer string
 
 	// The fields below carry structured-sidecar ATTRIBUTION context
 	// (lr-f1bfe8) for audit/observability — which parent session spawned
