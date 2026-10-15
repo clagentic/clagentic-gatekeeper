@@ -67,6 +67,10 @@ const (
 	supportedContractMajor = 1
 	maxAssertionLifetime   = 43200
 	maxAssertionFileBytes  = 16384
+
+	// maxNumericDate is 9999-12-31T23:59:59Z, far beyond any real assertion and
+	// small enough that no sum or difference of two dates overflows.
+	maxNumericDate = 253402300799
 )
 
 type audienceMode int
@@ -184,6 +188,25 @@ func verifySignature(k jwk, alg string, input, sig []byte) bool {
 	return false
 }
 
+// signingKeys returns the keys of a key set that may verify a token whose
+// header names kid and alg: the kid matches, the key is for signatures (use
+// absent or sig) and any alg the key declares is the header alg. The key type
+// and curve are checked by verifySignature against the same alg, so a kid
+// alone never selects a key.
+func signingKeys(keys []jwk, kid, alg string) []jwk {
+	if kid == "" {
+		return nil
+	}
+	var out []jwk
+	for _, k := range keys {
+		if k.Kid != kid || (k.Use != "" && k.Use != "sig") || (k.Alg != "" && k.Alg != alg) {
+			continue
+		}
+		out = append(out, k)
+	}
+	return out
+}
+
 func validActorChain(v any) bool {
 	m, ok := v.(map[string]any)
 	if !ok {
@@ -296,17 +319,20 @@ func verifyAssertion(ctx context.Context, token string, src keySource, p verifyP
 		return nil, refuseAssertion(CodeJWKSUnavailable, "key set of %q: %v", iss, err)
 	}
 	kid, _ := header["kid"].(string)
-	var key *jwk
-	for i := range keys {
-		if kid != "" && keys[i].Kid == kid {
-			key = &keys[i]
-			break
+	candidates := signingKeys(keys, kid, alg)
+	if len(candidates) == 0 {
+		return nil, refuseAssertion(CodeKeyNotFound, "no signing key %q for %s in the key set of %q", kid, alg, iss)
+	}
+	verified := false
+	if sigErr == nil {
+		for _, k := range candidates {
+			if verifySignature(k, alg, []byte(parts[0]+"."+parts[1]), sig) {
+				verified = true
+				break
+			}
 		}
 	}
-	if key == nil {
-		return nil, refuseAssertion(CodeKeyNotFound, "no key %q in the key set of %q", kid, iss)
-	}
-	if sigErr != nil || !verifySignature(*key, alg, []byte(parts[0]+"."+parts[1]), sig) {
+	if !verified {
 		return nil, refuseAssertion(CodeSignatureBad, "signature does not verify")
 	}
 	if cia, ok := asInt(claims["cia"]); !ok || cia != supportedContractMajor {
@@ -325,6 +351,11 @@ func verifyAssertion(ctx context.Context, token string, src keySource, p verifyP
 	}
 	if !okIat || !okExp {
 		return nil, refuseAssertion(CodeClaimsInvalid, "iat or exp is missing or not an integer NumericDate")
+	}
+	// Bounding both dates keeps exp-iat below from overflowing int64, where a
+	// wrapped difference would pass the lifetime cap.
+	if iat < 0 || iat > maxNumericDate || exp < 0 || exp > maxNumericDate {
+		return nil, refuseAssertion(CodeClaimsInvalid, "iat or exp is outside the supported NumericDate range")
 	}
 	if exp <= p.Now {
 		return nil, refuseAssertion(CodeExpired, "exp %d, now %d", exp, p.Now)
