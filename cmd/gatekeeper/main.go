@@ -345,13 +345,15 @@ type a2aMintResult struct {
 }
 
 // runMintA2A parses flags, builds the A2A service graph, and mints a
-// peer-facing token via the B3 attest-and-route mechanism (lr-890fae).
+// peer-facing token through OpenBao's documented JWT login flow: the caller's
+// serve-issued identity assertion logs in at the configured auth mount and
+// the returned client token requests the identity token.
 //
 // This command is ADDITIVE and OFF BY DEFAULT: it requires
 // config.a2a_provider to be fully configured (config.A2AProviderConfig.
-// Enabled()); a deployment that never sets that stanza gets a clear config
-// error here and is completely unaffected on the existing `gatekeeper mint`
-// (GitHub-domain) path — see cmd/gatekeeper's own package doc and
+// Enabled()) and attestation.assertion to be configured; a deployment that
+// never sets that stanza gets a clear config error here and is completely
+// unaffected on the existing `gatekeeper mint` (GitHub-domain) path — see
 // docs/SETUP.md for the byte-identical-behavior guarantee this preserves.
 func runMintA2A(args []string) error {
 	fs := flag.NewFlagSet("mint-a2a", flag.ContinueOnError)
@@ -372,58 +374,37 @@ func runMintA2A(args []string) error {
 	}
 
 	if !cfg.A2AProvider.Enabled() {
-		return fmt.Errorf("config error: a2a_provider is not configured (endpoint, assertion_private_key_path, and auth_mount are all required together); see config.example.yaml")
+		return fmt.Errorf("config error: a2a_provider is not configured (endpoint and auth_mount are both required together); see config.example.yaml")
 	}
 
-	br, err := broker.New(broker.Config{
-		Type:     cfg.Broker.Type,
-		Endpoint: cfg.Broker.Endpoint,
-		Auth:     cfg.Broker.Auth,
-	})
+	// The OpenBao JWT mount logs in with the caller's identity assertion, so
+	// the assertion provider is the only identity source mint-a2a can use. A
+	// sidecar or configured identity carries no assertion to present.
+	assertionProvider, err := buildAssertionProvider(cfg)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "broker: %v\n", err)
+		fmt.Fprintf(os.Stderr, "attestation: %v\n", err)
 		os.Exit(2)
 	}
-
-	// Attestation wiring mirrors runMint's (see that function's comments for
-	// the full resolution-order rationale), but mint-a2a ALWAYS resolves
-	// under attestation.DomainA2A — the A2A/remote-facing mint domain never
-	// falls through to the session sidecar on a per-spawn miss
-	// (docs/SETUP.md section 5, lr-2ca216), unlike the GitHub-domain
-	// command's per-invocation domain selection.
-	sidecarCfgs := cfg.Attestation.ResolveSidecars()
-	chainSidecars := make([]attestation.SidecarConfig, len(sidecarCfgs))
-	for i, sc := range sidecarCfgs {
-		chainSidecars[i] = attestation.SidecarConfig{
-			Dir:           sc.Dir,
-			FilePrefix:    sc.FilePrefix,
-			SessionIDEnv:  sc.SessionIDEnv,
-			IdentityField: sc.IdentityField,
-		}
+	if assertionProvider == nil {
+		return fmt.Errorf("config error: mint-a2a logs in at the OpenBao JWT mount with the caller's identity assertion; attestation.assertion must be configured (write `assertion: {}` to trust the local serve issuer); see config.example.yaml")
 	}
 
+	// mint-a2a ALWAYS resolves under attestation.DomainA2A: the A2A/remote-
+	// facing mint domain never falls through to a lower-priority provider on a
+	// per-spawn miss (docs/SETUP.md, lr-2ca216). The assertion is delivered to
+	// each spawn directly, so it is both the whole chain and the per-spawn
+	// resolver.
 	resolver, err := attestation.NewChain(attestation.ChainConfig{
-		Configured: attestation.ConfiguredConfig{
-			Type:   attestation.ConfiguredType(cfg.Attestation.Configured.Type),
-			Source: cfg.Attestation.Configured.Source,
-		},
-		Sidecars: chainSidecars,
+		Assertion:  assertionProvider,
+		OmitOSUser: true,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "attestation: %v\n", err)
 		os.Exit(2)
 	}
-
-	domainResolver := &attestation.DomainResolver{Chain: resolver}
-	if len(chainSidecars) > 0 {
-		perSpawnProvider, err := attestation.NewSidecarProvider(chainSidecars[0])
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "attestation: build per-spawn resolver: %v\n", err)
-			os.Exit(2)
-		}
-		if perSpawnProvider != nil {
-			domainResolver.PerSpawn = attestation.NewResolver(perSpawnProvider)
-		}
+	domainResolver := &attestation.DomainResolver{
+		Chain:    resolver,
+		PerSpawn: attestation.NewResolver(assertionProvider),
 	}
 
 	policy := a2apolicy.NewPolicyFromEntries(cfg.A2AMapping)
@@ -435,19 +416,13 @@ func runMintA2A(args []string) error {
 		oidcRoleForRole[role] = rc.OIDCRole
 	}
 
-	assertionTTL := time.Duration(cfg.A2AProvider.AssertionTTLSeconds) * time.Second
-
 	svc := a2amint.Service{
-		DomainResolver:          domainResolver,
-		Policy:                  policy,
-		Broker:                  br,
-		AssertionPrivateKeyPath: cfg.A2AProvider.AssertionPrivateKeyPath,
-		Issuer:                  cfg.A2AProvider.Issuer,
-		AssertionTTL:            assertionTTL,
-		Endpoint:                cfg.A2AProvider.Endpoint,
-		AuthMount:               cfg.A2AProvider.AuthMount,
-		AuthRoleForRole:         authRoleForRole,
-		OIDCRoleForRole:         oidcRoleForRole,
+		DomainResolver:  domainResolver,
+		Policy:          policy,
+		Endpoint:        cfg.A2AProvider.Endpoint,
+		AuthMount:       cfg.A2AProvider.AuthMount,
+		AuthRoleForRole: authRoleForRole,
+		OIDCRoleForRole: oidcRoleForRole,
 		// Audit: gatekeeper's own audit record of the mint decision
 		// (caller identity, resolved role, requested audience, parent
 		// session id) — printed to stderr so it never contaminates stdout

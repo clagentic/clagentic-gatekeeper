@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -100,6 +101,8 @@ func (p *assertionProvider) Resolve(ctx context.Context) (Identity, error) {
 		Roles:   claims.Roles,
 		Grade:   claims.Grade,
 		Issuer:  claims.Iss,
+
+		Assertion: strings.TrimSpace(string(token)),
 	}, nil
 }
 

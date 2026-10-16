@@ -2,38 +2,35 @@
 // path: resolve the attested caller identity under the A2A domain's
 // fail-closed MISS policy -> check role/audience entitlement
 // (internal/a2apolicy) -> on permit, broker issuance via internal/a2atoken's
-// B3 exchange (gatekeeper-signed assertion -> OpenBao JWT-auth login ->
-// identity/oidc/token/<role> read). It has no I/O of its own beyond its
-// injected dependencies, mirroring internal/mint's shape for the GitHub
-// domain.
+// documented JWT login flow (the caller's serve-issued identity assertion logs
+// in at the OpenBao JWT auth mount, and the returned client token requests the
+// identity token). It has no I/O of its own beyond its injected dependencies,
+// mirroring internal/mint's shape for the GitHub domain.
 //
 // Every mint decision is recorded in GATEKEEPER'S OWN audit record — caller
 // identity, resolved A2A role, requested audience, and parent session id —
-// per lr-890fae comment #5 (AC4-successor): the peer-facing token itself
-// carries only a native "sub" claim (the caller's OpenBao entity id) and a
-// TTL bound, nothing else, because OpenBao's identity/oidc role template
-// cannot carry additional custom claims today (openbao lr-fbbf32 comment
-// #12 / lr-1e7c97, an unresolved upstream parser bug). OpenBao's own audit
-// device remains the mint-of-record for the issuance event; this package's
-// audit hook is a SEPARATE, additional record of the authorization decision
-// gatekeeper itself made, not a restatement of the wire token.
+// because the peer-facing token itself carries only a native "sub" claim (the
+// caller's OpenBao entity id) and a TTL bound, nothing else: OpenBao's
+// identity/oidc role template cannot carry additional custom claims today.
+// OpenBao's own audit device remains the mint-of-record for the issuance
+// event; this package's audit hook is a SEPARATE, additional record of the
+// authorization decision gatekeeper itself made, not a restatement of the wire
+// token.
 //
-// Fail-closed by construction: an unresolvable attestation, or an identity
-// not entitled to the requested audience, refuses BEFORE any broker read and
-// BEFORE any OpenBao issuance call — no token material is ever returned, and
-// the refusal is audited exactly like a permit.
+// Fail-closed by construction: an unresolvable attestation, an identity not
+// entitled to the requested audience, or an identity that did not come from an
+// identity assertion refuses BEFORE any OpenBao call — no token material is
+// ever returned, and the refusal is audited exactly like a permit.
 package a2amint
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/clagentic/clagentic-gatekeeper/internal/a2apolicy"
 	"github.com/clagentic/clagentic-gatekeeper/internal/a2atoken"
 	"github.com/clagentic/clagentic-gatekeeper/internal/attestation"
-	"github.com/clagentic/clagentic-gatekeeper/internal/broker"
 )
 
 // AuditEvent is one record of an A2A mint decision — permitted or refused —
@@ -65,41 +62,26 @@ type AuditEvent struct {
 
 // AuditFunc records one AuditEvent. Service.Mint calls this for every
 // outcome, permitted or refused, so a refusal is always audited exactly like
-// a permit (lr-890fae's fail-closed AC). A nil AuditFunc is valid and simply
-// discards events — audit wiring is the caller's choice, not a hard
-// dependency of this package's control flow.
+// a permit. A nil AuditFunc is valid and simply discards events — audit wiring
+// is the caller's choice, not a hard dependency of this package's control flow.
 type AuditFunc func(AuditEvent)
 
-// Service mints A2A peer-facing tokens via the B3 attest-and-route
-// mechanism. Configured entirely from deployment values; holds no signing
-// key of its own for the peer-facing token and performs no in-process
-// signing of it (AC3) — OpenBao is the exclusive issuer.
+// Service mints A2A peer-facing tokens. Configured entirely from deployment
+// values; holds no signing key of any kind and performs no in-process signing
+// — OpenBao is the exclusive issuer.
 type Service struct {
 	// DomainResolver resolves the attested caller identity under
 	// attestation.DomainA2A's fail-closed MISS policy: a per-spawn
 	// attestation miss refuses outright rather than falling through to a
-	// lower-priority (e.g. session) provider, closing the confused-deputy
-	// path a remote-facing mint cannot tolerate.
+	// lower-priority provider, closing the confused-deputy path a
+	// remote-facing mint cannot tolerate. The identity it returns must carry
+	// the verified assertion (attestation.Identity.Assertion), which is what
+	// OpenBao logs in with.
 	DomainResolver *attestation.DomainResolver
 	// Policy is the config-driven A2A entitlement gate (identity -> role ->
 	// permitted audiences). A nil or empty-built Policy fails every
 	// request closed, matching a deployment with no a2a_mapping configured.
 	Policy *a2apolicy.Policy
-	// Broker reads the assertion signing key. Never asked for the
-	// peer-facing token's own credentials — OpenBao issues those directly.
-	Broker broker.Broker
-
-	// AssertionPrivateKeyPath is the broker path holding gatekeeper's own
-	// assertion signing key (the bearer-of-attestation key, distinct from
-	// and never conflated with OpenBao's OIDC signing key).
-	AssertionPrivateKeyPath string
-	// Issuer is stamped into the assertion's "iss" claim; must match the
-	// JWT auth mount's configured bound_issuer.
-	Issuer string
-	// AssertionTTL bounds the gatekeeper-signed assertion's own lifetime,
-	// independent of the peer-facing token's TTL (which OpenBao's
-	// identity/oidc role controls).
-	AssertionTTL time.Duration
 
 	// Endpoint is the OpenBao server URL.
 	Endpoint string
@@ -146,9 +128,9 @@ func (s *Service) audit(ev AuditEvent) {
 // on the error's *class*: a *a2atoken.TransportError is reported by its own
 // already-bounded Error() string, kept short and free of any higher-level
 // wrapping; every OTHER error (attestation resolution, entitlement denial,
-// missing broker/config, key-parse failure) keeps its full, unredacted
-// message, because none of those originate from third-party response
-// content and full diagnosability matters for them.
+// missing config) keeps its full, unredacted message, because none of those
+// originate from third-party response content and full diagnosability matters
+// for them.
 //
 // This targeted routing — rather than a blanket truncation of every Reason
 // string — is deliberate: a blanket redaction would degrade diagnosability
@@ -176,6 +158,8 @@ func auditReason(err error) string {
 //  3. Config completeness: a requested role with no configured AuthRole/
 //     OIDCRole mapping refuses immediately — an incomplete config is a
 //     refusal, never a silent fallback to some other role's mapping.
+//  4. Assertion: an identity that did not come from an identity assertion has
+//     nothing to log in with and refuses immediately.
 //
 // Every outcome — permit or refusal at any gate — is reported to s.Audit
 // before Mint returns.
@@ -192,72 +176,34 @@ func (s *Service) Mint(ctx context.Context, audience string) (a2atoken.Token, er
 		return a2atoken.Token{}, fmt.Errorf("a2amint: resolve attested identity: %w", err)
 	}
 
-	role, err := s.Policy.Check(identity.Subject, audience)
-	if err != nil {
+	refuse := func(role string, err error) (a2atoken.Token, error) {
 		s.audit(AuditEvent{
 			Identity:        identity.Subject,
+			Role:            role,
 			Audience:        audience,
 			ParentSessionID: identity.ParentSessionID,
 			Permitted:       false,
 			Reason:          err.Error(),
 		})
-		return a2atoken.Token{}, fmt.Errorf("a2amint: %w", err)
+		return a2atoken.Token{}, err
+	}
+
+	role, err := s.Policy.Check(identity.Subject, audience)
+	if err != nil {
+		return refuse("", fmt.Errorf("a2amint: %w", err))
 	}
 
 	authRole, ok := s.AuthRoleForRole[role]
 	if !ok || authRole == "" {
-		err := fmt.Errorf("a2amint: no jwt auth role configured for A2A caller role %q", role)
-		s.audit(AuditEvent{
-			Identity:        identity.Subject,
-			Role:            role,
-			Audience:        audience,
-			ParentSessionID: identity.ParentSessionID,
-			Permitted:       false,
-			Reason:          err.Error(),
-		})
-		return a2atoken.Token{}, err
+		return refuse(role, fmt.Errorf("a2amint: no jwt auth role configured for A2A caller role %q", role))
 	}
 	oidcRole, ok := s.OIDCRoleForRole[role]
 	if !ok || oidcRole == "" {
-		err := fmt.Errorf("a2amint: no identity/oidc role configured for A2A caller role %q", role)
-		s.audit(AuditEvent{
-			Identity:        identity.Subject,
-			Role:            role,
-			Audience:        audience,
-			ParentSessionID: identity.ParentSessionID,
-			Permitted:       false,
-			Reason:          err.Error(),
-		})
-		return a2atoken.Token{}, err
+		return refuse(role, fmt.Errorf("a2amint: no identity/oidc role configured for A2A caller role %q", role))
 	}
 
-	if s.Broker == nil {
-		err := fmt.Errorf("a2amint: no broker configured; cannot read assertion signing key")
-		s.audit(AuditEvent{
-			Identity:        identity.Subject,
-			Role:            role,
-			Audience:        audience,
-			ParentSessionID: identity.ParentSessionID,
-			Permitted:       false,
-			Reason:          err.Error(),
-		})
-		return a2atoken.Token{}, err
-	}
-
-	privateKey, err := s.Broker.Get(ctx, s.AssertionPrivateKeyPath)
-	if err != nil {
-		// Do not wrap with the value — only the path context, never key
-		// material.
-		wrapped := fmt.Errorf("a2amint: read assertion private key: %w", err)
-		s.audit(AuditEvent{
-			Identity:        identity.Subject,
-			Role:            role,
-			Audience:        audience,
-			ParentSessionID: identity.ParentSessionID,
-			Permitted:       false,
-			Reason:          wrapped.Error(),
-		})
-		return a2atoken.Token{}, wrapped
+	if identity.Assertion == "" {
+		return refuse(role, fmt.Errorf("a2amint: caller identity %q did not come from an identity assertion; the OpenBao JWT mount logs in with the assertion, so there is nothing to present", identity.Subject))
 	}
 
 	issueFn := s.IssueFunc
@@ -266,14 +212,12 @@ func (s *Service) Mint(ctx context.Context, audience string) (a2atoken.Token, er
 	}
 
 	token, err := issueFn(ctx, a2atoken.IssueRequest{
-		Endpoint:               s.Endpoint,
-		AssertionPrivateKeyPEM: privateKey,
-		Issuer:                 s.Issuer,
-		Subject:                identity.Subject,
-		AssertionTTL:           s.AssertionTTL,
-		AuthMount:              s.AuthMount,
-		AuthRole:               authRole,
-		OIDCRole:               oidcRole,
+		Endpoint:  s.Endpoint,
+		Assertion: identity.Assertion,
+		Subject:   identity.Subject,
+		AuthMount: s.AuthMount,
+		AuthRole:  authRole,
+		OIDCRole:  oidcRole,
 	})
 	if err != nil {
 		s.audit(AuditEvent{

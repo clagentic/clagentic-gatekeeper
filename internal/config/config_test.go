@@ -505,9 +505,6 @@ roles: {}
 
 a2a_provider:
   endpoint: https://bao.example.com
-  assertion_private_key_path: secret/gatekeeper/a2a/assertion-private-key
-  issuer: gatekeeper-example-issuer
-  assertion_ttl_seconds: 300
   auth_mount: a2a-jwt
   roles:
     peer-builder:
@@ -525,15 +522,6 @@ a2a_provider:
 	}
 	if cfg.A2AProvider.Endpoint != "https://bao.example.com" {
 		t.Errorf("A2AProvider.Endpoint = %q, want %q", cfg.A2AProvider.Endpoint, "https://bao.example.com")
-	}
-	if cfg.A2AProvider.AssertionPrivateKeyPath != "secret/gatekeeper/a2a/assertion-private-key" {
-		t.Errorf("A2AProvider.AssertionPrivateKeyPath = %q, want %q", cfg.A2AProvider.AssertionPrivateKeyPath, "secret/gatekeeper/a2a/assertion-private-key")
-	}
-	if cfg.A2AProvider.Issuer != "gatekeeper-example-issuer" {
-		t.Errorf("A2AProvider.Issuer = %q, want %q", cfg.A2AProvider.Issuer, "gatekeeper-example-issuer")
-	}
-	if cfg.A2AProvider.AssertionTTLSeconds != 300 {
-		t.Errorf("A2AProvider.AssertionTTLSeconds = %d, want 300", cfg.A2AProvider.AssertionTTLSeconds)
 	}
 	if cfg.A2AProvider.AuthMount != "a2a-jwt" {
 		t.Errorf("A2AProvider.AuthMount = %q, want %q", cfg.A2AProvider.AuthMount, "a2a-jwt")
@@ -577,14 +565,13 @@ roles: {}
 }
 
 // TestA2AProviderConfig_PartialConfigNotEnabled asserts a partially
-// configured provider (one of the three required fields missing) is treated
+// configured provider (one of the two required fields missing) is treated
 // as NOT enabled — fail closed with a config error rather than an attempt
 // that cannot succeed.
 func TestA2AProviderConfig_PartialConfigNotEnabled(t *testing.T) {
 	cases := []A2AProviderConfig{
-		{AssertionPrivateKeyPath: "secret/x", AuthMount: "a2a-jwt"},         // missing Endpoint
-		{Endpoint: "https://bao.example.com", AuthMount: "a2a-jwt"},         // missing AssertionPrivateKeyPath
-		{Endpoint: "https://bao.example.com", AssertionPrivateKeyPath: "x"}, // missing AuthMount
+		{AuthMount: "a2a-jwt"},                // missing Endpoint
+		{Endpoint: "https://bao.example.com"}, // missing AuthMount
 	}
 	for i, c := range cases {
 		if c.Enabled() {

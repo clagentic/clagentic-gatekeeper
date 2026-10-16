@@ -2,10 +2,6 @@ package a2amint_test
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/x509"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"net/http"
@@ -13,7 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/clagentic/clagentic-gatekeeper/internal/a2amint"
 	"github.com/clagentic/clagentic-gatekeeper/internal/a2apolicy"
@@ -21,26 +16,13 @@ import (
 	"github.com/clagentic/clagentic-gatekeeper/internal/attestation"
 )
 
-// generateTestRSAPEM generates a fresh RSA-2048 private key and returns it
-// as a PKCS#1 PEM string, for tests that drive the real a2atoken.Issue
-// (which parses AssertionPrivateKeyPEM before making any HTTP call).
-func generateTestRSAPEM(t *testing.T) string {
-	t.Helper()
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("generate test RSA key: %v", err)
-	}
-	der := x509.MarshalPKCS1PrivateKey(key)
-	block := &pem.Block{Type: "RSA PRIVATE KEY", Bytes: der}
-	return string(pem.EncodeToMemory(block))
-}
-
 // Roster-agnostic fixture values — invented names, generic role vocabulary.
 // None correspond to any real crew agent.
 const (
-	fixtureIdentity = "peer-agent-alpha"
-	fixtureRole     = "peer-builder"
-	fixtureAudience = "peer-project-x"
+	fixtureIdentity  = "peer-agent-alpha"
+	fixtureRole      = "peer-builder"
+	fixtureAudience  = "peer-project-x"
+	fixtureAssertion = "eyJhbGciOiJFZERTQSJ9.fixture-payload.fixture-signature"
 )
 
 // fixedIdentityProvider always resolves to a fixed identity, used to build a
@@ -74,29 +56,15 @@ func fixturePolicy() *a2apolicy.Policy {
 	})
 }
 
-// fakeBroker implements broker.Broker for tests.
-type fakeBroker struct {
-	val string
-	err error
-}
-
-func (f *fakeBroker) Get(context.Context, string) (string, error) {
-	if f.err != nil {
-		return "", f.err
-	}
-	return f.val, nil
-}
-
 func baseService(t *testing.T) *a2amint.Service {
 	t.Helper()
 	return &a2amint.Service{
-		DomainResolver: domainResolver(attestation.Identity{Subject: fixtureIdentity}),
-		Policy:         fixturePolicy(),
-		Broker:         &fakeBroker{val: "fake-assertion-key-pem"},
-
-		AssertionPrivateKeyPath: "secret/gatekeeper/a2a/assertion-private-key",
-		Issuer:                  "gatekeeper-test-issuer",
-		AssertionTTL:            5 * time.Minute,
+		DomainResolver: domainResolver(attestation.Identity{
+			Subject:   fixtureIdentity,
+			Source:    attestation.SourceAssertion,
+			Assertion: fixtureAssertion,
+		}),
+		Policy: fixturePolicy(),
 
 		Endpoint:  "https://openbao.example.invalid",
 		AuthMount: "a2a-jwt",
@@ -145,8 +113,8 @@ func TestMintPermitted(t *testing.T) {
 	if gotReq.OIDCRole != "a2a-oidc-role" {
 		t.Errorf("IssueRequest.OIDCRole = %q, want %q", gotReq.OIDCRole, "a2a-oidc-role")
 	}
-	if gotReq.AssertionPrivateKeyPEM != "fake-assertion-key-pem" {
-		t.Errorf("IssueRequest.AssertionPrivateKeyPEM = %q, want the broker-sourced value", gotReq.AssertionPrivateKeyPEM)
+	if gotReq.Assertion != fixtureAssertion {
+		t.Errorf("IssueRequest.Assertion = %q, want the caller's verified assertion", gotReq.Assertion)
 	}
 
 	if len(events) != 1 || !events[0].Permitted {
@@ -197,17 +165,12 @@ func TestMintRefusedUnresolvableAttestation(t *testing.T) {
 
 // TestMintRefusedNotEntitled covers the fail-closed refusal path when the
 // attested identity is not entitled to the requested audience
-// (internal/a2apolicy denies): no broker read, no issuance call, refusal
-// audited with the resolved identity.
+// (internal/a2apolicy denies): no issuance call, refusal audited with the
+// resolved identity.
 func TestMintRefusedNotEntitled(t *testing.T) {
 	svc := baseService(t)
-	svc.DomainResolver = domainResolver(attestation.Identity{Subject: "unmapped-caller"})
+	svc.DomainResolver = domainResolver(attestation.Identity{Subject: "unmapped-caller", Source: attestation.SourceAssertion, Assertion: fixtureAssertion})
 
-	brokerCalled := false
-	svc.Broker = &fakeBrokerFunc{fn: func(context.Context, string) (string, error) {
-		brokerCalled = true
-		return "", fmt.Errorf("must never be called")
-	}}
 	issueCalled := false
 	svc.IssueFunc = func(context.Context, a2atoken.IssueRequest) (a2atoken.Token, error) {
 		issueCalled = true
@@ -227,9 +190,6 @@ func TestMintRefusedNotEntitled(t *testing.T) {
 	}
 	if tok.Value != "" {
 		t.Errorf("expected no token material, got %q", tok.Value)
-	}
-	if brokerCalled {
-		t.Error("broker must never be read before entitlement is checked")
 	}
 	if issueCalled {
 		t.Error("IssueFunc must never be called for an unentitled identity")
@@ -310,10 +270,6 @@ func TestMintAuditRedactsTransportErrorBody(t *testing.T) {
 	svc := baseService(t)
 	svc.Endpoint = srv.URL
 	svc.IssueFunc = nil // use the real a2atoken.Issue, the actual boundary.
-	// The real a2atoken.Issue parses this as a PEM-encoded RSA key before
-	// ever reaching the HTTP call this test exercises — baseService's
-	// placeholder string is not valid PEM, so swap in a real generated key.
-	svc.Broker = &fakeBroker{val: generateTestRSAPEM(t)}
 
 	var events []a2amint.AuditEvent
 	svc.Audit = func(ev a2amint.AuditEvent) { events = append(events, ev) }
@@ -380,7 +336,6 @@ func TestMintAuditRedactsOversizedOpenBaoErrorEnvelope(t *testing.T) {
 	svc := baseService(t)
 	svc.Endpoint = srv.URL
 	svc.IssueFunc = nil // use the real a2atoken.Issue, the actual boundary.
-	svc.Broker = &fakeBroker{val: generateTestRSAPEM(t)}
 
 	var events []a2amint.AuditEvent
 	svc.Audit = func(ev a2amint.AuditEvent) { events = append(events, ev) }
@@ -427,12 +382,30 @@ func quoteAll(ss []string) string {
 	return strings.Join(quoted, ",")
 }
 
-// fakeBrokerFunc implements broker.Broker with a caller-supplied function,
-// used where the test needs to assert the broker was never called at all.
-type fakeBrokerFunc struct {
-	fn func(context.Context, string) (string, error)
-}
+// TestMintRefusedWithoutAssertion: an identity that did not come from an
+// identity assertion (a sidecar or configured identity) has nothing to log in
+// with at the JWT mount. It is refused before any OpenBao call and the refusal
+// is audited with the resolved identity.
+func TestMintRefusedWithoutAssertion(t *testing.T) {
+	svc := baseService(t)
+	svc.DomainResolver = domainResolver(attestation.Identity{Subject: fixtureIdentity, Source: "sidecar"})
 
-func (f *fakeBrokerFunc) Get(ctx context.Context, path string) (string, error) {
-	return f.fn(ctx, path)
+	issueCalled := false
+	svc.IssueFunc = func(context.Context, a2atoken.IssueRequest) (a2atoken.Token, error) {
+		issueCalled = true
+		return a2atoken.Token{}, nil
+	}
+	var events []a2amint.AuditEvent
+	svc.Audit = func(ev a2amint.AuditEvent) { events = append(events, ev) }
+
+	tok, err := svc.Mint(context.Background(), fixtureAudience)
+	if err == nil || !strings.Contains(err.Error(), "identity assertion") {
+		t.Fatalf("Mint() = %v, want a refusal naming the missing identity assertion", err)
+	}
+	if tok.Value != "" || issueCalled {
+		t.Errorf("token %q, issueCalled %v: nothing may be issued without an assertion", tok.Value, issueCalled)
+	}
+	if len(events) != 1 || events[0].Permitted || events[0].Identity != fixtureIdentity {
+		t.Fatalf("audit events = %+v, want one refusal for %q", events, fixtureIdentity)
+	}
 }

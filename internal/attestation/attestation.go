@@ -50,6 +50,10 @@ type Identity struct {
 	Roles  []string
 	Grade  string
 	Issuer string
+	// Assertion is the verified compact JWS the identity was read from, set
+	// only by the assertion provider. It is a bearer credential: the A2A mint
+	// presents it at the OpenBao JWT mount, and no caller may log or print it.
+	Assertion string
 
 	// The fields below carry structured-sidecar ATTRIBUTION context
 	// (lr-f1bfe8) for audit/observability — which parent session spawned

@@ -86,6 +86,12 @@ func (f *assertionFixture) assertionBlock() string {
 // CLAGENTIC_IDENTITY_DIR at it.
 func (f *assertionFixture) deliver(grade string, roleNames ...string) {
 	f.t.Helper()
+	f.deliverAs("agent:example-builder", grade, roleNames...)
+}
+
+// deliverAs is deliver for a chosen act.sub, and returns the delivered token.
+func (f *assertionFixture) deliverAs(actor, grade string, roleNames ...string) string {
+	f.t.Helper()
 	dir := filepath.Join(f.t.TempDir(), "identity")
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		f.t.Fatal(err)
@@ -95,7 +101,7 @@ func (f *assertionFixture) deliver(grade string, roleNames ...string) {
 	}
 	now := time.Now().Unix()
 	claims := map[string]any{
-		"iss": assertionTestIss, "sub": "human:example-user", "act": map[string]any{"sub": "agent:example-builder"},
+		"iss": assertionTestIss, "sub": "human:example-user", "act": map[string]any{"sub": actor},
 		"roles": roleNames, "grade": grade, "rt": map[string]any{"id": "example-runtime", "version": "1.0.0"},
 		"sid": "sess-1", "origin": "agent", "dir": dir,
 		"iat": now - 60, "exp": now + 3600, "jti": "jti-1", "cia": 1,
@@ -113,6 +119,7 @@ func (f *assertionFixture) deliver(grade string, roleNames ...string) {
 		f.t.Fatal(err)
 	}
 	f.t.Setenv("CLAGENTIC_IDENTITY_DIR", dir)
+	return token
 }
 
 func currentOSUser(t *testing.T) string {
