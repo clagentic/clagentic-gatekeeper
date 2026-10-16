@@ -304,8 +304,13 @@ roles:
 # `mint-a2a` needs `attestation.assertion` (above) to be configured.
 #
 # The former keys assertion_private_key_path, issuer and assertion_ttl_seconds
-# are REMOVED: a config that still names one is refused at load, naming the
-# key.
+# are REMOVED: a config that still names one still loads, the value is ignored,
+# and gatekeeper logs one deprecation line to stderr naming each such key. Delete
+# them at your convenience.
+#
+# `mint-a2a` requires an assertion that carries act.sub (the mount logs in as
+# /act/sub). An assertion with no act is refused at gatekeeper, before any
+# OpenBao call; there is no fallback to sub.
 #
 # Omitting this stanza (or leaving endpoint / auth_mount empty) means
 # `gatekeeper mint-a2a` refuses with a clear config error. It has ZERO effect

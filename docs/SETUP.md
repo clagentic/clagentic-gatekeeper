@@ -535,8 +535,13 @@ requests the identity token.
 1. **Identity assertion** (layer 0 above) resolves the caller's identity from
    the assertion `gatekeeper serve` issued and delivered through
    `CLAGENTIC_IDENTITY_DIR`; `mint-a2a` verifies it against the configured
-   issuers exactly as `mint` does. The identity is the assertion's `act.sub`
-   (or `sub` when there is no `act`). `mint-a2a` needs
+   issuers exactly as `mint` does. The identity is the assertion's `act.sub`.
+   An assertion with no `act` claim is **refused at gatekeeper, before any
+   OpenBao call**, with the error `identity assertion for "<sub>" carries no
+   act.sub`; there is no fallback to `sub`, because the mount's
+   `user_claim=/act/sub` is the contract. (The plain `mint` command is
+   unchanged and still resolves an assertion without `act` from `sub`.)
+   `mint-a2a` needs
    `attestation.assertion` configured and uses no other identity source: a
    sidecar or configured identity carries no assertion to log in with, and an
    absent or invalid assertion refuses under `attestation.DomainA2A`'s
@@ -632,9 +637,9 @@ a2a_provider:
 - **Removed keys**: `a2a_provider.assertion_private_key_path`,
   `a2a_provider.issuer` and `a2a_provider.assertion_ttl_seconds` configured
   gatekeeper's own assertion signing, which no longer exists. A config that
-  still names one is **refused at load by every command**, with an error naming
-  the key. Delete them from every gatekeeper config **before** deploying a
-  build with this change.
+  still names one **loads**: the value is ignored and `mint`, `mint-a2a` and
+  `serve` log one deprecation line to stderr naming each such key. Delete them
+  from every gatekeeper config when convenient.
 - **`attestation.assertion`** must be configured (`assertion: {}` trusts the
   local `serve` issuer). `mint-a2a` refuses without it.
 - **`roles`** maps each A2A caller role named in `a2a_mapping`'s `role:`
@@ -747,8 +752,8 @@ bao policy delete <policy-that-granted-the-old-assertion-key>
 ```
 
 Remove `assertion_private_key_path`, `issuer` and `assertion_ttl_seconds` from
-every gatekeeper `a2a_provider` stanza first; a build with this change refuses
-to load a config that still names them.
+every gatekeeper `a2a_provider` stanza when convenient; a build with this change
+loads a config that still names them, ignores them and logs a deprecation line.
 
 ## Identity Assertion issuer (`gatekeeper serve`)
 
@@ -941,7 +946,7 @@ it did before.
 | 2. Role entitlement | What that identity may mint | `roles.<name>.entitled_identities` in `config.yaml` | Yes — empty/absent list refuses to mint (see [`docs/ROLES.md`](ROLES.md)) |
 | 3. Credential grantor | What credentials the role gets | Secret broker (`broker.*` in `config.yaml`) | N/A — reached only after 1 and 2 pass |
 | 2a. A2A caller entitlement (`a2a_mapping`, lr-0ae541) | Which A2A role and peer audience(s) an A2A caller identity may request | `a2a_mapping` in `config.yaml` (`internal/a2apolicy`) | Yes — absent/empty mapping refuses every request; additive, off by default, no effect on layer 2 above |
-| 3a. A2A issuance (`a2a_provider`, lr-890fae) | OpenBao JWT login plus identity-token surface `gatekeeper mint-a2a` brokers through once 2a permits | `a2a_provider` in `config.yaml` (`internal/a2atoken` / `internal/a2amint`) | Yes — unconfigured/partial stanza, or one naming a removed key, refuses with a config error; reached only after 1 and 2a pass; additive, off by default, no effect on `gatekeeper mint` |
+| 3a. A2A issuance (`a2a_provider`, lr-890fae) | OpenBao JWT login plus identity-token surface `gatekeeper mint-a2a` brokers through once 2a permits | `a2a_provider` in `config.yaml` (`internal/a2atoken` / `internal/a2amint`) | Yes — unconfigured/partial stanza refuses with a config error (a removed key only logs a deprecation line); an assertion without `act.sub` refuses; reached only after 1 and 2a pass; additive, off by default, no effect on `gatekeeper mint` |
 
 If you set up nothing beyond the defaults, layer 1 has no identity source (the
 built-in OS-user fallback is off unless `attestation.allow_os_user: true`) and
