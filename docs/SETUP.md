@@ -692,17 +692,31 @@ bao write auth/$MOUNT/config \
 bao read auth/$MOUNT/config          # only the JWKS source may be set; the old
                                      # jwt_validation_pubkeys must be gone
 
-# 3. Role: select act.sub as a JSON pointer, and allow the serve algorithm
-#    explicitly. The algorithm is EdDSA unless identity.alg is ES256.
+# 3. Role: select act.sub as a JSON pointer, allow the serve algorithm
+#    explicitly (EdDSA unless identity.alg is ES256), and bind the role to a
+#    claim every serve assertion carries. OpenBao refuses a JWT role with no
+#    bound value; serve sets no aud, so bound_audiences is unavailable, and
+#    bound_claims on the fixed, top-level `grade` claim (workload or harness,
+#    identity contract section 3) is the binding that needs no change to serve.
+#    The issuer and signature are already pinned by the mount config in step 2;
+#    this binding only satisfies the role's own requirement, and the entity
+#    alias in step 4 is what limits who can log in.
 bao write auth/$MOUNT/role/$ROLE \
   role_type=jwt \
   user_claim=/act/sub \
   user_claim_json_pointer=true \
   jwt_supported_algs=EdDSA \
-  bound_subject="" \
+  bound_claims_type=string \
+  bound_claims='{"grade":["workload","harness"]}' \
   token_policies=<existing-role-policies>
-bao read auth/$MOUNT/role/$ROLE      # confirm user_claim, user_claim_json_pointer
-                                     # and jwt_supported_algs as written
+bao read auth/$MOUNT/role/$ROLE      # confirm user_claim, user_claim_json_pointer,
+                                     # jwt_supported_algs and bound_claims as written
+#    OPERATOR TO VERIFY against the OpenBao JWT auth API reference for the
+#    deployed version (not checked when this was written): that
+#    jwt_supported_algs is accepted on the ROLE path. If the role write rejects
+#    it, or the read-back omits it, set it on auth/$MOUNT/config in step 2
+#    instead. Also confirm that bound_claims_type and a list value for a
+#    top-level claim are accepted in this form.
 
 # 4. Entity aliases: the alias name on the mount's accessor must equal the
 #    assertion's act.sub value (for example agent:peer-agent-alpha). Re-register
@@ -713,10 +727,12 @@ bao read auth/$MOUNT/role/$ROLE      # confirm user_claim, user_claim_json_point
 (`CLAGENTIC_IDENTITY_DIR/identity.jwt` of a spawn whose `act.sub` is mapped):
 
 ```bash
-JWT=$(cat "$CLAGENTIC_IDENTITY_DIR/identity.jwt")
-
 # 5. Accept: login succeeds and the alias resolves to the pre-registered entity.
-bao write -format=json auth/$MOUNT/login role=$ROLE jwt="$JWT"
+#    The assertion is a bearer credential: it goes to the CLI on stdin as JSON
+#    (printf is a shell builtin), never as an argument visible in the process
+#    list. The `-` stdin form is the bao CLI's documented JSON input.
+printf '{"role":"%s","jwt":"%s"}' "$ROLE" "$(cat "$CLAGENTIC_IDENTITY_DIR/identity.jwt")" \
+  | bao write -format=json auth/$MOUNT/login -
 #    expect auth.client_token, auth.entity_id = the pre-registered entity,
 #    auth.metadata/alias name = the act.sub value
 

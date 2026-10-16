@@ -158,10 +158,13 @@ func auditReason(err error) string {
 //  3. Config completeness: a requested role with no configured AuthRole/
 //     OIDCRole mapping refuses immediately — an incomplete config is a
 //     refusal, never a silent fallback to some other role's mapping.
-//  4. Assertion: an identity that did not come from an identity assertion has
-//     nothing to log in with and refuses immediately.
+//  4. Assertion: an identity whose Source is not attestation.SourceAssertion,
+//     or that carries no assertion, has nothing verified to log in with and
+//     refuses immediately.
 //  5. Actor: an assertion without act.sub refuses immediately; the JWT mount
 //     logs in as /act/sub and there is no sub fallback.
+//  6. Subject binding: Subject must equal ActSub, so the audit record names
+//     the entity the mount logs in as.
 //
 // Every outcome — permit or refusal at any gate — is reported to s.Audit
 // before Mint returns.
@@ -204,8 +207,11 @@ func (s *Service) Mint(ctx context.Context, audience string) (a2atoken.Token, er
 		return refuse(role, fmt.Errorf("a2amint: no identity/oidc role configured for A2A caller role %q", role))
 	}
 
-	if identity.Assertion == "" {
-		return refuse(role, fmt.Errorf("a2amint: caller identity %q did not come from an identity assertion; the OpenBao JWT mount logs in with the assertion, so there is nothing to present", identity.Subject))
+	// Provenance, not mere presence: a sidecar or configured identity that
+	// happens to carry an Assertion string was never verified by the assertion
+	// provider, so its bearer value must not reach the login endpoint.
+	if identity.Source != attestation.SourceAssertion || identity.Assertion == "" {
+		return refuse(role, fmt.Errorf("a2amint: caller identity %q (source %q) did not come from a verified identity assertion; the OpenBao JWT mount logs in with the assertion, so there is nothing to present", identity.Subject, identity.Source))
 	}
 
 	// The JWT mount binds the entity to /act/sub (user_claim_json_pointer), so
@@ -213,6 +219,14 @@ func (s *Service) Mint(ctx context.Context, audience string) (a2atoken.Token, er
 	// fallback to sub: that would name a different entity than the contract.
 	if identity.ActSub == "" {
 		return refuse(role, fmt.Errorf("a2amint: identity assertion for %q carries no act.sub; mint-a2a logs in as /act/sub and has no sub fallback, so the caller must present an assertion with an act claim", identity.Subject))
+	}
+
+	// The audited subject must be the entity OpenBao will log in as. The
+	// assertion provider sets both from the same claim, so a mismatch means the
+	// identity was assembled inconsistently and the audit record would
+	// misattribute the mint.
+	if identity.Subject != identity.ActSub {
+		return refuse(role, fmt.Errorf("a2amint: identity subject %q does not match assertion act.sub %q; the audited subject must be the entity the JWT mount logs in as", identity.Subject, identity.ActSub))
 	}
 
 	issueFn := s.IssueFunc

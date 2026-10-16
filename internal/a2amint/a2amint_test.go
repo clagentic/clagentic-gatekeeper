@@ -438,3 +438,62 @@ func TestMintRefusedWithoutAssertion(t *testing.T) {
 		t.Fatalf("audit events = %+v, want one refusal for %q", events, fixtureIdentity)
 	}
 }
+
+// A sidecar or configured identity that carries a non-empty Assertion and
+// ActSub was never verified by the assertion provider: presence alone is not
+// provenance, so it is refused, audited, and never reaches IssueFunc.
+func TestMintRefusedNonAssertionSourceCarryingAssertion(t *testing.T) {
+	for _, source := range []string{"sidecar", "configured"} {
+		t.Run(source, func(t *testing.T) {
+			svc := baseService(t)
+			svc.DomainResolver = domainResolver(attestation.Identity{
+				Subject: fixtureIdentity, Source: source, ActSub: fixtureIdentity, Assertion: fixtureAssertion,
+			})
+			issueCalls := 0
+			svc.IssueFunc = func(context.Context, a2atoken.IssueRequest) (a2atoken.Token, error) {
+				issueCalls++
+				return a2atoken.Token{}, nil
+			}
+			var events []a2amint.AuditEvent
+			svc.Audit = func(ev a2amint.AuditEvent) { events = append(events, ev) }
+
+			tok, err := svc.Mint(context.Background(), fixtureAudience)
+			if err == nil || !strings.Contains(err.Error(), "verified identity assertion") {
+				t.Fatalf("Mint() = %v, want a refusal naming the unverified assertion source", err)
+			}
+			if tok.Value != "" || issueCalls != 0 {
+				t.Errorf("token %q, issueCalls %d: nothing may be issued", tok.Value, issueCalls)
+			}
+			if len(events) != 1 || events[0].Permitted {
+				t.Fatalf("audit events = %+v, want one refusal", events)
+			}
+		})
+	}
+}
+
+// The audited subject must equal the act.sub the mount logs in as; a mismatch
+// is refused with a named error before any OpenBao call.
+func TestMintRefusedSubjectActSubMismatch(t *testing.T) {
+	svc := baseService(t)
+	svc.DomainResolver = domainResolver(attestation.Identity{
+		Subject: fixtureIdentity, Source: attestation.SourceAssertion, ActSub: "someone-else", Assertion: fixtureAssertion,
+	})
+	issueCalls := 0
+	svc.IssueFunc = func(context.Context, a2atoken.IssueRequest) (a2atoken.Token, error) {
+		issueCalls++
+		return a2atoken.Token{}, nil
+	}
+	var events []a2amint.AuditEvent
+	svc.Audit = func(ev a2amint.AuditEvent) { events = append(events, ev) }
+
+	tok, err := svc.Mint(context.Background(), fixtureAudience)
+	if err == nil || !strings.Contains(err.Error(), "does not match assertion act.sub") {
+		t.Fatalf("Mint() = %v, want a refusal naming the subject/act.sub mismatch", err)
+	}
+	if tok.Value != "" || issueCalls != 0 {
+		t.Errorf("token %q, issueCalls %d: nothing may be issued", tok.Value, issueCalls)
+	}
+	if len(events) != 1 || events[0].Permitted {
+		t.Fatalf("audit events = %+v, want one refusal", events)
+	}
+}

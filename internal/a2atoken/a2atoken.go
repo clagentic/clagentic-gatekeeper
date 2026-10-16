@@ -167,6 +167,10 @@ type IssueRequest struct {
 	// (attestation.Identity.Subject, the assertion's act.sub). It is carried
 	// onto Token.Subject for gatekeeper's own audit record and never sent to
 	// OpenBao: OpenBao derives the entity from the assertion itself.
+	// Invariant: Subject must equal the act.sub of Assertion, so the recorded
+	// subject is the entity actually authenticated. internal/a2amint enforces
+	// this before calling Issue; Issue cannot, as it does not parse the
+	// assertion.
 	Subject string
 	// AuthMount is the path segment of OpenBao's dedicated JWT auth mount
 	// (e.g. "a2a-jwt"), used to build /v1/auth/<AuthMount>/login.
