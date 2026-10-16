@@ -119,8 +119,11 @@ type jwk struct {
 type assertionClaims struct {
 	Iss   string
 	Actor string
-	Roles []string
-	Grade string
+	// ActSub is the act.sub claim alone, empty when the assertion carries no
+	// act. Actor falls back to sub in that case; ActSub never does.
+	ActSub string
+	Roles  []string
+	Grade  string
 }
 
 var (
@@ -411,6 +414,7 @@ func verifyAssertion(ctx context.Context, token string, src keySource, p verifyP
 	}
 	if act, ok := claims["act"].(map[string]any); ok {
 		out.Actor = act["sub"].(string)
+		out.ActSub = out.Actor
 	}
 	for _, r := range claims["roles"].([]any) {
 		out.Roles = append(out.Roles, r.(string))

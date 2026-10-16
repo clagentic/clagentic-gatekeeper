@@ -86,6 +86,30 @@ func (f *assertionFixture) assertionBlock() string {
 // CLAGENTIC_IDENTITY_DIR at it.
 func (f *assertionFixture) deliver(grade string, roleNames ...string) {
 	f.t.Helper()
+	f.deliverAs("agent:example-builder", grade, roleNames...)
+}
+
+// deliverAs is deliver for a chosen act.sub, and returns the delivered token.
+func (f *assertionFixture) deliverAs(actor, grade string, roleNames ...string) string {
+	f.t.Helper()
+	return f.deliverSigned(grade, roleNames, func(c map[string]any) { c["act"] = map[string]any{"sub": actor} })
+}
+
+// deliverWithoutAct delivers a workload assertion that has no act claim and
+// whose sub is the given runtime identity, the shape the plain mint resolves
+// from sub.
+func (f *assertionFixture) deliverWithoutAct(sub string, roleNames ...string) string {
+	f.t.Helper()
+	return f.deliverSigned("workload", roleNames, func(c map[string]any) {
+		delete(c, "act")
+		c["sub"] = sub
+	})
+}
+
+// deliverSigned signs a valid assertion, lets shape adjust its claims, writes
+// it into a fresh delivery directory and returns the token.
+func (f *assertionFixture) deliverSigned(grade string, roleNames []string, shape func(map[string]any)) string {
+	f.t.Helper()
 	dir := filepath.Join(f.t.TempDir(), "identity")
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		f.t.Fatal(err)
@@ -95,7 +119,7 @@ func (f *assertionFixture) deliver(grade string, roleNames ...string) {
 	}
 	now := time.Now().Unix()
 	claims := map[string]any{
-		"iss": assertionTestIss, "sub": "human:example-user", "act": map[string]any{"sub": "agent:example-builder"},
+		"iss": assertionTestIss, "sub": "human:example-user",
 		"roles": roleNames, "grade": grade, "rt": map[string]any{"id": "example-runtime", "version": "1.0.0"},
 		"sid": "sess-1", "origin": "agent", "dir": dir,
 		"iat": now - 60, "exp": now + 3600, "jti": "jti-1", "cia": 1,
@@ -103,6 +127,7 @@ func (f *assertionFixture) deliver(grade string, roleNames ...string) {
 	if grade == "harness" {
 		claims["spawn"] = "spawn-1"
 	}
+	shape(claims)
 	enc := func(v any) string {
 		b, _ := json.Marshal(v)
 		return base64.RawURLEncoding.EncodeToString(b)
@@ -113,6 +138,7 @@ func (f *assertionFixture) deliver(grade string, roleNames ...string) {
 		f.t.Fatal(err)
 	}
 	f.t.Setenv("CLAGENTIC_IDENTITY_DIR", dir)
+	return token
 }
 
 func currentOSUser(t *testing.T) string {
