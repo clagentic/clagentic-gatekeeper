@@ -61,6 +61,7 @@ func baseService(t *testing.T) *a2amint.Service {
 	return &a2amint.Service{
 		DomainResolver: domainResolver(attestation.Identity{
 			Subject:   fixtureIdentity,
+			ActSub:    fixtureIdentity,
 			Source:    attestation.SourceAssertion,
 			Assertion: fixtureAssertion,
 		}),
@@ -380,6 +381,34 @@ func quoteAll(ss []string) string {
 		quoted[i] = strconv.Quote(s)
 	}
 	return strings.Join(quoted, ",")
+}
+
+// An assertion that carries no act.sub is refused with a named error before any
+// OpenBao call, even when its sub is entitled: there is no sub fallback.
+func TestMintRefusedAssertionWithoutActSub(t *testing.T) {
+	svc := baseService(t)
+	svc.DomainResolver = domainResolver(attestation.Identity{
+		Subject: fixtureIdentity, Source: attestation.SourceAssertion, Assertion: fixtureAssertion,
+	})
+
+	issueCalled := false
+	svc.IssueFunc = func(context.Context, a2atoken.IssueRequest) (a2atoken.Token, error) {
+		issueCalled = true
+		return a2atoken.Token{}, nil
+	}
+	var events []a2amint.AuditEvent
+	svc.Audit = func(ev a2amint.AuditEvent) { events = append(events, ev) }
+
+	tok, err := svc.Mint(context.Background(), fixtureAudience)
+	if err == nil || !strings.Contains(err.Error(), "carries no act.sub") {
+		t.Fatalf("Mint() = %v, want a refusal naming the missing act.sub", err)
+	}
+	if tok.Value != "" || issueCalled {
+		t.Errorf("token %q, issueCalled %v: nothing may be issued without act.sub", tok.Value, issueCalled)
+	}
+	if len(events) != 1 || events[0].Permitted {
+		t.Fatalf("audit events = %+v, want one refusal", events)
+	}
 }
 
 // TestMintRefusedWithoutAssertion: an identity that did not come from an

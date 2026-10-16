@@ -101,6 +101,7 @@ func (p *assertionProvider) Resolve(ctx context.Context) (Identity, error) {
 		Roles:   claims.Roles,
 		Grade:   claims.Grade,
 		Issuer:  claims.Iss,
+		ActSub:  claims.ActSub,
 
 		Assertion: strings.TrimSpace(string(token)),
 	}, nil

@@ -160,6 +160,8 @@ func auditReason(err error) string {
 //     refusal, never a silent fallback to some other role's mapping.
 //  4. Assertion: an identity that did not come from an identity assertion has
 //     nothing to log in with and refuses immediately.
+//  5. Actor: an assertion without act.sub refuses immediately; the JWT mount
+//     logs in as /act/sub and there is no sub fallback.
 //
 // Every outcome — permit or refusal at any gate — is reported to s.Audit
 // before Mint returns.
@@ -204,6 +206,13 @@ func (s *Service) Mint(ctx context.Context, audience string) (a2atoken.Token, er
 
 	if identity.Assertion == "" {
 		return refuse(role, fmt.Errorf("a2amint: caller identity %q did not come from an identity assertion; the OpenBao JWT mount logs in with the assertion, so there is nothing to present", identity.Subject))
+	}
+
+	// The JWT mount binds the entity to /act/sub (user_claim_json_pointer), so
+	// an assertion without act.sub has no entity to log in as. There is no
+	// fallback to sub: that would name a different entity than the contract.
+	if identity.ActSub == "" {
+		return refuse(role, fmt.Errorf("a2amint: identity assertion for %q carries no act.sub; mint-a2a logs in as /act/sub and has no sub fallback, so the caller must present an assertion with an act claim", identity.Subject))
 	}
 
 	issueFn := s.IssueFunc

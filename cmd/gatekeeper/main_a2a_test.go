@@ -309,21 +309,70 @@ func TestRunMintA2A_MountRefusalYieldsNoToken(t *testing.T) {
 	}
 }
 
-// Acceptance: a config still naming a removed key is refused at start, naming
-// the key, on the A2A command and on the existing mint command alike, since
-// both load the same file.
-func TestRemovedA2AKeysRefusedAtStartOnBothCommands(t *testing.T) {
+// A config still naming the removed a2a_provider keys starts: both commands
+// warn on stderr naming each key, ignore the values, and mint as before.
+func TestRemovedA2AKeysWarnAndProceedOnBothCommands(t *testing.T) {
 	f := newAssertionFixture(t)
-	path := writeTempConfig(t, f.a2aConfig("https://openbao.invalid.example", "  assertion_private_key_path: secret/gatekeeper/a2a/assertion-private-key\n"))
+	token := f.deliverAs(a2aTestActor, "harness", "builder")
+	mount := &jwtMount{trusted: token}
+	srv := mount.server(t)
+	removed := "  assertion_private_key_path: secret/gatekeeper/a2a/assertion-private-key\n  issuer: gatekeeper-example-issuer\n  assertion_ttl_seconds: 300\n"
+	path := writeTempConfig(t, f.config(f.assertionBlock(), "", "")+
+		"a2a_mapping:\n  "+a2aTestActor+":\n    role: peer-builder\n    audiences:\n      - "+a2aTestAudience+"\n"+
+		"a2a_provider:\n  endpoint: "+srv.URL+"\n  auth_mount: a2a-jwt\n  roles:\n    peer-builder:\n      auth_role: a2a-role\n      oidc_role: a2a-oidc-role\n"+removed)
 
-	for name, run := range map[string]func() error{
-		"mint-a2a": func() error { return runMintA2A([]string{"--audience", a2aTestAudience, "--config", path}) },
-		"mint":     func() error { return runMint([]string{"--role", "builder", "--config", path}) },
+	for name, run := range map[string]func() (string, error){
+		"mint-a2a": func() (out string, err error) {
+			out = captureStdout(t, func() { err = runMintA2A([]string{"--audience", a2aTestAudience, "--config", path}) })
+			return out, err
+		},
+		"mint": func() (out string, err error) {
+			out = captureStdout(t, func() { err = runMint([]string{"--role", "builder", "--config", path}) })
+			return out, err
+		},
 	} {
-		err := run()
-		if err == nil || !strings.Contains(err.Error(), "a2a_provider.assertion_private_key_path") {
-			t.Errorf("%s = %v, want a refusal naming a2a_provider.assertion_private_key_path", name, err)
+		var out string
+		var err error
+		stderr := captureStderr(t, func() { out, err = run() })
+		if err != nil {
+			t.Errorf("%s = %v, want it to proceed", name, err)
 		}
+		if strings.TrimSpace(out) == "" {
+			t.Errorf("%s printed no token", name)
+		}
+		if !strings.Contains(stderr, "a2a_provider: deprecated config key(s) assertion_private_key_path, issuer, assertion_ttl_seconds have no effect") {
+			t.Errorf("%s stderr = %q, want the deprecation warning naming each key", name, stderr)
+		}
+	}
+}
+
+// mint-a2a logs in as /act/sub, so an assertion without act is refused at
+// gatekeeper with a named error and the mount is never called, while the plain
+// mint still resolves the same assertion from sub.
+func TestRunMintA2A_AssertionWithoutActRefusedBeforeMount(t *testing.T) {
+	f := newAssertionFixture(t)
+	token := f.deliverWithoutAct("runtime:peer-agent-alpha", "builder")
+	mount := &jwtMount{trusted: token}
+	srv := mount.server(t)
+	path := writeTempConfig(t, f.config(f.assertionBlock(), "", "")+
+		"a2a_mapping:\n  runtime:peer-agent-alpha:\n    role: peer-builder\n    audiences:\n      - "+a2aTestAudience+"\n"+
+		"a2a_provider:\n  endpoint: "+srv.URL+"\n  auth_mount: a2a-jwt\n  roles:\n    peer-builder:\n      auth_role: a2a-role\n      oidc_role: a2a-oidc-role\n")
+
+	var err error
+	captureStderr(t, func() { err = runMintA2A([]string{"--audience", a2aTestAudience, "--config", path}) })
+	if err == nil || !strings.Contains(err.Error(), "carries no act.sub") {
+		t.Fatalf("runMintA2A = %v, want the named act.sub refusal", err)
+	}
+	if len(mount.logins) != 0 || mount.readWith != "" {
+		t.Errorf("the mount saw %d login(s) and read %q; the refusal must come first", len(mount.logins), mount.readWith)
+	}
+
+	var plainErr error
+	captureStderr(t, func() {
+		captureStdout(t, func() { plainErr = runMint([]string{"--role", "builder", "--config", path}) })
+	})
+	if plainErr != nil {
+		t.Errorf("plain mint with the same assertion = %v, want it unchanged", plainErr)
 	}
 }
 

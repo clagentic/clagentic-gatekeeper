@@ -63,6 +63,10 @@ type Config struct {
 	// removedIdentityKeys are the removed identity keys the document still
 	// carries; see RemovedIdentityKeysWarning.
 	removedIdentityKeys []string
+
+	// removedA2AKeys are the removed a2a_provider keys the document still
+	// carries; see RemovedA2AKeysWarning.
+	removedA2AKeys []string
 }
 
 // IdentityEnabled reports whether the config has an identity section. Load has
@@ -340,8 +344,8 @@ func (c A2AEntitlementConfig) EntitlementAudiences() []string { return c.Audienc
 //
 // Gatekeeper signs nothing here: OpenBao trusts the serve JWKS. The keys that
 // configured an assertion signing key (assertion_private_key_path, issuer,
-// assertion_ttl_seconds) are removed and refused at Load, see
-// removed_a2a_keys.go.
+// assertion_ttl_seconds) are removed: Load accepts and ignores them and
+// RemovedA2AKeysWarning names them, see removed_a2a_keys.go.
 //
 // Every field here is deployment-specific; nothing is hardcoded in source.
 // Absent/zero-value (the default) means the A2A provider is not configured
@@ -465,8 +469,8 @@ func Load(path string) (*Config, error) {
 	if cfg.removedIdentityKeys, err = removedKeysPresent(data); err != nil {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
 	}
-	if err := refuseRemovedA2AKeys(data); err != nil {
-		return nil, fmt.Errorf("config %s: %w", path, err)
+	if cfg.removedA2AKeys, err = removedA2AKeysPresent(data); err != nil {
+		return nil, fmt.Errorf("parse config %s: %w", path, err)
 	}
 	if present {
 		if err := cfg.Identity.validate(); err != nil {

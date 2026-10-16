@@ -109,6 +109,14 @@ type mintIdentity struct {
 	Grade   string `json:"grade,omitempty"`
 }
 
+// warnRemovedA2AKeys prints the deprecation line for removed a2a_provider keys
+// to stderr, which keeps stdout the token contract. The keys are ignored.
+func warnRemovedA2AKeys(cfg *config.Config) {
+	if w := cfg.RemovedA2AKeysWarning(); w != "" {
+		fmt.Fprintln(os.Stderr, w)
+	}
+}
+
 // runMint parses flags, builds the service graph, and mints a token.
 func runMint(args []string) error {
 	fs := flag.NewFlagSet("mint", flag.ContinueOnError)
@@ -128,6 +136,7 @@ func runMint(args []string) error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
+	warnRemovedA2AKeys(cfg)
 
 	// An identity-only config (issuer-only deployment) has no roles section.
 	// Say so before building anything that could reach a broker or GitHub.
@@ -372,6 +381,7 @@ func runMintA2A(args []string) error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
+	warnRemovedA2AKeys(cfg)
 
 	if !cfg.A2AProvider.Enabled() {
 		return fmt.Errorf("config error: a2a_provider is not configured (endpoint and auth_mount are both required together); see config.example.yaml")
