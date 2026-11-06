@@ -159,6 +159,18 @@ func TestHooksAgainstARealServe(t *testing.T) {
 	if r.code != 0 || r.stdout != "" {
 		t.Fatalf("session-start: %+v", r)
 	}
+	r = runBinary(t, `{"hook_event_name":"SubagentStart","session_id":"s1","agent_id":"a1","agent_type":"example-builder"}`, bin, hookArgs("subagent-start")...)
+	if r.code != 0 || r.stdout != "" {
+		t.Fatalf("subagent-start: %+v", r)
+	}
+	// A second subagent's start, through a command wrapper as a runtime that runs
+	// hooks with `sh -c` would.
+	wrapped := append([]string{"-c", `"$0" "$@"; echo wrapped >&2`, bin}, hookArgs("subagent-start")...)
+	r = runBinary(t, `{"hook_event_name":"SubagentStart","session_id":"s1","agent_id":"a2","agent_type":"example-builder"}`, "sh", wrapped...)
+	if r.code != 0 || r.stdout != "" {
+		t.Fatalf("wrapped subagent-start: %+v", r)
+	}
+
 	call := func(agent string) (string, string) {
 		payload := `{"hook_event_name":"PreToolUse","session_id":"s1","tool_name":"Bash","tool_input":{"command":"echo one; rm -f x && echo {0,600}"}}`
 		if agent != "" {
@@ -174,18 +186,6 @@ func TestHooksAgainstARealServe(t *testing.T) {
 	if !strings.HasSuffix(command, "; echo one; rm -f x && echo {0,600}") {
 		t.Fatalf("the original command was altered: %q", command)
 	}
-	r = runBinary(t, `{"hook_event_name":"SubagentStart","session_id":"s1","agent_id":"a1","agent_type":"example-builder"}`, bin, hookArgs("subagent-start")...)
-	if r.code != 0 || r.stdout != "" {
-		t.Fatalf("subagent-start: %+v", r)
-	}
-	// A second subagent's start, through a command wrapper as a runtime that runs
-	// hooks with `sh -c` would.
-	wrapped := append([]string{"-c", `"$0" "$@"; echo wrapped >&2`, bin}, hookArgs("subagent-start")...)
-	r = runBinary(t, `{"hook_event_name":"SubagentStart","session_id":"s1","agent_id":"a2","agent_type":"example-builder"}`, "sh", wrapped...)
-	if r.code != 0 || r.stdout != "" {
-		t.Fatalf("wrapped subagent-start: %+v", r)
-	}
-
 	a1, _ := call("a1")
 	a2, _ := call("a2")
 	if mainDir == a1 || a1 == a2 || mainDir == a2 {
