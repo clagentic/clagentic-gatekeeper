@@ -162,6 +162,16 @@ func (h *ClaudeCode) Handle(event string, in io.Reader) Result {
 	return res
 }
 
+// loggedDecisions are the no-rewrite outcomes on the identity path that carry no
+// error of their own. Every other no-rewrite outcome either logs its error or is
+// not a refusal (the command needs no identity, already carries one, or is not
+// a Bash call).
+var loggedDecisions = map[string]bool{
+	"agentless-type-mismatch": true,
+	"expired":                 true,
+	"no-session":              true,
+}
+
 // finish logs a failed event and, in warn mode, captures its shape.
 func (h *ClaudeCode) finish(event string, p Payload, decision string, err error) {
 	if err != nil {
@@ -169,6 +179,10 @@ func (h *ClaudeCode) finish(event string, p Payload, decision string, err error)
 		if decision == "" {
 			decision = "error"
 		}
+	} else if h.Mode == ModeEnforce && event == EventPreToolUseBash && loggedDecisions[decision] {
+		// Warn mode records every decision in the capture file; enforce mode has
+		// none, so a call that gets no identity is named here or it is invisible.
+		h.Log.Printf("%s session=%s agent=%s: no identity delivered: %s", event, p.SessionID, p.AgentID, decision)
 	}
 	if h.Mode == ModeWarn {
 		h.Capture.Record(event, p, decision, Ancestry(h.HookPID))
@@ -206,7 +220,7 @@ func (h *ClaudeCode) sessionStart(p Payload) (string, error) {
 	}
 	// The previous directory, if any, is left for the issuer's reaper: a command
 	// started under it may still be running.
-	rec := Record{Dir: issued.Dir, ExpiresAt: issued.ExpiresAt, Definition: definition}
+	rec := Record{Dir: issued.Dir, ExpiresAt: issued.ExpiresAt, Definition: definition, StartAgentType: p.AgentType}
 	if err := h.Store.Put(p.SessionID, "", rec); err != nil {
 		return "state-failed", err
 	}
@@ -354,23 +368,20 @@ func (h *ClaudeCode) prefix(p Payload, command string) (rewritten, decision stri
 			return "", d, err
 		}
 	} else {
-		// A payload without agent_id is not proof of the parent: the runtime can
-		// omit it on a subagent call too, and no other member separates the two.
-		// While any child of the session is live the call is refused the session
-		// identity, so a subagent never acts as its parent. The cost is accepted:
-		// a parent call made meanwhile gets no identity either.
-		live, err := h.Store.HasLiveAgent(p.SessionID, h.now())
-		if err != nil {
-			return "", "state-failed", err
+		// agent_id is present on every subagent call and absent on the session's
+		// own, whatever children are running (docs/RUNTIME-HOOKS.md, capture
+		// provenance), so a call without one is the session's. A session's own
+		// agent_type is the one its SessionStart carried; a call claiming another
+		// type is not that session's, so it gets no identity. Child liveness is not
+		// consulted: it cannot be known from a record that expires.
+		sess, ok, getErr := h.Store.Get(p.SessionID, "")
+		if getErr != nil || !ok {
+			return "", "no-session", getErr
 		}
-		if live {
-			return "", "agentless-while-child-live", nil
+		if p.AgentType != "" && p.AgentType != sess.StartAgentType {
+			return "", "agentless-type-mismatch", nil
 		}
-		var ok bool
-		rec, ok, err = h.Store.Get(p.SessionID, "")
-		if err != nil || !ok {
-			return "", "no-session", err
-		}
+		rec = sess
 	}
 	if rec.ExpiresAt <= h.now().Unix() {
 		return "", "expired", nil

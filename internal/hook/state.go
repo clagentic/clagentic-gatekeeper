@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 )
 
@@ -21,7 +20,12 @@ type Record struct {
 	// Definition is the definition the session was requested under, kept so a
 	// refresh asks for the same identity.
 	Definition string `json:"definition,omitempty"`
-	AgentType  string `json:"agent_type,omitempty"`
+	// StartAgentType is the agent_type the SessionStart payload carried, exactly
+	// as received and empty when absent. Definition cannot serve: it is blank for
+	// a name that is not a safe file name, which would make an odd value look like
+	// an absent one.
+	StartAgentType string `json:"start_agent_type,omitempty"`
+	AgentType      string `json:"agent_type,omitempty"`
 }
 
 // Store keeps Records between hook processes, one directory per runtime session.
@@ -158,42 +162,6 @@ func (s Store) PutNew(sessionID, agentID string, r Record) (bool, error) {
 		return false, err
 	}
 	return true, nil
-}
-
-// HasLiveAgent reports whether the session has a child record that has not
-// expired. A record that cannot be read counts as live: the answer gates an
-// identity delivery, so doubt resolves to "a child may be running". The session
-// directory is not created by asking.
-func (s Store) HasLiveAgent(sessionID string, now time.Time) (bool, error) {
-	if !safeName.MatchString(sessionID) {
-		return false, errors.New("session id is not a plain name")
-	}
-	if !filepath.IsAbs(s.Root) {
-		return false, fmt.Errorf("state directory %q must be absolute", s.Root)
-	}
-	dir := filepath.Join(s.Root, sessionID)
-	entries, err := os.ReadDir(dir)
-	if errors.Is(err, os.ErrNotExist) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	for _, e := range entries {
-		name := e.Name()
-		if !strings.HasPrefix(name, "agent-") || !strings.HasSuffix(name, ".json") {
-			continue
-		}
-		raw, err := os.ReadFile(filepath.Join(dir, name))
-		if errors.Is(err, os.ErrNotExist) {
-			continue
-		}
-		var r Record
-		if err != nil || json.Unmarshal(raw, &r) != nil || r.ExpiresAt > now.Unix() {
-			return true, nil
-		}
-	}
-	return false, nil
 }
 
 // Delete removes a record; a missing one is not an error.
