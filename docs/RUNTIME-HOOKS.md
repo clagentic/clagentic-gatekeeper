@@ -113,37 +113,85 @@ accepted in place of `--socket`).
 |-------|--------|
 | `session-start` | `issue-session`. The definition is the payload's `agent_type` when the session runs under a harness agent; `--origin` comes from configuration. Records the delivery directory. Prints nothing (stdout of this event becomes model context). |
 | `subagent-start` | `issue-child` with the payload's `agent_type` and `agent_id`, parented on the session assertion. Prints nothing. |
-| `pre-tool-use-bash` | In enforce mode prefixes exactly one statement, `export CLAGENTIC_IDENTITY_DIR=<dir>; `, to the original command for the current `agent_id`, or for the session when the payload has none and no child of the session is live (see "Calls without an agent_id"). The original text follows byte for byte. No shell wrapper, no other variable, and `TMPDIR` is never touched. A command that already starts with the statement is left alone, and so is a command that provably cannot use the identity (see "Read-only commands are not rewritten"). If the agent has no directory yet (its start event never arrived), the first Bash call issues the child. |
+| `pre-tool-use-bash` | In enforce mode prefixes exactly one statement, `export CLAGENTIC_IDENTITY_DIR=<dir>; `, to the original command for the current `agent_id`, or for the session when the payload has none (see "Calls without an agent_id"). The original text follows byte for byte. No shell wrapper, no other variable, and `TMPDIR` is never touched. A command that already starts with the statement is left alone, and so is a command that provably cannot use the identity (see "Read-only commands are not rewritten"). If the agent has no directory yet (its start event never arrived), the first Bash call issues the child. |
 | `subagent-stop` | Removes the agent's delivery directory and record. The directory is removed only if it is named like an issuer-created directory, is a real directory owned by the user, and holds an assertion. |
 | `user-prompt-submit` | When `--refresh-below` is set and the session assertion has less than that left, asks for a new session under the same definition and records the new directory. The old directory is left for the issuer's reaper because a running command may still use it. |
 
 ### Calls without an agent_id
 
-The runtime documents `agent_id` as present on every subagent tool call, but
-hook logs from a host running Claude Code 2.1.316 hold tens of thousands of
-`PreToolUse` Bash payloads that carry an `agent_type` and no `agent_id` member,
-and nothing else in those payloads separates a subagent from its parent (the
-transcript path never had a subagents segment). A missing `agent_id` therefore
-is not proof of the parent session, and delivering the session identity on that
-basis would let a subagent act as its parent.
+The rule, for a Bash call:
 
-The rule for a Bash call whose payload has no usable `agent_id`:
+- **A payload with an `agent_id` is a subagent's.** It gets its own child
+  identity, never the session's, whatever its `agent_type`.
+- **A payload without an `agent_id` is the session's own call.** It gets the
+  session identity, whether or not subagents are running, unless it names an
+  `agent_type` that is not the one the session's `SessionStart` payload carried
+  (compared as received, so a session that started without an `agent_type`
+  matches only a call without one). Such a call gets no rewrite and the decision
+  `agentless-type-mismatch` is logged.
 
-- **No child of the session is live** (no unexpired `agent-*.json` record in the
-  session's state directory): the session identity is delivered, as before.
-- **A child is live**: nothing is delivered. The reply is empty and the hook
-  logs the decision `agentless-while-child-live`. An identity consumer fails
-  closed when it finds no identity.
-- A child record that cannot be read counts as live.
-- A payload with an `agent_id` is unchanged: it gets its own child identity.
+No state about live subagents is consulted for a call without an `agent_id`, so
+a child record expiring, or a session refresh writing a new session record,
+cannot change what the session is given.
 
-The trade-off is accepted: a call by the parent made while a subagent is live
-also has no `agent_id`, cannot be told from the subagent, and gets no identity
-until the subagent stops (its record is removed at `subagent-stop`) or its
-assertion expires. Delivery to the parent resumes then. The rule uses only the
-hook's own state, so it holds on the chained path (`--compose`) too. It does not
-cover a subagent whose start event also lacked an `agent_id`: no record exists
-for it, so none can be observed as live.
+#### Capture provenance
+
+The rule rests on real payloads captured on Claude Code 2.1.316 (`claude -p`,
+throwaway project settings, one hook script recording the verbatim payload of
+`SessionStart`, `SubagentStart`, `SubagentStop` and `PreToolUse` for Bash).
+Sanitized captures are committed under `internal/hook/testdata/claude-2.1.316/`,
+one file per shape, and each has a test: session id, agent ids, paths, agent
+names, tool use ids, command text and message text are placeholders; key sets,
+member presence, the literal `fork` type and the other values are as captured.
+
+| Fixture | Shape |
+|---------|-------|
+| `lead-no-agent` | session without an agent definition: no `agent_type` on `SessionStart` or `PreToolUse` |
+| `lead-agent` | session under `--agent`: `agent_type` on both, equal |
+| `lead-agent-child-live`, `lead-no-agent-child-live` | the session's calls while a background subagent is live |
+| `named-child` | a named subagent: `agent_id` and its own `agent_type` on `SubagentStart` and `PreToolUse` |
+| `same-type-child` | a subagent of the same `agent_type` as the session |
+| `fork-child` | a forked subagent: `agent_type` is `fork`, with its own `agent_id` |
+
+In every captured shape, every subagent call carried an `agent_id` and no call
+of the session did. The session's `agent_type`, when present, equalled the one on
+its `SessionStart`. A same-type subagent shows that `agent_type` alone cannot
+separate a subagent from the session. Every payload, a subagent's included,
+carries the session's `session_id`. An earlier run of the same method with nested and
+several concurrent subagents showed each carrying its own `agent_id`. With `CLAUDE_CODE_FORK_SUBAGENT=0`
+the runtime refuses the fork spawn (`Agent type 'fork' not found`) and no
+subagent hook fires.
+
+#### Forked subagents
+
+A fork child reaches the normal `agent_id` path with `agent_type` `fork`. The
+issuer treats `fork` as any other agent definition name: the child is issued
+its own `fork`-typed identity (role ceiling: the definition's roles, narrowed to
+what the session holds) when a definition named `fork` exists in the issuer's
+definitions directory, and is refused `definition_unknown` when none does. In
+that case the hook logs the refusal and delivers nothing to the fork child. In
+neither case does the fork child receive the session identity.
+
+#### Logging
+
+In enforce mode every call that gets no identity because of the identity path is
+written to `<state-dir>/hook.log`: an issue failure, `dir-unusable` and
+`undeliverable` with their causes, and the cause-less decisions
+`agentless-type-mismatch`, `expired` and `no-session` as
+`no identity delivered: <decision>`. A call that is not rewritten because the
+command cannot use an identity, already carries one, or is not Bash is not an
+identity refusal and is not logged. In warn mode the decision of every event
+goes to the capture file instead.
+
+#### Residual
+
+A subagent of the same `agent_type` as the session that lost its `agent_id`
+cannot be told from the session's own call and would receive the session
+identity. It was never observed on 2.1.316; hook implementations elsewhere document a payload of
+that shape (`agent_type` present, `agent_id` absent) as a historical class. The
+`agentless-type-mismatch` refusal covers that shape only where the subagent's
+type differs from the session's. The rule uses only the hook's own state, so it
+holds on the chained path (`--compose`) too.
 
 ### No new permission prompts
 
