@@ -113,9 +113,37 @@ accepted in place of `--socket`).
 |-------|--------|
 | `session-start` | `issue-session`. The definition is the payload's `agent_type` when the session runs under a harness agent; `--origin` comes from configuration. Records the delivery directory. Prints nothing (stdout of this event becomes model context). |
 | `subagent-start` | `issue-child` with the payload's `agent_type` and `agent_id`, parented on the session assertion. Prints nothing. |
-| `pre-tool-use-bash` | In enforce mode prefixes exactly one statement, `export CLAGENTIC_IDENTITY_DIR=<dir>; `, to the original command for the current `agent_id` (or the session when the payload has none). The original text follows byte for byte. No shell wrapper, no other variable, and `TMPDIR` is never touched. A command that already starts with the statement is left alone, and so is a command that provably cannot use the identity (see "Read-only commands are not rewritten"). If the agent has no directory yet (its start event never arrived), the first Bash call issues the child. |
+| `pre-tool-use-bash` | In enforce mode prefixes exactly one statement, `export CLAGENTIC_IDENTITY_DIR=<dir>; `, to the original command for the current `agent_id`, or for the session when the payload has none and no child of the session is live (see "Calls without an agent_id"). The original text follows byte for byte. No shell wrapper, no other variable, and `TMPDIR` is never touched. A command that already starts with the statement is left alone, and so is a command that provably cannot use the identity (see "Read-only commands are not rewritten"). If the agent has no directory yet (its start event never arrived), the first Bash call issues the child. |
 | `subagent-stop` | Removes the agent's delivery directory and record. The directory is removed only if it is named like an issuer-created directory, is a real directory owned by the user, and holds an assertion. |
 | `user-prompt-submit` | When `--refresh-below` is set and the session assertion has less than that left, asks for a new session under the same definition and records the new directory. The old directory is left for the issuer's reaper because a running command may still use it. |
+
+### Calls without an agent_id
+
+The runtime documents `agent_id` as present on every subagent tool call, but
+hook logs from a host running Claude Code 2.1.316 hold tens of thousands of
+`PreToolUse` Bash payloads that carry an `agent_type` and no `agent_id` member,
+and nothing else in those payloads separates a subagent from its parent (the
+transcript path never had a subagents segment). A missing `agent_id` therefore
+is not proof of the parent session, and delivering the session identity on that
+basis would let a subagent act as its parent.
+
+The rule for a Bash call whose payload has no usable `agent_id`:
+
+- **No child of the session is live** (no unexpired `agent-*.json` record in the
+  session's state directory): the session identity is delivered, as before.
+- **A child is live**: nothing is delivered. The reply is empty and the hook
+  logs the decision `agentless-while-child-live`. An identity consumer fails
+  closed when it finds no identity.
+- A child record that cannot be read counts as live.
+- A payload with an `agent_id` is unchanged: it gets its own child identity.
+
+The trade-off is accepted: a call by the parent made while a subagent is live
+also has no `agent_id`, cannot be told from the subagent, and gets no identity
+until the subagent stops (its record is removed at `subagent-stop`) or its
+assertion expires. Delivery to the parent resumes then. The rule uses only the
+hook's own state, so it holds on the chained path (`--compose`) too. It does not
+cover a subagent whose start event also lacked an `agent_id`: no record exists
+for it, so none can be observed as live.
 
 ### No new permission prompts
 
