@@ -203,6 +203,12 @@ func (e *Env) shapeHookSequence(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// The session's own call is made before any subagent exists: a call without an
+	// agent_id while a child is live is given no identity.
+	mainDir, err := e.bashCall(ctx, state, "", command)
+	if err != nil {
+		return fmt.Errorf("main session call: %w", err)
+	}
 	if err := e.hookEvent(ctx, false, state, "subagent-start", `{"hook_event_name":"SubagentStart","session_id":"live-s1","agent_id":"live-a1","agent_type":"`+defBuilder+`"}`); err != nil {
 		return err
 	}
@@ -211,10 +217,6 @@ func (e *Env) shapeHookSequence(ctx context.Context) error {
 		return err
 	}
 
-	mainDir, err := e.bashCall(ctx, state, "", command)
-	if err != nil {
-		return fmt.Errorf("main session call: %w", err)
-	}
 	a1, err := e.bashCall(ctx, state, "live-a1", command)
 	if err != nil {
 		return fmt.Errorf("first subagent call: %w", err)

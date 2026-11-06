@@ -185,13 +185,16 @@ func TestEveryNonPreToolUseEventPrintsNothing(t *testing.T) {
 func TestTwoConcurrentSubagentsEachGetTheirOwnDirectory(t *testing.T) {
 	h := newHarness(t, ModeEnforce)
 	startSession(t, h, "")
+	// The session call comes before any child exists: an agent_id-less call made
+	// while a child is live is deliberately given no identity.
+	sessionCommand, _ := rewrittenCommand(t, h.fire(EventPreToolUseBash, bashPayload("", "", programCommand)))
 	startAgent(t, h, "agent-a", "example-builder")
 	startAgent(t, h, "agent-b", "example-merger")
 
 	var wg sync.WaitGroup
-	dirs := map[string]string{}
+	dirs := map[string]string{"": dirOf(t, sessionCommand)}
 	var mu sync.Mutex
-	for _, a := range []struct{ id, typ string }{{"agent-a", "example-builder"}, {"agent-b", "example-merger"}, {"", ""}} {
+	for _, a := range []struct{ id, typ string }{{"agent-a", "example-builder"}, {"agent-b", "example-merger"}} {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -380,15 +383,14 @@ func TestSubagentStopLeavesTheSessionAndSiblingsAlone(t *testing.T) {
 	startAgent(t, h, "agent-a", "example-builder")
 	startAgent(t, h, "agent-b", "example-builder")
 	h.fire(EventSubagentStop, map[string]any{"session_id": testSession, "agent_id": "agent-a"})
-	for _, id := range []string{"", "agent-b"} {
-		typ := ""
-		if id != "" {
-			typ = "example-builder"
-		}
-		res := h.fire(EventPreToolUseBash, bashPayload(id, typ, programCommand))
-		if len(res.Stdout) == 0 {
-			t.Errorf("%q lost its delivery", id)
-		}
+	if res := h.fire(EventPreToolUseBash, bashPayload("agent-b", "example-builder", programCommand)); len(res.Stdout) == 0 {
+		t.Error("agent-b lost its delivery")
+	}
+	// With agent-b still live the session call gets none; once it stops the
+	// session record is still there to deliver.
+	h.fire(EventSubagentStop, map[string]any{"session_id": testSession, "agent_id": "agent-b"})
+	if res := h.fire(EventPreToolUseBash, bashPayload("", "", programCommand)); len(res.Stdout) == 0 {
+		t.Error("the session lost its delivery")
 	}
 }
 

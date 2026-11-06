@@ -354,6 +354,18 @@ func (h *ClaudeCode) prefix(p Payload, command string) (rewritten, decision stri
 			return "", d, err
 		}
 	} else {
+		// A payload without agent_id is not proof of the parent: the runtime can
+		// omit it on a subagent call too, and no other member separates the two.
+		// While any child of the session is live the call is refused the session
+		// identity, so a subagent never acts as its parent. The cost is accepted:
+		// a parent call made meanwhile gets no identity either.
+		live, err := h.Store.HasLiveAgent(p.SessionID, h.now())
+		if err != nil {
+			return "", "state-failed", err
+		}
+		if live {
+			return "", "agentless-while-child-live", nil
+		}
 		var ok bool
 		rec, ok, err = h.Store.Get(p.SessionID, "")
 		if err != nil || !ok {
