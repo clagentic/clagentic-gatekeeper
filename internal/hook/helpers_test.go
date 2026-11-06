@@ -35,8 +35,11 @@ type fakeIssuer struct {
 	// lifetime in seconds of what it issues.
 	Delay time.Duration
 	Fail  bool
-	TTL   int64
-	done  chan struct{}
+	// RefuseChild names agent types issue-child refuses as the issuer does a type
+	// that has no definition.
+	RefuseChild map[string]bool
+	TTL         int64
+	done        chan struct{}
 }
 
 // wait holds an answer back for Delay, or until the test is over.
@@ -117,6 +120,11 @@ func (f *fakeIssuer) child(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.children = append(f.children, req)
+	if f.RefuseChild[req.AgentType] {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"definition_unknown","message":"the requested definition is not available"}`))
+		return
+	}
 	if !f.tokens[req.ParentToken] {
 		w.WriteHeader(http.StatusForbidden)
 		_, _ = w.Write([]byte(`{"error":"parent_unknown","message":"the parent token was not recognised"}`))
