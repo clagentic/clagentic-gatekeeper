@@ -1,0 +1,74 @@
+[
+  {
+    "session_id": "sess-0001",
+    "transcript_path": "/home/example/.claude/projects/example-project/sess-0001.jsonl",
+    "cwd": "/home/example/project",
+    "agent_type": "example-lead",
+    "hook_event_name": "SessionStart",
+    "source": "startup"
+  },
+  {
+    "session_id": "sess-0001",
+    "transcript_path": "/home/example/.claude/projects/example-project/sess-0001.jsonl",
+    "cwd": "/home/example/project",
+    "prompt_id": "00000000-0000-4000-8000-000000000001",
+    "agent_id": "a0000000000000001",
+    "agent_type": "example-lead",
+    "hook_event_name": "SubagentStart"
+  },
+  {
+    "session_id": "sess-0001",
+    "transcript_path": "/home/example/.claude/projects/example-project/sess-0001.jsonl",
+    "cwd": "/home/example/project",
+    "prompt_id": "00000000-0000-4000-8000-000000000001",
+    "permission_mode": "default",
+    "agent_id": "a0000000000000001",
+    "agent_type": "example-lead",
+    "effort": {
+      "level": "medium"
+    },
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Bash",
+    "tool_input": {
+      "command": "make build",
+      "description": "example description"
+    },
+    "tool_use_id": "toolu_example0001"
+  },
+  {
+    "session_id": "sess-0001",
+    "transcript_path": "/home/example/.claude/projects/example-project/sess-0001.jsonl",
+    "cwd": "/home/example/project",
+    "prompt_id": "00000000-0000-4000-8000-000000000001",
+    "permission_mode": "default",
+    "agent_id": "a0000000000000001",
+    "agent_type": "example-lead",
+    "effort": {
+      "level": "medium"
+    },
+    "hook_event_name": "SubagentStop",
+    "stop_hook_active": false,
+    "agent_transcript_path": "/home/example/.claude/projects/example-project/sess-0001/subagents/agent-a0000000000000001.jsonl",
+    "last_assistant_message": "example message",
+    "background_tasks": [],
+    "session_crons": []
+  },
+  {
+    "session_id": "sess-0001",
+    "transcript_path": "/home/example/.claude/projects/example-project/sess-0001.jsonl",
+    "cwd": "/home/example/project",
+    "prompt_id": "00000000-0000-4000-8000-000000000001",
+    "permission_mode": "default",
+    "agent_type": "example-lead",
+    "effort": {
+      "level": "medium"
+    },
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Bash",
+    "tool_input": {
+      "command": "make build",
+      "description": "example description"
+    },
+    "tool_use_id": "toolu_example0002"
+  }
+]

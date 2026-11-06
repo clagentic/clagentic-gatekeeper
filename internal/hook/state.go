@@ -20,7 +20,12 @@ type Record struct {
 	// Definition is the definition the session was requested under, kept so a
 	// refresh asks for the same identity.
 	Definition string `json:"definition,omitempty"`
-	AgentType  string `json:"agent_type,omitempty"`
+	// StartAgentType is the agent_type the SessionStart payload carried, exactly
+	// as received and empty when absent. Definition cannot serve: it is blank for
+	// a name that is not a safe file name, which would make an odd value look like
+	// an absent one.
+	StartAgentType string `json:"start_agent_type,omitempty"`
+	AgentType      string `json:"agent_type,omitempty"`
 }
 
 // Store keeps Records between hook processes, one directory per runtime session.
