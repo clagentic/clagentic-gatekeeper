@@ -52,6 +52,8 @@ func materialize(t *testing.T, l layout) (envSet bool, dir string) {
 	switch l.Dir {
 	case "unset":
 		return false, ""
+	case "empty":
+		return true, ""
 	case "absent":
 		return true, filepath.Join(t.TempDir(), "does-not-exist")
 	case "present":

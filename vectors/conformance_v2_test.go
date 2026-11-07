@@ -9,12 +9,16 @@ import (
 
 func TestV2VectorsMatchReferenceVerifier(t *testing.T) {
 	m, tr := loadManifestFrom(t, vectorDirV2)
-	if m.ContractVersion != "2.0.0" || m.Cia != 2 {
-		t.Fatalf("manifest is contract %s cia %d, want 2.0.0 cia 2", m.ContractVersion, m.Cia)
+	if m.ContractVersion != "2.1.0" || m.Cia != 2 {
+		t.Fatalf("manifest is contract %s cia %d, want 2.1.0 cia 2", m.ContractVersion, m.Cia)
 	}
 	for _, v := range m.Vectors {
 		v := v
 		t.Run(v.ID, func(t *testing.T) {
+			if v.Kind == "delivery" {
+				checkDelivery(t, v)
+				return
+			}
 			got, code := verifyTokenUpTo(tr, v, int64(m.Cia))
 			if v.Expect.OK {
 				if code != "" {
@@ -32,13 +36,64 @@ func TestV2VectorsMatchReferenceVerifier(t *testing.T) {
 	}
 }
 
+// checkDelivery runs the section 6 checks and the section 7 reading of the
+// section 6.1 signal against one delivery vector.
+func checkDelivery(t *testing.T, v vector) {
+	t.Helper()
+	envSet, dir := materialize(t, *v.Layout)
+	data, code := deliver(envSet, dir)
+	withheld := withheldReason(envSet, dir, v.Layout.Unavailable)
+	if v.Expect.OK {
+		if code != "" {
+			t.Fatalf("expected success, got %s", code)
+		}
+		if string(data) != v.Layout.Content {
+			t.Fatalf("delivered %q, want %q", data, v.Layout.Content)
+		}
+	} else if code != v.Expect.Error {
+		t.Fatalf("got %q, want %q", code, v.Expect.Error)
+	}
+	if withheld != v.Expect.Withheld {
+		t.Fatalf("withheld reason %q, want %q", withheld, v.Expect.Withheld)
+	}
+}
+
+// The v2 set carries the delivery-signal vectors: each reason code, and each
+// way the signal is ignored or read as plain absent.
+func TestV2DeliverySignalCoverage(t *testing.T) {
+	m, _ := loadManifestFrom(t, vectorDirV2)
+	withheld := map[string]bool{}
+	plainAbsent, ignored := 0, 0
+	for _, v := range m.Vectors {
+		if v.Kind != "delivery" {
+			continue
+		}
+		switch {
+		case v.Expect.Withheld != "":
+			withheld[v.Expect.Withheld] = true
+		case v.Expect.OK && v.Layout.Unavailable != nil:
+			ignored++
+		case v.Expect.Error == "identity_dir_missing" && v.Layout.Unavailable != nil:
+			plainAbsent++
+		}
+	}
+	for c := range knownReasons {
+		if !withheld[c] {
+			t.Errorf("no withheld vector for reason %q", c)
+		}
+	}
+	if plainAbsent == 0 || ignored == 0 {
+		t.Errorf("want plain-absent and ignored cases, got %d and %d", plainAbsent, ignored)
+	}
+}
+
 // A driven assertion is never human-graded and never names a human, and a
 // verifier tells it from the automated origins by the value alone.
 func TestV2DrivenInvariants(t *testing.T) {
 	m, _ := loadManifestFrom(t, vectorDirV2)
 	driven := 0
 	for _, v := range m.Vectors {
-		if !v.Expect.OK {
+		if v.Kind != "token" || !v.Expect.OK {
 			continue
 		}
 		parts := strings.Split(v.Token, ".")
