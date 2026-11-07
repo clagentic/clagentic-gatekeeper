@@ -35,6 +35,7 @@ func runServe(args []string) error {
 	if w := cfg.RemovedIdentityKeysWarning(); w != "" {
 		fmt.Fprintln(os.Stderr, w)
 	}
+	warnRemovedA2AKeys(cfg)
 	mode, err := identity.ParseSocketMode(cfg.Identity.SocketMode)
 	if err != nil {
 		return err

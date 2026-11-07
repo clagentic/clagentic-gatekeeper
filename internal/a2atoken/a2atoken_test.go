@@ -2,13 +2,9 @@ package a2atoken
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/x509"
-	"encoding/base64"
 	"encoding/json"
-	"encoding/pem"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -16,40 +12,28 @@ import (
 	"time"
 )
 
-// generateTestPEM generates a fresh RSA-2048 private key and returns it as a
-// PKCS#1 PEM string. Fails the test immediately on any error. Mirrors
-// internal/githubapp's test helper of the same name — same shape, separate
-// per-package copy per that package's own no-shared-test-helper posture.
-func generateTestPEM(t *testing.T) string {
-	t.Helper()
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("generate test RSA key: %v", err)
-	}
-	der := x509.MarshalPKCS1PrivateKey(key)
-	block := &pem.Block{Type: "RSA PRIVATE KEY", Bytes: der}
-	return string(pem.EncodeToMemory(block))
-}
+// testAssertion stands in for a serve-issued identity assertion. The fake JWT
+// mount below compares it as an opaque string; signature verification is
+// OpenBao's job and is exercised live, not here.
+const testAssertion = "eyJhbGciOiJFZERTQSJ9.test-assertion-payload.test-signature"
 
-// fakeOpenBao simulates the two OpenBao endpoints a2atoken.Issue calls:
-// POST /v1/auth/<mount>/login and GET /v1/identity/oidc/token/<role>.
+// fakeOpenBao is the fake JWT mount: it simulates the two OpenBao endpoints
+// a2atoken.Issue calls, POST /v1/auth/<mount>/login and GET
+// /v1/identity/oidc/token/<role>.
 //
-// loginTrustedKey, when non-empty, is a stand-in for OpenBao's own
-// jwt_validation_pubkeys signature check: this fake does not actually verify
-// an RS256 signature (that is OpenBao's job, already proven live per
-// lr-890fae comment #4) — it instead keys rejection off a caller-supplied
-// "which key signed this" marker header the test sets, which is enough to
-// exercise a2atoken's error-propagation path for both negative controls
-// without reimplementing JWT verification in test code.
+// It accepts a login only when the posted jwt equals trustedAssertion, which
+// models the mount trusting exactly the serve JWKS: any other assertion (one
+// signed by a key outside the JWKS) is refused with the same 400 OpenBao
+// returns.
 type fakeOpenBao struct {
-	// rejectLogin, when true, makes the login endpoint return 400 — used to
-	// simulate BOTH negative controls (untrusted assertion key -> signature
-	// validation failure; bogus/unregistered sub -> bound_subject
-	// rejection). OpenBao returns the same class of client-facing error
-	// (400, denied) for either; this package's job is only to propagate the
-	// refusal with no token material returned, not to distinguish the two
-	// causes.
+	// trustedAssertion is the only assertion the mount accepts. Empty means
+	// every login is accepted.
+	trustedAssertion string
+	// rejectLogin, when true, makes the login endpoint return 400 for every
+	// request, modelling an unmapped act.sub or any other mount refusal.
 	rejectLogin bool
+	// gotLogin records the last login request body.
+	gotLogin map[string]string
 	// clientToken is returned by a successful login.
 	clientToken string
 	// oidcToken/oidcTTL are returned by a successful identity/oidc/token read.
@@ -64,7 +48,12 @@ func (f *fakeOpenBao) handler(t *testing.T) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/login"):
-			if f.rejectLogin {
+			raw, _ := io.ReadAll(r.Body)
+			f.gotLogin = map[string]string{}
+			if err := json.Unmarshal(raw, &f.gotLogin); err != nil {
+				t.Errorf("login body is not a JSON object of strings: %v", err)
+			}
+			if f.rejectLogin || (f.trustedAssertion != "" && f.gotLogin["jwt"] != f.trustedAssertion) {
 				w.WriteHeader(http.StatusBadRequest)
 				json.NewEncoder(w).Encode(map[string]any{"errors": []string{"permission denied"}})
 				return
@@ -95,26 +84,26 @@ func (f *fakeOpenBao) handler(t *testing.T) http.HandlerFunc {
 // baseRequest returns a valid IssueRequest against srv, for tests to mutate.
 func baseRequest(t *testing.T, srvURL string) IssueRequest {
 	return IssueRequest{
-		Endpoint:               srvURL,
-		AssertionPrivateKeyPEM: generateTestPEM(t),
-		Issuer:                 "gatekeeper-test-issuer",
-		Subject:                "peer-agent-alpha",
-		AssertionTTL:           5 * time.Minute,
-		AuthMount:              "a2a-jwt",
-		AuthRole:               "a2a-role",
-		OIDCRole:               "a2a-oidc-role",
+		Endpoint:  srvURL,
+		Assertion: testAssertion,
+		Subject:   "peer-agent-alpha",
+		AuthMount: "a2a-jwt",
+		AuthRole:  "a2a-role",
+		OIDCRole:  "a2a-oidc-role",
 	}
 }
 
-// TestIssueSuccess covers the happy path: assertion signed, exchanged, and
-// the resulting peer-facing token read back with the expected value/TTL and
+// TestIssueSuccess covers the happy path: the assertion logs in at the mount
+// under the configured role, the returned client token requests the identity
+// token, and the peer-facing token comes back with the expected value/TTL and
 // the caller subject carried for gatekeeper's own audit record.
 func TestIssueSuccess(t *testing.T) {
 	fake := &fakeOpenBao{
-		clientToken:     "s.caller-entity-scoped-token",
-		oidcToken:       "eyJhbGciOiJSUzI1NiJ9.peer-facing-token.sig",
-		oidcTTL:         300,
-		wantClientToken: "s.caller-entity-scoped-token",
+		trustedAssertion: testAssertion,
+		clientToken:      "s.caller-entity-scoped-token",
+		oidcToken:        "eyJhbGciOiJSUzI1NiJ9.peer-facing-token.sig",
+		oidcTTL:          300,
+		wantClientToken:  "s.caller-entity-scoped-token",
 	}
 	srv := httptest.NewServer(fake.handler(t))
 	defer srv.Close()
@@ -134,17 +123,18 @@ func TestIssueSuccess(t *testing.T) {
 	if tok.ExpiresAt.Before(wantExpiry.Add(-5*time.Second)) || tok.ExpiresAt.After(wantExpiry.Add(5*time.Second)) {
 		t.Errorf("Token.ExpiresAt = %v, not within tolerance of %v", tok.ExpiresAt, wantExpiry)
 	}
+	if fake.gotLogin["role"] != "a2a-role" || fake.gotLogin["jwt"] != testAssertion {
+		t.Errorf("login body = %v, want role a2a-role and the presented assertion as jwt", fake.gotLogin)
+	}
 }
 
-// TestIssueUntrustedKeyRejected is negative control #1 (lr-890fae comment
-// #4, reproduced live): an assertion signed with a key OpenBao does not
-// trust fails signature validation. This fake stands in for that live
-// rejection via the login endpoint returning a denial; the load-bearing
-// assertion is that Issue propagates the failure with NO token material
-// returned and never reaches the oidc-token read step.
+// TestIssueUntrustedKeyRejected: an assertion signed by a key outside the
+// serve JWKS is refused at login. The fake mount trusts exactly one assertion
+// to model that; the load-bearing assertion is that Issue propagates the
+// refusal with NO token material and never reaches the identity-token read.
 func TestIssueUntrustedKeyRejected(t *testing.T) {
 	oidcCalled := false
-	fake := &fakeOpenBao{rejectLogin: true}
+	fake := &fakeOpenBao{trustedAssertion: testAssertion, clientToken: "s.never", oidcToken: "never"}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/identity/oidc/token/") {
 			oidcCalled = true
@@ -154,15 +144,11 @@ func TestIssueUntrustedKeyRejected(t *testing.T) {
 	defer srv.Close()
 
 	req := baseRequest(t, srv.URL)
-	// A fresh, different key stands in for "untrusted" — OpenBao's
-	// jwt_validation_pubkeys would reject a signature from any key it was
-	// never configured to trust, which the fake models as an unconditional
-	// login rejection.
-	req.AssertionPrivateKeyPEM = generateTestPEM(t)
+	req.Assertion = "eyJhbGciOiJFZERTQSJ9.forged-payload.forged-signature"
 
 	tok, err := Issue(context.Background(), req)
 	if err == nil {
-		t.Fatal("expected error for untrusted assertion key, got nil")
+		t.Fatal("expected error for an assertion outside the trusted JWKS, got nil")
 	}
 	if tok.Value != "" {
 		t.Errorf("expected no token material on rejection, got %q", tok.Value)
@@ -170,14 +156,14 @@ func TestIssueUntrustedKeyRejected(t *testing.T) {
 	if oidcCalled {
 		t.Error("identity/oidc/token endpoint must never be called after a login rejection")
 	}
+	if strings.Contains(err.Error(), req.Assertion) {
+		t.Errorf("error leaks the assertion: %v", err)
+	}
 }
 
-// TestIssueBogusSubjectRejected is negative control #2 (lr-890fae comment
-// #4, reproduced live): an unregistered/bogus sub is refused by
-// bound_subject. Modeled the same way as the untrusted-key control — the
-// login endpoint denies — because from Issue's perspective both negative
-// controls surface as the identical shape: a login failure with no token
-// material and no oidc-token read attempted.
+// TestIssueBogusSubjectRejected: an unmapped act.sub is refused by the mount,
+// which surfaces as the same login failure with no token material and no
+// identity-token read attempted.
 func TestIssueBogusSubjectRejected(t *testing.T) {
 	oidcCalled := false
 	fake := &fakeOpenBao{rejectLogin: true}
@@ -239,54 +225,13 @@ func TestIssueRequiresOIDCRole(t *testing.T) {
 	}
 }
 
-// TestIssueBadPrivateKey covers the parse-failure path and asserts the raw
-// PEM content never leaks into the error message.
-func TestIssueBadPrivateKey(t *testing.T) {
+// TestIssueRequiresAssertion: with no assertion there is nothing to log in
+// with, and Issue must refuse before any HTTP call.
+func TestIssueRequiresAssertion(t *testing.T) {
 	req := baseRequest(t, "https://example.invalid")
-	req.AssertionPrivateKeyPEM = "not a valid pem"
-
-	_, err := Issue(context.Background(), req)
-	if err == nil {
-		t.Fatal("expected error for garbage PEM, got nil")
-	}
-	if strings.Contains(err.Error(), "not a valid pem") {
-		t.Fatalf("error message leaks private key PEM content: %v", err)
-	}
-}
-
-// TestIssueNoAudienceClaim asserts the signed assertion never carries an
-// "aud" claim, per lr-890fae comment #4's hard-validation-failure finding:
-// aud present with no bound_audiences configured on the receiving role is a
-// hard OpenBao rejection, so this package omits it entirely rather than
-// guessing a value. Exercised indirectly by decoding the assertion payload
-// signAssertion produces.
-func TestIssueNoAudienceClaim(t *testing.T) {
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("generate test key: %v", err)
-	}
-	now := time.Now()
-	assertion, err := signAssertion(key, "gatekeeper-test-issuer", "peer-agent-alpha", now, now.Add(5*time.Minute))
-	if err != nil {
-		t.Fatalf("signAssertion: %v", err)
-	}
-	parts := strings.Split(assertion, ".")
-	if len(parts) != 3 {
-		t.Fatalf("assertion must have 3 JWT segments, got %d", len(parts))
-	}
-	claimsJSON, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		t.Fatalf("decode claims segment: %v", err)
-	}
-	var claims map[string]any
-	if err := json.Unmarshal(claimsJSON, &claims); err != nil {
-		t.Fatalf("unmarshal claims: %v", err)
-	}
-	if _, ok := claims["aud"]; ok {
-		t.Fatalf("assertion must never carry an aud claim: %s", claimsJSON)
-	}
-	if claims["sub"] != "peer-agent-alpha" {
-		t.Errorf("claims[sub] = %v, want %q", claims["sub"], "peer-agent-alpha")
+	req.Assertion = ""
+	if _, err := Issue(context.Background(), req); err == nil {
+		t.Fatal("expected error for an empty assertion, got nil")
 	}
 }
 

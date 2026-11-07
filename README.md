@@ -131,9 +131,10 @@ the attribution fields it carries, and the domain-aware resolution policy,
 `internal/attestation.DomainResolver`) feeds a config-driven entitlement gate
 (`internal/a2apolicy`, `a2a_mapping`) which, once permitted, brokers issuance
 of a peer-facing OIDC token through OpenBao (`internal/a2atoken` /
-`internal/a2amint`, `a2a_provider`): gatekeeper signs a short-lived
-assertion with its own key and exchanges it at OpenBao's JWT auth mount —
-OpenBao alone signs the returned token. See
+`internal/a2amint`, `a2a_provider`): the caller's `gatekeeper serve` identity
+assertion logs in at OpenBao's JWT auth mount, which trusts the serve JWKS,
+and the returned client token requests the identity token — OpenBao alone
+signs the returned token, and gatekeeper holds no A2A signing key. See
 [`docs/SETUP.md`](docs/SETUP.md#a2a-token-flow-from-attested-spawn-to-a-peer-validated-wire-jwt)
 for the full attested-spawn -> PDP -> OpenBao-issuance -> wire-JWT ->
 peer-validation walkthrough,
@@ -160,7 +161,7 @@ A consumer (e.g. an agent dispatcher) calls `gatekeeper mint --role <role>` with
 
 ```bash
 # Mint a peer-facing OIDC token for an attested A2A caller, scoped to one
-# peer audience. Requires attestation.sidecars, a2a_mapping, and
+# peer audience. Requires attestation.assertion, a2a_mapping, and
 # a2a_provider all configured — see docs/SETUP.md's "A2A token flow"
 # section for the full walkthrough.
 gatekeeper mint-a2a --audience peer-project-x

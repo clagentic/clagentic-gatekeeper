@@ -1,13 +1,16 @@
+//go:build unix
+
 package main
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -52,26 +55,63 @@ func quoteAllJSONStrings(ss []string) string {
 	return strings.Join(quoted, ",")
 }
 
-// writeSpawnSidecarFile writes an A2A-domain per-spawn sidecar identity
-// file: attestation.DomainA2A REQUIRES a per-spawn-scoped resolver to
-// succeed (docs/SETUP.md section 5, lr-2ca216) — a `configured` or
-// session-only sidecar layer is never enough for mint-a2a, unlike the
-// GitHub-domain command. Returns the config.yaml `attestation.sidecars`
-// entry text plus the env var to set for the given identity/session id.
-func writeSpawnSidecarFile(t *testing.T, dir, sessionID, identity string) {
-	t.Helper()
-	path := filepath.Join(dir, "spawn-"+sessionID)
-	if err := os.WriteFile(path, []byte(identity), 0o600); err != nil {
-		t.Fatalf("setup: write spawn sidecar file: %v", err)
-	}
+const (
+	a2aTestActor    = "agent:peer-agent-alpha"
+	a2aTestAudience = "peer-project-x"
+)
+
+// a2aConfig is a config that trusts the fixture's issuer and maps a2aTestActor
+// to the peer-builder role for a2aTestAudience, with the OpenBao endpoint at
+// endpoint. extra is appended verbatim (e.g. a removed a2a_provider key).
+func (f *assertionFixture) a2aConfig(endpoint, extra string) string {
+	return "github:\n  owner: testorg\n  api_base: " + f.srv.URL + "\nbroker:\n  type: env\nroles: {}\n" +
+		f.assertionBlock() +
+		"a2a_mapping:\n  " + a2aTestActor + ":\n    role: peer-builder\n    audiences:\n      - " + a2aTestAudience + "\n" +
+		"a2a_provider:\n  endpoint: " + endpoint + "\n  auth_mount: a2a-jwt\n  roles:\n    peer-builder:\n      auth_role: a2a-role\n      oidc_role: a2a-oidc-role\n" + extra
 }
 
-// TestRunMintA2A_NoProviderConfigured is the AC5/additive regression test:
-// a config.yaml with no a2a_provider stanza at all must refuse mint-a2a with
-// a clear config error, and this file's other tests below prove the
-// existing `gatekeeper mint` (GitHub-domain) path in main_test.go is
-// completely unaffected by mint-a2a's addition — no shared state, no
-// behavior change, since this test only ever exercises runMintA2A.
+// jwtMount is the fake JWT mount: POST /v1/auth/<mount>/login and
+// GET /v1/identity/oidc/token/<role>. It records the login body and the client
+// token the identity-token read presented, and refuses every login whose jwt it
+// does not trust.
+type jwtMount struct {
+	trusted  string
+	logins   []map[string]string
+	readWith string
+}
+
+func (m *jwtMount) server(t *testing.T) *httptest.Server {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/auth/a2a-jwt/login":
+			body := map[string]string{}
+			raw, _ := io.ReadAll(r.Body)
+			if err := json.Unmarshal(raw, &body); err != nil {
+				t.Errorf("login body: %v", err)
+			}
+			m.logins = append(m.logins, body)
+			if body["jwt"] != m.trusted {
+				w.WriteHeader(http.StatusBadRequest)
+				json.NewEncoder(w).Encode(map[string]any{"errors": []string{"permission denied"}}) //nolint:errcheck
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]any{"auth": map[string]string{"client_token": "s.test-client-token"}}) //nolint:errcheck
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/identity/oidc/token/a2a-oidc-role":
+			m.readWith = r.Header.Get("X-Vault-Token")
+			json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"token": "openbao-issued-peer-token", "ttl": 300}}) //nolint:errcheck
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestRunMintA2A_NoProviderConfigured: a config.yaml with no a2a_provider
+// stanza at all must refuse mint-a2a with a clear config error; the existing
+// `gatekeeper mint` (GitHub-domain) path is exercised by main_test.go and
+// mint_assertion_test.go and shares no state with this command.
 func TestRunMintA2A_NoProviderConfigured(t *testing.T) {
 	path := writeTempConfig(t, `
 github:
@@ -83,7 +123,7 @@ broker:
 roles: {}
 `)
 
-	err := runMintA2A([]string{"--audience", "peer-project-x", "--config", path})
+	err := runMintA2A([]string{"--audience", a2aTestAudience, "--config", path})
 	if err == nil {
 		t.Fatal("runMintA2A: expected config error when a2a_provider is not configured, got nil")
 	}
@@ -101,176 +141,47 @@ func TestRunMintA2A_RequiresAudience(t *testing.T) {
 	}
 }
 
-// TestRunMintA2A_PerSpawnMissRefusesBeforeIssuance covers the fail-closed
-// attestation gate for the A2A domain: no per-spawn sidecar file present
-// (the per-spawn env var is set — a harness IS active — but its sidecar
-// file was never written) must refuse via ErrPerSpawnRequired, never
-// falling through to any other identity source, and never reaching
-// issuance. Proven here by NOT standing up any OpenBao stub server at all —
-// if the mint path ever reached issuance, the request would fail to connect
-// rather than return the expected attestation refusal.
-func TestRunMintA2A_PerSpawnMissRefusesBeforeIssuance(t *testing.T) {
-	const spawnEnv = "GATEKEEPER_TEST_A2A_SPAWN_MISS_LR890FAE"
-	spawnDir := t.TempDir()
-	t.Setenv(spawnEnv, "spawn-miss-1")
-	// Deliberately no sidecar file written for this session id — the MISS.
-
+// Without attestation.assertion there is no identity assertion to log in with,
+// so mint-a2a refuses at config time, naming the missing section.
+func TestRunMintA2A_AssertionNotConfigured(t *testing.T) {
 	path := writeTempConfig(t, `
 github:
   owner: testorg
-
 broker:
   type: env
-
 roles: {}
-
-attestation:
-  sidecars:
-    - dir: `+spawnDir+`
-      file_prefix: spawn-
-      session_id_env: `+spawnEnv+`
-
 a2a_provider:
   endpoint: https://openbao.invalid.example
-  assertion_private_key_path: GATEKEEPER_TEST_A2A_KEY_LR890FAE
-  issuer: gatekeeper-test-issuer
   auth_mount: a2a-jwt
   roles:
     peer-builder:
       auth_role: a2a-role
       oidc_role: a2a-oidc-role
 `)
-
-	err := runMintA2A([]string{"--audience", "peer-project-x", "--config", path})
-	if err == nil {
-		t.Fatal("runMintA2A: expected fail-closed refusal for a per-spawn attestation MISS, got nil")
-	}
-	if strings.Contains(err.Error(), "connection refused") || strings.Contains(err.Error(), "no such host") {
-		t.Fatalf("runMintA2A reached the network before attestation refused — fail-closed gate did not run first: %v", err)
-	}
-	if !strings.Contains(err.Error(), "resolve attested identity") {
-		t.Errorf("runMintA2A error = %q, want it to name the attestation-resolution refusal", err.Error())
+	err := runMintA2A([]string{"--audience", a2aTestAudience, "--config", path})
+	if err == nil || !strings.Contains(err.Error(), "attestation.assertion") {
+		t.Fatalf("runMintA2A = %v, want a config error naming attestation.assertion", err)
 	}
 }
 
-// TestRunMintA2A_NotEntitledRefusesBeforeIssuance verifies the fail-closed
-// entitlement gate: attestation resolves successfully (a real per-spawn
-// sidecar file is present), but the resolved identity is absent from
-// a2a_mapping — refuses before ever reaching OpenBao. Proven the same way
-// as the attestation-MISS test above: no OpenBao stub server exists, so
-// reaching issuance would surface as a network error instead of a denial.
-func TestRunMintA2A_NotEntitledRefusesBeforeIssuance(t *testing.T) {
-	const spawnEnv = "GATEKEEPER_TEST_A2A_NOT_ENTITLED_LR890FAE"
-	spawnDir := t.TempDir()
-	t.Setenv(spawnEnv, "spawn-notentitled-1")
-	writeSpawnSidecarFile(t, spawnDir, "spawn-notentitled-1", "unmapped-caller")
-
-	path := writeTempConfig(t, `
-github:
-  owner: testorg
-
-broker:
-  type: env
-
-roles: {}
-
-attestation:
-  sidecars:
-    - dir: `+spawnDir+`
-      file_prefix: spawn-
-      session_id_env: `+spawnEnv+`
-
-a2a_provider:
-  endpoint: https://openbao.invalid.example
-  assertion_private_key_path: GATEKEEPER_TEST_A2A_KEY_LR890FAE
-  issuer: gatekeeper-test-issuer
-  auth_mount: a2a-jwt
-  roles:
-    peer-builder:
-      auth_role: a2a-role
-      oidc_role: a2a-oidc-role
-`)
-
-	err := runMintA2A([]string{"--audience", "peer-project-x", "--config", path})
-	if err == nil {
-		t.Fatal("runMintA2A: expected fail-closed refusal for unentitled identity, got nil")
-	}
-	if strings.Contains(err.Error(), "connection refused") || strings.Contains(err.Error(), "no such host") {
-		t.Fatalf("runMintA2A reached the network before entitlement refused — fail-closed gate did not run first: %v", err)
-	}
-	if !strings.Contains(err.Error(), "not entitled") {
-		t.Errorf("runMintA2A error = %q, want it to name the entitlement denial", err.Error())
-	}
-}
-
-// TestRunMintA2A_PermittedIssuesJSON is the end-to-end happy path: a real
-// per-spawn sidecar attests the caller, a fully configured a2a_provider and
-// an entitled a2a_mapping entry permit the request, and a stub OpenBao
-// server stands in for the JWT-auth login + identity/oidc/token endpoints.
-// Verifies --json emits {token, expires_at, subject} and default output
-// stays the bare token string, mirroring runMint's own contract.
+// Acceptance: a delivered assertion for a mapped actor logs in at the mount
+// under the configured auth role, the returned client token requests the
+// identity token, and the output is the OpenBao-issued token. --json carries
+// the caller subject; the default output is the bare token.
 func TestRunMintA2A_PermittedIssuesJSON(t *testing.T) {
-	const spawnEnv = "GATEKEEPER_TEST_A2A_PERMIT_LR890FAE"
-	const keyEnv = "GATEKEEPER_TEST_A2A_KEY_PERMIT_LR890FAE"
-	spawnDir := t.TempDir()
-	t.Setenv(spawnEnv, "spawn-permit-1")
-	t.Setenv(keyEnv, generateTestPEM(t))
-	writeSpawnSidecarFile(t, spawnDir, "spawn-permit-1", "peer-agent-alpha")
+	f := newAssertionFixture(t)
+	token := f.deliverAs(a2aTestActor, "harness", "builder")
+	mount := &jwtMount{trusted: token}
+	srv := mount.server(t)
+	path := writeTempConfig(t, f.a2aConfig(srv.URL, ""))
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/login"):
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
-				"auth": map[string]string{"client_token": "s.test-client-token"},
-			})
-		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/identity/oidc/token/"):
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
-				"data": map[string]any{"token": "openbao-issued-peer-token", "ttl": 300},
-			})
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer srv.Close()
-
-	path := writeTempConfig(t, `
-github:
-  owner: testorg
-
-broker:
-  type: env
-
-roles: {}
-
-attestation:
-  sidecars:
-    - dir: `+spawnDir+`
-      file_prefix: spawn-
-      session_id_env: `+spawnEnv+`
-
-a2a_mapping:
-  peer-agent-alpha:
-    role: peer-builder
-    audiences:
-      - peer-project-x
-
-a2a_provider:
-  endpoint: `+srv.URL+`
-  assertion_private_key_path: `+keyEnv+`
-  issuer: gatekeeper-test-issuer
-  auth_mount: a2a-jwt
-  roles:
-    peer-builder:
-      auth_role: a2a-role
-      oidc_role: a2a-oidc-role
-`)
-
-	jsonOut := captureStdout(t, func() {
-		if err := runMintA2A([]string{"--audience", "peer-project-x", "--config", path, "--json"}); err != nil {
-			t.Fatalf("runMintA2A --json unexpected error: %v", err)
-		}
+	var jsonOut string
+	stderr := captureStderr(t, func() {
+		jsonOut = captureStdout(t, func() {
+			if err := runMintA2A([]string{"--audience", a2aTestAudience, "--config", path, "--json"}); err != nil {
+				t.Fatalf("runMintA2A --json unexpected error: %v", err)
+			}
+		})
 	})
 
 	var got struct {
@@ -281,15 +192,25 @@ a2a_provider:
 	if err := json.Unmarshal([]byte(strings.TrimSpace(jsonOut)), &got); err != nil {
 		t.Fatalf("runMintA2A --json output is not valid JSON: %v\noutput: %q", err, jsonOut)
 	}
-	if got.Token != "openbao-issued-peer-token" {
-		t.Errorf("json output token = %q, want %q", got.Token, "openbao-issued-peer-token")
+	if got.Token != "openbao-issued-peer-token" || got.Subject != a2aTestActor {
+		t.Errorf("json output token/subject = %q/%q, want openbao-issued-peer-token/%s", got.Token, got.Subject, a2aTestActor)
 	}
-	if got.Subject != "peer-agent-alpha" {
-		t.Errorf("json output subject = %q, want %q", got.Subject, "peer-agent-alpha")
+
+	if len(mount.logins) != 1 || mount.logins[0]["role"] != "a2a-role" || mount.logins[0]["jwt"] != token {
+		t.Errorf("login requests = %v, want one login for role a2a-role carrying the delivered assertion", mount.logins)
+	}
+	if mount.readWith != "s.test-client-token" {
+		t.Errorf("identity token read presented %q, want the client token the login returned", mount.readWith)
+	}
+	if strings.Contains(stderr, token) || strings.Contains(jsonOut, token) {
+		t.Error("the assertion appears in stdout or stderr")
+	}
+	if !strings.Contains(stderr, "permitted=true") {
+		t.Errorf("stderr = %q, want a permitted audit line", stderr)
 	}
 
 	plainOut := captureStdout(t, func() {
-		if err := runMintA2A([]string{"--audience", "peer-project-x", "--config", path}); err != nil {
+		if err := runMintA2A([]string{"--audience", a2aTestAudience, "--config", path}); err != nil {
 			t.Fatalf("runMintA2A (default) unexpected error: %v", err)
 		}
 	})
@@ -298,34 +219,170 @@ a2a_provider:
 	}
 }
 
-// TestRunMintA2A_MixedLegacyAndNewSidecarConfigRejected is the cmd-level
-// wiring test for the MILLER-adjudicated defect (lr-890fae comment #8, item
-// F2): config_test.go's TestAttestationConfig_ResolveSidecars_BackCompat
-// covers the legacy+new MERGE in isolation only — it never traces the
-// merged value across the config -> cmd boundary to see which entry lands
-// in the domain-scoped PerSpawn resolver mint-a2a actually uses.
-//
-// Without this test, a deployment could set the legacy `attestation.sidecar`
-// block to a SESSION namespace and `attestation.sidecars[0]` to the
-// per-spawn namespace; ResolveSidecars' documented, deliberate prepend
-// ordering (legacy first) would then put the SESSION entry at index 0, and
-// main.go's chainSidecars[0] wiring would install the session sidecar AS
-// PerSpawn — DomainA2A fail-closes correctly, but against the wrong
-// namespace, a confused-deputy outcome.
-//
-// config.Load now rejects this combination outright (internal/config's
-// AttestationConfig.validate) rather than silently accepting whichever
-// entry ordering the merge happens to produce, so this test asserts the
-// REJECTION reaches the caller through runMintA2A specifically — the same
-// code path that used to install chainSidecars[0] as PerSpawn — rather than
-// re-testing the merge or the validation rule in isolation again.
+// With no assertion delivered the A2A domain refuses rather than falling
+// through to any other identity; no request reaches the mount.
+func TestRunMintA2A_NoAssertionDeliveredRefusesBeforeIssuance(t *testing.T) {
+	f := newAssertionFixture(t)
+	os.Unsetenv("CLAGENTIC_IDENTITY_DIR")
+	mount := &jwtMount{}
+	srv := mount.server(t)
+	path := writeTempConfig(t, f.a2aConfig(srv.URL, ""))
+
+	var err error
+	captureStderr(t, func() { err = runMintA2A([]string{"--audience", a2aTestAudience, "--config", path}) })
+	if err == nil || !strings.Contains(err.Error(), "resolve attested identity") {
+		t.Fatalf("runMintA2A = %v, want the attestation-resolution refusal", err)
+	}
+	if len(mount.logins) != 0 {
+		t.Errorf("the mount saw %d login(s); attestation must refuse first", len(mount.logins))
+	}
+}
+
+// An actor absent from a2a_mapping is refused before the mount is reached.
+func TestRunMintA2A_NotEntitledRefusesBeforeIssuance(t *testing.T) {
+	f := newAssertionFixture(t)
+	token := f.deliverAs("agent:unmapped-caller", "harness", "builder")
+	mount := &jwtMount{trusted: token}
+	srv := mount.server(t)
+	path := writeTempConfig(t, f.a2aConfig(srv.URL, ""))
+
+	var err error
+	captureStderr(t, func() { err = runMintA2A([]string{"--audience", a2aTestAudience, "--config", path}) })
+	if err == nil || !strings.Contains(err.Error(), "not entitled") {
+		t.Fatalf("runMintA2A = %v, want the entitlement denial", err)
+	}
+	if len(mount.logins) != 0 {
+		t.Errorf("the mount saw %d login(s); entitlement must refuse first", len(mount.logins))
+	}
+}
+
+// Acceptance: an assertion signed by a key outside the configured key set is
+// refused by the local verification, never presented at the mount.
+func TestRunMintA2A_ForgedAssertionRefusesBeforeIssuance(t *testing.T) {
+	f := newAssertionFixture(t)
+	_, other, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.priv = other
+	token := f.deliverAs(a2aTestActor, "harness", "builder")
+	mount := &jwtMount{trusted: token}
+	srv := mount.server(t)
+	path := writeTempConfig(t, f.a2aConfig(srv.URL, ""))
+
+	var runErr error
+	captureStderr(t, func() { runErr = runMintA2A([]string{"--audience", a2aTestAudience, "--config", path}) })
+	if runErr == nil || !strings.Contains(runErr.Error(), "signature_invalid") {
+		t.Fatalf("runMintA2A = %v, want a signature_invalid refusal", runErr)
+	}
+	if len(mount.logins) != 0 {
+		t.Errorf("the mount saw %d login(s); a forged assertion must never be presented", len(mount.logins))
+	}
+}
+
+// The mount's own refusal (here: it trusts a different JWKS) surfaces as an
+// error with no token on stdout, and the audit line carries the bounded
+// OpenBao message.
+func TestRunMintA2A_MountRefusalYieldsNoToken(t *testing.T) {
+	f := newAssertionFixture(t)
+	f.deliverAs(a2aTestActor, "harness", "builder")
+	mount := &jwtMount{trusted: "some-other-assertion"}
+	srv := mount.server(t)
+	path := writeTempConfig(t, f.a2aConfig(srv.URL, ""))
+
+	var runErr error
+	var stdout string
+	stderr := captureStderr(t, func() {
+		stdout = captureStdout(t, func() { runErr = runMintA2A([]string{"--audience", a2aTestAudience, "--config", path}) })
+	})
+	if runErr == nil || !strings.Contains(runErr.Error(), "jwt auth login") {
+		t.Fatalf("runMintA2A = %v, want the jwt auth login refusal", runErr)
+	}
+	if stdout != "" {
+		t.Errorf("a token was printed: %q", stdout)
+	}
+	if mount.readWith != "" {
+		t.Error("the identity token was requested after a refused login")
+	}
+	if !strings.Contains(stderr, "permitted=false") || !strings.Contains(stderr, "permission denied") {
+		t.Errorf("stderr = %q, want a refused audit line carrying the mount's message", stderr)
+	}
+}
+
+// A config still naming the removed a2a_provider keys starts: both commands
+// warn on stderr naming each key, ignore the values, and mint as before.
+func TestRemovedA2AKeysWarnAndProceedOnBothCommands(t *testing.T) {
+	f := newAssertionFixture(t)
+	token := f.deliverAs(a2aTestActor, "harness", "builder")
+	mount := &jwtMount{trusted: token}
+	srv := mount.server(t)
+	removed := "  assertion_private_key_path: secret/gatekeeper/a2a/assertion-private-key\n  issuer: gatekeeper-example-issuer\n  assertion_ttl_seconds: 300\n"
+	path := writeTempConfig(t, f.config(f.assertionBlock(), "", "")+
+		"a2a_mapping:\n  "+a2aTestActor+":\n    role: peer-builder\n    audiences:\n      - "+a2aTestAudience+"\n"+
+		"a2a_provider:\n  endpoint: "+srv.URL+"\n  auth_mount: a2a-jwt\n  roles:\n    peer-builder:\n      auth_role: a2a-role\n      oidc_role: a2a-oidc-role\n"+removed)
+
+	for name, run := range map[string]func() (string, error){
+		"mint-a2a": func() (out string, err error) {
+			out = captureStdout(t, func() { err = runMintA2A([]string{"--audience", a2aTestAudience, "--config", path}) })
+			return out, err
+		},
+		"mint": func() (out string, err error) {
+			out = captureStdout(t, func() { err = runMint([]string{"--role", "builder", "--config", path}) })
+			return out, err
+		},
+	} {
+		var out string
+		var err error
+		stderr := captureStderr(t, func() { out, err = run() })
+		if err != nil {
+			t.Errorf("%s = %v, want it to proceed", name, err)
+		}
+		if strings.TrimSpace(out) == "" {
+			t.Errorf("%s printed no token", name)
+		}
+		if !strings.Contains(stderr, "a2a_provider: deprecated config key(s) assertion_private_key_path, issuer, assertion_ttl_seconds have no effect") {
+			t.Errorf("%s stderr = %q, want the deprecation warning naming each key", name, stderr)
+		}
+	}
+}
+
+// mint-a2a logs in as /act/sub, so an assertion without act is refused at
+// gatekeeper with a named error and the mount is never called, while the plain
+// mint still resolves the same assertion from sub.
+func TestRunMintA2A_AssertionWithoutActRefusedBeforeMount(t *testing.T) {
+	f := newAssertionFixture(t)
+	token := f.deliverWithoutAct("runtime:peer-agent-alpha", "builder")
+	mount := &jwtMount{trusted: token}
+	srv := mount.server(t)
+	path := writeTempConfig(t, f.config(f.assertionBlock(), "", "")+
+		"a2a_mapping:\n  runtime:peer-agent-alpha:\n    role: peer-builder\n    audiences:\n      - "+a2aTestAudience+"\n"+
+		"a2a_provider:\n  endpoint: "+srv.URL+"\n  auth_mount: a2a-jwt\n  roles:\n    peer-builder:\n      auth_role: a2a-role\n      oidc_role: a2a-oidc-role\n")
+
+	var err error
+	captureStderr(t, func() { err = runMintA2A([]string{"--audience", a2aTestAudience, "--config", path}) })
+	if err == nil || !strings.Contains(err.Error(), "carries no act.sub") {
+		t.Fatalf("runMintA2A = %v, want the named act.sub refusal", err)
+	}
+	if len(mount.logins) != 0 || mount.readWith != "" {
+		t.Errorf("the mount saw %d login(s) and read %q; the refusal must come first", len(mount.logins), mount.readWith)
+	}
+
+	var plainErr error
+	captureStderr(t, func() {
+		captureStdout(t, func() { plainErr = runMint([]string{"--role", "builder", "--config", path}) })
+	})
+	if plainErr != nil {
+		t.Errorf("plain mint with the same assertion = %v, want it unchanged", plainErr)
+	}
+}
+
+// TestRunMintA2A_MixedLegacyAndNewSidecarConfigRejected: config.Load rejects a
+// config naming both the legacy `sidecar:` block and `sidecars:`; the
+// rejection must reach the caller through runMintA2A.
 func TestRunMintA2A_MixedLegacyAndNewSidecarConfigRejected(t *testing.T) {
 	spawnDir := t.TempDir()
 	sessionDir := t.TempDir()
 
-	// Legacy `sidecar:` names a SESSION namespace; `sidecars[0]` names the
-	// per-spawn namespace — exactly the inversion MILLER's adjudication
-	// names as the real defect underneath the reviewer's refuted claim.
 	path := writeTempConfig(t, `
 github:
   owner: testorg
@@ -339,16 +396,14 @@ attestation:
   sidecar:
     dir: `+sessionDir+`
     file_prefix: session-
-    session_id_env: GATEKEEPER_TEST_MIXED_SESSION_LR890FAE
+    session_id_env: GATEKEEPER_TEST_MIXED_SESSION
   sidecars:
     - dir: `+spawnDir+`
       file_prefix: spawn-
-      session_id_env: GATEKEEPER_TEST_MIXED_SPAWN_LR890FAE
+      session_id_env: GATEKEEPER_TEST_MIXED_SPAWN
 
 a2a_provider:
   endpoint: https://openbao.invalid.example
-  assertion_private_key_path: GATEKEEPER_TEST_A2A_KEY_LR890FAE
-  issuer: gatekeeper-test-issuer
   auth_mount: a2a-jwt
   roles:
     peer-builder:
@@ -356,34 +411,23 @@ a2a_provider:
       oidc_role: a2a-oidc-role
 `)
 
-	err := runMintA2A([]string{"--audience", "peer-project-x", "--config", path})
+	err := runMintA2A([]string{"--audience", a2aTestAudience, "--config", path})
 	if err == nil {
 		t.Fatal("runMintA2A: expected config error for mixed legacy sidecar + sidecars, got nil")
 	}
 	if !strings.Contains(err.Error(), "sidecar") {
 		t.Errorf("runMintA2A error = %q, want it to name the sidecar config conflict", err.Error())
 	}
-	if strings.Contains(err.Error(), "connection refused") || strings.Contains(err.Error(), "no such host") {
-		t.Fatalf("runMintA2A reached the network before the mixed-config rejection ran: %v", err)
-	}
 }
 
 // TestRunMintA2A_StderrAuditBoundedForOversizedOpenBaoErrorEnvelope is the
-// full cross-boundary sink test MILLER's adjudication (lr-890fae comment
-// #11) called for: a2atoken -> a2amint -> main.go's stderr Fprintf, not just
-// an in-package or a2amint-package-boundary assertion. A stub OpenBao server
-// returns an oversized (>200 byte joined) {"errors":[...]} envelope on the
-// jwt-auth-login leg — the parsed-envelope branch of
-// a2atoken.parseOpenBaoErrors, the specific branch the F1 defect left
-// unbounded. Asserts the actual bytes printed to os.Stderr by main.go's
-// audit hook are bounded, never an unbounded echo of the envelope.
+// full cross-boundary sink test: a2atoken -> a2amint -> main.go's stderr
+// Fprintf. A stub OpenBao returns an oversized {"errors":[...]} envelope on the
+// jwt-auth-login leg and the bytes printed to os.Stderr by main.go's audit
+// hook must be bounded, never an unbounded echo of the envelope.
 func TestRunMintA2A_StderrAuditBoundedForOversizedOpenBaoErrorEnvelope(t *testing.T) {
-	const spawnEnv = "GATEKEEPER_TEST_A2A_SINK_LR890FAE"
-	const keyEnv = "GATEKEEPER_TEST_A2A_SINK_KEY_LR890FAE"
-	spawnDir := t.TempDir()
-	t.Setenv(spawnEnv, "spawn-sink-1")
-	t.Setenv(keyEnv, generateTestPEM(t))
-	writeSpawnSidecarFile(t, spawnDir, "spawn-sink-1", "peer-agent-alpha")
+	f := newAssertionFixture(t)
+	f.deliverAs(a2aTestActor, "harness", "builder")
 
 	oversizedErrors := []string{
 		strings.Repeat("audit-sink-detail-", 15),
@@ -401,41 +445,11 @@ func TestRunMintA2A_StderrAuditBoundedForOversizedOpenBaoErrorEnvelope(t *testin
 	}))
 	defer srv.Close()
 
-	path := writeTempConfig(t, `
-github:
-  owner: testorg
-
-broker:
-  type: env
-
-roles: {}
-
-attestation:
-  sidecars:
-    - dir: `+spawnDir+`
-      file_prefix: spawn-
-      session_id_env: `+spawnEnv+`
-
-a2a_mapping:
-  peer-agent-alpha:
-    role: peer-builder
-    audiences:
-      - peer-project-x
-
-a2a_provider:
-  endpoint: `+srv.URL+`
-  assertion_private_key_path: `+keyEnv+`
-  issuer: gatekeeper-test-issuer
-  auth_mount: a2a-jwt
-  roles:
-    peer-builder:
-      auth_role: a2a-role
-      oidc_role: a2a-oidc-role
-`)
+	path := writeTempConfig(t, f.a2aConfig(srv.URL, ""))
 
 	var runErr error
 	stderrOut := captureStderr(t, func() {
-		runErr = runMintA2A([]string{"--audience", "peer-project-x", "--config", path})
+		runErr = runMintA2A([]string{"--audience", a2aTestAudience, "--config", path})
 	})
 	if runErr == nil {
 		t.Fatal("runMintA2A: expected error propagated from issuance, got nil")
@@ -450,12 +464,10 @@ a2a_provider:
 	if !strings.Contains(stderrOut, "truncated") {
 		t.Errorf("stderr audit output = %q, want it to carry the truncation marker for an oversized OpenBao errors[] envelope", stderrOut)
 	}
-	// Bounded per main.go's own documented expansion: maxRawBodyExcerpt (200
-	// bytes) run through the audit line's %q verb (Go strconv.Quote
-	// semantics) can expand roughly 4x on control-heavy input, plus the
-	// fixed audit-line scaffolding (identity/role/audience/etc fields). 1500
-	// bytes is comfortably above that worst case and still proves the line
-	// is not an unbounded echo of an attacker/proxy-controlled body.
+	// maxRawBodyExcerpt (200 bytes) run through the audit line's %q verb can
+	// expand roughly 4x on control-heavy input, plus the fixed audit-line
+	// scaffolding. 1500 bytes is above that worst case and still proves the
+	// line is not an unbounded echo of a proxy-controlled body.
 	if len(stderrOut) > 1500 {
 		t.Errorf("stderr audit output is not bounded: %d bytes: %q", len(stderrOut), stderrOut)
 	}

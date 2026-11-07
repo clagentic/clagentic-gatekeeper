@@ -1,43 +1,28 @@
-// Package a2atoken implements the B3 mechanism (lr-890fae, settled at
-// clagentic-gatekeeper lr-890fae comment #4, live-provisioned per openbao
-// lr-fbbf32): gatekeeper signs a short-lived JWT ASSERTION (sub = the
-// already-attested A2A caller identity) with its OWN key, and exchanges that
-// assertion at OpenBao's dedicated JWT auth mount. OpenBao validates the
-// assertion's signature independently, resolves sub via bound_subject to a
-// PRE-REGISTERED entity-alias on that mount's own accessor, and returns a
-// client token carrying the caller's REAL, pre-existing OpenBao entity. This
+// Package a2atoken implements the A2A issuance leg against OpenBao's
+// documented JWT login flow: the caller's identity assertion (issued by
+// `gatekeeper serve` and already verified by the attestation assertion
+// provider) logs in at OpenBao's dedicated JWT auth mount, whose
+// user_claim_json_pointer=true and user_claim=/act/sub resolve the assertion to
+// a PRE-REGISTERED entity-alias on that mount's own accessor. The returned
+// client token carries the caller's REAL, pre-existing OpenBao entity, and this
 // package then reads identity/oidc/token/<role> with that client token to
-// obtain the PEER-FACING token, which OpenBao signs — never this package.
+// obtain the PEER-FACING token, which OpenBao signs, never this package.
+//
+// Gatekeeper holds no assertion signing key of its own here: the one issuer key
+// is the serve key, and OpenBao trusts it through the published JWKS.
 //
 // This is an I/O leaf, the A2A-domain analog of internal/githubapp: it talks
 // to OpenBao's HTTP API and nothing else, and it is deliberately NOT the
-// internal/broker.Broker interface — Broker is a plain Get(path)-shaped
-// secret read, and this package performs a signed-assertion exchange plus a
-// follow-on issuance call, a materially different shape.
-//
-// Gatekeeper's assertion signing key is a BEARER OF ATTESTATION, not the
-// issuing key. It is read from the broker like any other secret, used only
-// to sign the short-lived assertion, and is never conflated with, and never
-// substitutes for, OpenBao's own identity/oidc signing key — OpenBao alone
-// signs the peer-facing token. This package holds no long-lived credential
-// of its own beyond what it reads from the broker for the duration of one
-// call.
+// internal/broker.Broker interface, which is a plain Get(path)-shaped secret
+// read, while this package performs a JWT login plus a follow-on issuance call.
 package a2atoken
 
 import (
 	"bytes"
 	"context"
-	"crypto"
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/sha256"
-	"crypto/x509"
-	"encoding/base64"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
 	"io"
-	"math/big"
 	"net/http"
 	"strings"
 	"time"
@@ -79,9 +64,8 @@ const maxResponseBodyBytes = 64 * 1024
 // internal/a2amint) can apply targeted redaction to THIS error class without
 // having to blanket-redact every error a2amint might see, including its own
 // internal ones (a2amint.Service.Mint's other failure paths: missing
-// resolver, denied entitlement, missing broker, unreadable key — none of
-// which ever carry third-party response content and all of which stay fully
-// diagnosable).
+// resolver, denied entitlement, missing assertion — none of which ever carry
+// third-party response content and all of which stay fully diagnosable).
 //
 // Message is already bounded/redacted per Error() below — both the joined
 // OpenBao "errors" strings and the raw-body fallback are truncated to
@@ -155,11 +139,10 @@ func truncateExcerpt(body []byte) string {
 // Token is a minted peer-facing A2A credential. It is signed exclusively by
 // OpenBao; gatekeeper never signs this value.
 //
-// Subject is the caller entity id OpenBao's issuance resolved sub to — the
-// SAME value peers see in the token's own "sub" claim, surfaced here purely
-// for gatekeeper's own audit record (mint.go's AC4-successor: gatekeeper's
-// own audit trail carries attribution the wire token itself does not, per
-// lr-890fae comment #5). It is never used to alter the wire token.
+// Subject is the attested caller identity the issuance was made for, surfaced
+// here purely for gatekeeper's own audit record (the wire token's own "sub"
+// claim is the caller's OpenBao entity id, which OpenBao resolved from the
+// assertion's act.sub). It is never used to alter the wire token.
 type Token struct {
 	Value     string
 	ExpiresAt time.Time
@@ -167,7 +150,7 @@ type Token struct {
 }
 
 // IssueRequest carries everything one A2A issuance call needs. Every value
-// is either deployment config or the already-attested caller subject — this
+// is either deployment config or the already-attested caller identity — this
 // package never resolves attestation or entitlement itself (that is
 // internal/attestation + internal/a2apolicy's job, run BEFORE this package
 // is ever called).
@@ -175,49 +158,48 @@ type IssueRequest struct {
 	// Endpoint is the OpenBao server URL (scheme://host[:port]), no
 	// trailing slash required.
 	Endpoint string
-	// AssertionPrivateKeyPEM is gatekeeper's own RSA signing key for the
-	// assertion — the bearer-of-attestation key, read from the broker.
-	// Never OpenBao's OIDC signing key.
-	AssertionPrivateKeyPEM string
-	// Issuer is the value gatekeeper stamps into the assertion's "iss"
-	// claim. Must match the JWT auth mount's configured bound_issuer.
-	// Deployment-specific; never hardcoded.
-	Issuer string
+	// Assertion is the caller's identity assertion exactly as `gatekeeper
+	// serve` issued it and the attestation provider verified it. It is a
+	// bearer credential: it is sent to the login endpoint and appears in no
+	// error or log line.
+	Assertion string
 	// Subject is the ALREADY-ATTESTED, already-entitled caller identity
-	// (attestation.Identity.Subject) to assert as the assertion's "sub"
-	// claim. This package performs no attestation or entitlement check of
-	// its own — a caller MUST run those gates first and fail closed before
-	// ever constructing an IssueRequest.
+	// (attestation.Identity.Subject, the assertion's act.sub). It is carried
+	// onto Token.Subject for gatekeeper's own audit record and never sent to
+	// OpenBao: OpenBao derives the entity from the assertion itself.
+	// Invariant: Subject must equal the act.sub of Assertion, so the recorded
+	// subject is the entity actually authenticated. internal/a2amint enforces
+	// this before calling Issue; Issue cannot, as it does not parse the
+	// assertion.
 	Subject string
-	// AssertionTTL bounds the short-lived assertion's own lifetime (iat/exp
-	// on the gatekeeper-signed JWT, distinct from the peer-facing token's
-	// TTL, which OpenBao's identity/oidc role controls independently).
-	AssertionTTL time.Duration
 	// AuthMount is the path segment of OpenBao's dedicated JWT auth mount
 	// (e.g. "a2a-jwt"), used to build /v1/auth/<AuthMount>/login.
 	AuthMount string
 	// AuthRole is the JWT auth role name to authenticate against under
-	// AuthMount (role_type=jwt, user_claim=sub — this is what makes sub
-	// resolve to the pre-registered entity-alias on the mount's own
-	// accessor).
+	// AuthMount (user_claim=/act/sub with user_claim_json_pointer=true — this
+	// is what makes act.sub resolve to the pre-registered entity-alias on the
+	// mount's own accessor).
 	AuthRole string
 	// OIDCRole is the identity/oidc role name to read for the peer-facing
 	// token: GET /v1/identity/oidc/token/<OIDCRole>.
 	OIDCRole string
 }
 
-// Issue signs a short-lived assertion for req.Subject, exchanges it at
-// OpenBao's JWT auth mount, and reads the peer-facing token from
-// identity/oidc/token/<OIDCRole> using the resulting client token.
+// Issue logs req.Assertion in at OpenBao's JWT auth mount and reads the
+// peer-facing token from identity/oidc/token/<OIDCRole> using the resulting
+// client token.
 //
-// Gatekeeper performs NO in-process signing of the returned peer-facing
-// token (AC3) — only of the internal assertion, which OpenBao independently
-// validates before ever resolving an identity from it. Every failure here
-// returns no token material: a signature failure, a bound_subject rejection,
-// or any transport error all propagate as plain errors with nothing minted.
+// Gatekeeper performs NO in-process signing at all: OpenBao verifies the
+// assertion against the serve JWKS and signs the returned peer-facing token.
+// Every failure here returns no token material: a signature rejection, an
+// unmapped act.sub, or any transport error all propagate as plain errors with
+// nothing minted.
 func Issue(ctx context.Context, req IssueRequest) (Token, error) {
 	if req.Endpoint == "" {
 		return Token{}, fmt.Errorf("a2atoken: endpoint is required")
+	}
+	if req.Assertion == "" {
+		return Token{}, fmt.Errorf("a2atoken: identity assertion is required")
 	}
 	if req.Subject == "" {
 		return Token{}, fmt.Errorf("a2atoken: subject is required")
@@ -229,26 +211,9 @@ func Issue(ctx context.Context, req IssueRequest) (Token, error) {
 		return Token{}, fmt.Errorf("a2atoken: oidc role is required")
 	}
 
-	key, err := parseRSAPrivateKey(req.AssertionPrivateKeyPEM)
-	if err != nil {
-		// Never include the PEM content in errors — generic message only.
-		return Token{}, fmt.Errorf("a2atoken: parse assertion private key: %w", err)
-	}
-
-	ttl := req.AssertionTTL
-	if ttl <= 0 {
-		ttl = 5 * time.Minute
-	}
-	now := time.Now()
-	assertion, err := signAssertion(key, req.Issuer, req.Subject, now, now.Add(ttl))
-	zeroKey(key)
-	if err != nil {
-		return Token{}, fmt.Errorf("a2atoken: sign assertion: %w", err)
-	}
-
 	endpoint := strings.TrimRight(req.Endpoint, "/")
 
-	clientToken, err := exchangeAssertion(ctx, endpoint, req.AuthMount, req.AuthRole, assertion)
+	clientToken, err := exchangeAssertion(ctx, endpoint, req.AuthMount, req.AuthRole, req.Assertion)
 	if err != nil {
 		return Token{}, fmt.Errorf("a2atoken: exchange assertion: %w", err)
 	}
@@ -256,43 +221,12 @@ func Issue(ctx context.Context, req IssueRequest) (Token, error) {
 	return readOIDCToken(ctx, endpoint, req.OIDCRole, clientToken, req.Subject)
 }
 
-// signAssertion produces a compact RS256 JWT asserting sub=subject,
-// iss=issuer. Deliberately omits "aud": the probe evidence (lr-890fae
-// comment #4) established that an aud claim present with no bound_audiences
-// configured on the receiving role is a HARD validation failure at OpenBao —
-// omitting it entirely, rather than guessing a value, is the safe default.
-func signAssertion(key *rsa.PrivateKey, issuer, subject string, iat, exp time.Time) (string, error) {
-	header := base64url([]byte(`{"alg":"RS256","typ":"JWT"}`))
-
-	claims := map[string]any{
-		"sub": subject,
-		"iat": iat.Unix(),
-		"exp": exp.Unix(),
-	}
-	if issuer != "" {
-		claims["iss"] = issuer
-	}
-	claimsJSON, err := json.Marshal(claims)
-	if err != nil {
-		return "", err
-	}
-
-	signingInput := header + "." + base64url(claimsJSON)
-	digest := sha256.Sum256([]byte(signingInput))
-
-	sig, err := rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA256, digest[:])
-	if err != nil {
-		return "", err
-	}
-	return signingInput + "." + base64url(sig), nil
-}
-
-// exchangeAssertion POSTs the signed assertion to OpenBao's JWT auth mount
+// exchangeAssertion POSTs the identity assertion to OpenBao's JWT auth mount
 // login endpoint and returns the resulting client token. OpenBao performs
-// its own independent signature verification against jwt_validation_pubkeys
-// and its own bound_subject narrowing — this function trusts OpenBao's
-// verdict and returns whatever client token it hands back (or the error
-// OpenBao reports, e.g. an untrusted-key or bound_subject rejection).
+// its own independent signature verification against the serve JWKS and
+// resolves act.sub to the pre-registered entity-alias — this function trusts
+// OpenBao's verdict and returns whatever client token it hands back (or the
+// error OpenBao reports, e.g. an unknown-key or unmapped-subject rejection).
 func exchangeAssertion(ctx context.Context, endpoint, mount, role, assertion string) (string, error) {
 	body, err := json.Marshal(map[string]string{
 		"role": role,
@@ -325,14 +259,12 @@ func exchangeAssertion(ctx context.Context, endpoint, mount, role, assertion str
 
 	if resp.StatusCode != http.StatusOK {
 		// OpenBao's error bodies for a failed JWT-auth login (bad signature,
-		// unregistered subject) do not carry secret material — safe to
-		// surface for diagnosis. This is exactly where the two negative
-		// controls (untrusted key, bogus subject) surface their rejection.
-		// parseOpenBaoErrors extracts OpenBao's documented {"errors":[...]}
-		// envelope when the body matches that shape, or truncates when it
-		// does not (e.g. an intervening proxy's own error page); both
-		// outcomes are bounded to maxRawBodyExcerpt, and respBody itself was
-		// already capped to maxResponseBodyBytes off the wire above.
+		// unmapped subject) do not carry secret material — safe to surface
+		// for diagnosis. parseOpenBaoErrors extracts OpenBao's documented
+		// {"errors":[...]} envelope when the body matches that shape, or
+		// truncates when it does not (e.g. an intervening proxy's own error
+		// page); both outcomes are bounded to maxRawBodyExcerpt, and respBody
+		// itself was already capped to maxResponseBodyBytes off the wire above.
 		return "", &TransportError{Op: "jwt auth login", StatusCode: resp.StatusCode, detail: parseOpenBaoErrors(respBody)}
 	}
 
@@ -403,66 +335,4 @@ func readOIDCToken(ctx context.Context, endpoint, role, clientToken, wantSubject
 		ExpiresAt: time.Now().Add(time.Duration(envelope.Data.TTL) * time.Second),
 		Subject:   wantSubject,
 	}, nil
-}
-
-// parseRSAPrivateKey decodes a PEM-encoded RSA private key (PKCS#1 or
-// PKCS#8). Mirrors internal/githubapp's parser exactly — both packages sign
-// a short-lived RS256 JWT with a broker-sourced key, so the parsing logic is
-// identical; kept as a private per-package copy rather than a shared helper
-// because the two keys serve unrelated trust roles (App JWT signing key vs.
-// gatekeeper's own assertion key) and unifying them risks an accidental
-// future coupling between two keys that must stay independently rotatable.
-func parseRSAPrivateKey(pemStr string) (*rsa.PrivateKey, error) {
-	block, _ := pem.Decode([]byte(pemStr))
-	if block == nil {
-		return nil, fmt.Errorf("no PEM block found")
-	}
-
-	switch block.Type {
-	case "RSA PRIVATE KEY":
-		return x509.ParsePKCS1PrivateKey(block.Bytes)
-	case "PRIVATE KEY":
-		key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-		if err != nil {
-			return nil, err
-		}
-		rsaKey, ok := key.(*rsa.PrivateKey)
-		if !ok {
-			return nil, fmt.Errorf("PKCS#8 key is not RSA")
-		}
-		return rsaKey, nil
-	default:
-		return nil, fmt.Errorf("unsupported PEM block type %q", block.Type)
-	}
-}
-
-// zeroKey overwrites sensitive scalar fields of the RSA private key with
-// zeros. The key must not be used after this call. Mirrors
-// internal/githubapp.zeroKey.
-func zeroKey(key *rsa.PrivateKey) {
-	if key == nil {
-		return
-	}
-	zeroInt(key.D)
-	for _, p := range key.Primes {
-		zeroInt(p)
-	}
-	zeroInt(key.Precomputed.Dp)
-	zeroInt(key.Precomputed.Dq)
-	zeroInt(key.Precomputed.Qinv)
-}
-
-func zeroInt(n *big.Int) {
-	if n == nil {
-		return
-	}
-	b := n.Bits()
-	for i := range b {
-		b[i] = 0
-	}
-}
-
-// base64url encodes b with base64url encoding without padding.
-func base64url(b []byte) string {
-	return base64.RawURLEncoding.EncodeToString(b)
 }

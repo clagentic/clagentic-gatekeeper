@@ -46,6 +46,48 @@ func TestAssertionResolvesRolesGradeAndActor(t *testing.T) {
 	}
 }
 
+// ActSub is the act.sub claim alone: set when act is present, empty when the
+// assertion has none, while Subject keeps resolving from sub for the plain mint.
+func TestAssertionActSubIsSeparateFromSubjectFallback(t *testing.T) {
+	s := newSigner(t, "k1")
+	p := newTestProvider(t, jwksFile(t, s))
+	now := time.Now()
+
+	withoutAct := func(dir string) map[string]any {
+		c := localClaims(testIss, dir, "example-builder", "workload", now, "builder")
+		delete(c, "act")
+		c["sub"] = "runtime:example-rt"
+		return c
+	}
+	withAct := func(dir string) map[string]any {
+		return localClaims(testIss, dir, "example-builder", "workload", now, "builder")
+	}
+
+	cases := map[string]struct {
+		claims                  func(dir string) map[string]any
+		wantSubject, wantActSub string
+	}{
+		"act present": {withAct, "agent:example-builder", "agent:example-builder"},
+		"act absent":  {withoutAct, "runtime:example-rt", ""},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			dir := deliverTo(t, "")
+			token := s.sign(t, c.claims(dir))
+			if err := os.WriteFile(filepath.Join(dir, AssertionFile), []byte(token), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			id, err := p.Resolve(context.Background())
+			if err != nil {
+				t.Fatalf("Resolve: %v", err)
+			}
+			if id.Subject != c.wantSubject || id.ActSub != c.wantActSub {
+				t.Errorf("Subject %q ActSub %q, want %q and %q", id.Subject, id.ActSub, c.wantSubject, c.wantActSub)
+			}
+		})
+	}
+}
+
 func TestAssertionUnsetDeliveryDeclinesSoNextProviderMayAnswer(t *testing.T) {
 	s := newSigner(t, "k1")
 	p := newTestProvider(t, jwksFile(t, s))
