@@ -3,7 +3,7 @@
 Signed test vectors for the [Identity Assertion contract](../docs/identity-contract.md).
 A verifier or peer validator is conformant when it reproduces every expected
 outcome. The set is versioned by contract major version: `v1/` is for
-`cia` = `1`, and `v2/` is the contract 2.0.0 supplement for `cia` = `2`.
+`cia` = `1`, and `v2/` is the contract 2.1.0 supplement for `cia` = `2`.
 
 Vendor the set of the major you implement, pinned to a contract version, and
 run every vector against your own verifier built from the specification and a
@@ -23,7 +23,11 @@ verifier of major 2 runs `v1/` and `v2/`; in `v1/` the one vector that carries
 unsupported only to a major 1 verifier), and `v2/` has the equivalent vector
 with `cia` 3. `v2/` covers the `driven` origin: accepted for ES256, EdDSA and
 a peer, and refused in a `cia` 1 assertion, with a `human:` sub and at grade
-`harness`.
+`harness`. It also carries the `delivery` vectors of the optional unavailability
+signal (section 6.1 of the spec). Those apply to any verifier, whatever majors
+it implements, because the signal is independent of `cia`; a verifier that does
+not implement the signal still passes the `identity_dir_missing` outcome of
+each and ignores `withheld`.
 
 ## Files
 
@@ -69,13 +73,17 @@ by the verifier's user, then the delivery checks of section 6 run on it.
 
 | `layout` field | Values |
 |----------------|--------|
-| `dir` | `unset` (variable not set), `absent` (names a missing path), `present` |
+| `dir` | `unset` (variable not set), `empty` (set to the empty string), `absent` (names a missing path), `present` |
 | `dir_mode` | Mode to give a `present` directory: `0700` or `0755` |
 | `file` | `identity.jwt` is `regular`, `symlink` (to a regular file elsewhere) or `absent` |
 | `content` | What a `regular` file holds, or a `symlink` points at |
+| `unavailable` | Optional. The value of `CLAGENTIC_IDENTITY_UNAVAILABLE`; the field absent means the variable is not set, and `""` means it is set empty |
 
 `{"ok": true}` means the file is delivered and its bytes equal `content`;
-otherwise `error` is a delivery code.
+otherwise `error` is a delivery code. `expect` may also carry `withheld`, the
+reason code a consumer that implements the signal reports alongside
+`identity_dir_missing`; it is absent when the result is plain absent or the
+signal is ignored.
 
 ## Coverage
 

@@ -1,5 +1,5 @@
 {
-  "contract_version": "2.0.0",
+  "contract_version": "2.1.0",
   "cia": 2,
   "trust": {
     "issuers": [
@@ -145,6 +145,115 @@
       "expect": {
         "ok": false,
         "error": "contract_version_unsupported"
+      }
+    },
+    {
+      "id": "v2-delivery-withheld-owner-unsupported",
+      "description": "CLAGENTIC_IDENTITY_DIR is unset and the signal is owner_unsupported: withheld, reason owner_unsupported.",
+      "kind": "delivery",
+      "layout": {
+        "dir": "unset",
+        "unavailable": "owner_unsupported"
+      },
+      "expect": {
+        "ok": false,
+        "error": "identity_dir_missing",
+        "withheld": "owner_unsupported"
+      }
+    },
+    {
+      "id": "v2-delivery-withheld-issuer-unavailable",
+      "description": "CLAGENTIC_IDENTITY_DIR is unset and the signal is issuer_unavailable: withheld, reason issuer_unavailable.",
+      "kind": "delivery",
+      "layout": {
+        "dir": "unset",
+        "unavailable": "issuer_unavailable"
+      },
+      "expect": {
+        "ok": false,
+        "error": "identity_dir_missing",
+        "withheld": "issuer_unavailable"
+      }
+    },
+    {
+      "id": "v2-delivery-withheld-empty-dir",
+      "description": "CLAGENTIC_IDENTITY_DIR is set to the empty string and the signal is owner_unsupported: the empty directory counts as unset.",
+      "kind": "delivery",
+      "layout": {
+        "dir": "empty",
+        "unavailable": "owner_unsupported"
+      },
+      "expect": {
+        "ok": false,
+        "error": "identity_dir_missing",
+        "withheld": "owner_unsupported"
+      }
+    },
+    {
+      "id": "v2-delivery-signal-unknown-code",
+      "description": "The signal holds a code outside the closed set: plain absent, no reason.",
+      "kind": "delivery",
+      "layout": {
+        "dir": "unset",
+        "unavailable": "some_other_reason"
+      },
+      "expect": {
+        "ok": false,
+        "error": "identity_dir_missing"
+      }
+    },
+    {
+      "id": "v2-delivery-signal-bad-grammar",
+      "description": "The signal breaks the grammar (upper case and whitespace): plain absent, no reason.",
+      "kind": "delivery",
+      "layout": {
+        "dir": "unset",
+        "unavailable": "Owner Unsupported"
+      },
+      "expect": {
+        "ok": false,
+        "error": "identity_dir_missing"
+      }
+    },
+    {
+      "id": "v2-delivery-signal-list",
+      "description": "The signal holds a list of two known codes: a list is bad grammar, plain absent.",
+      "kind": "delivery",
+      "layout": {
+        "dir": "unset",
+        "unavailable": "owner_unsupported,issuer_unavailable"
+      },
+      "expect": {
+        "ok": false,
+        "error": "identity_dir_missing"
+      }
+    },
+    {
+      "id": "v2-delivery-signal-empty-value",
+      "description": "The signal is set to the empty string: plain absent, no reason.",
+      "kind": "delivery",
+      "layout": {
+        "dir": "unset",
+        "unavailable": ""
+      },
+      "expect": {
+        "ok": false,
+        "error": "identity_dir_missing"
+      }
+    },
+    {
+      "id": "v2-delivery-signal-ignored-with-dir",
+      "description": "A valid delivery directory and the signal both set: the signal is ignored and delivery verifies.",
+      "kind": "delivery",
+      "layout": {
+        "dir": "present",
+        "dir_mode": "0700",
+        "file": "regular",
+        "content": "header.payload.signature",
+        "unavailable": "owner_unsupported"
+      },
+      "expect": {
+        "ok": true
       }
     }
   ]
