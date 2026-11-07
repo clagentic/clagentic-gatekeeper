@@ -289,7 +289,9 @@ which the hook answers with what it already has. The registration gives the
 runtime a 5s timeout.
 
 Consumers must fail closed on an absent or invalid `CLAGENTIC_IDENTITY_DIR`; the
-hook's delivery is best effort by design.
+hook's delivery is best effort by design. A launcher that deliberately delivers
+nothing may say why with the optional `CLAGENTIC_IDENTITY_UNAVAILABLE` signal
+of the identity contract (section 6.1); the hooks never set it.
 
 ### Warn mode first
 

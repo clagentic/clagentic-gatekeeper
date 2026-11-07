@@ -1,9 +1,10 @@
 # Clagentic Identity Assertion contract
 
-Contract version: **2.0.0** (assertion version claim `cia` = `1` or `2`).
+Contract version: **2.1.0** (assertion version claim `cia` = `1` or `2`).
 Major 2 adds one `origin` value, `driven` (section 3.3), and ships alongside
 major 1: both verify, every major 1 assertion and vector stays valid, and the
-version policy is in section 11.
+version policy is in section 11. Version 2.1.0 adds an optional, informational
+delivery signal that says why no identity was delivered (section 6.1).
 
 This document is normative. It defines one artifact, the **Identity
 Assertion**: a signed statement of which actor is acting, on whose behalf,
@@ -289,6 +290,25 @@ $CLAGENTIC_IDENTITY_DIR/        mode 0700, owned by the holder's user
 - The `dir` claim binds the assertion to its directory (section 4, step 10).
   Copying the file to another directory makes it unusable there.
 
+### 6.1 Unavailability signal (optional)
+
+The environment variable `CLAGENTIC_IDENTITY_UNAVAILABLE` lets a launcher say
+that it deliberately delivered no identity, and why. It is informational: it
+is not a claim, carries no assertion, and has no effect on verification.
+
+- The value is exactly one reason code from a closed set, matching
+  `^[a-z][a-z0-9_]{0,63}$`: no whitespace, no list. The codes are:
+  - `owner_unsupported`: the launcher cannot deliver to the operating system
+    user the holder runs as.
+  - `issuer_unavailable`: the launcher tried to obtain an assertion and the
+    issuer was unreachable or refused.
+- A launcher MAY set the signal only when it deliberately does not set
+  `CLAGENTIC_IDENTITY_DIR`. A launcher that sets `CLAGENTIC_IDENTITY_DIR` MUST
+  NOT set the signal, and MUST remove an inherited one from the child
+  environment.
+- Setting the signal is optional. A launcher or a consumer that does not know
+  it is conformant.
+
 ## 7. Local consumers
 
 A consumer that reads the assertion from the delivery directory:
@@ -300,6 +320,23 @@ A consumer that reads the assertion from the delivery directory:
    `roles` as a ceiling: a role not in the list is never granted; being in the
    list is necessary, not sufficient.
 4. Records which issuer and grade produced the attribution.
+
+The signal of section 6.1 is read only when `CLAGENTIC_IDENTITY_DIR` is unset
+or empty:
+
+- If `CLAGENTIC_IDENTITY_DIR` is set and non-empty, the signal is ignored and
+  section 6 applies unchanged.
+- If `CLAGENTIC_IDENTITY_DIR` is unset or empty and
+  `CLAGENTIC_IDENTITY_UNAVAILABLE` is exactly one known reason code, the
+  result is **withheld, reason `<code>`**.
+- Any other combination (an unknown code, a value that breaks the grammar, an
+  empty value) is plain absent: no reason is attached.
+
+In every case the verification outcome of an unset or empty directory is
+`identity_dir_missing`, so no failure code changes. The reason is an extra
+attribute the consumer MAY report, for example `identity withheld:
+owner_unsupported`. The consumer refuses exactly as it does for an absent
+identity.
 
 The consumer's configuration lists its trusted issuers and, per issuer, an
 optional explicit `jwks` locator (section 5).
@@ -394,7 +431,10 @@ complete peer-side validation contract.
 
 The vector sets in [`vectors/`](../vectors/README.md) are the test of a
 verifier. `v1` covers every code in section 4.1, both algorithms, a child
-assertion, and peer-mode tokens; `v2` adds the `driven` origin. A verifier is
+assertion, and peer-mode tokens; `v2` adds the `driven` origin and the
+delivery-signal cases of section 6.1. The delivery-signal vectors apply to any
+verifier, whatever majors it implements, because the signal is independent of
+`cia`. A verifier is
 conformant when it reproduces every expected outcome of the sets of the
 majors it implements. The vectors are signed with throwaway keys; the
 private halves are never published, only the public JWKS the vectors verify
@@ -430,6 +470,12 @@ in their own tests.
   another major.
 - Failure codes are stable identifiers. Adding a code is a MINOR change only if
   the situation previously produced `claims_invalid` or `malformed`.
+- Contract 2.1.0 is a MINOR change: the optional delivery signal of section
+  6.1 is not a claim, changes no `cia`, adds no failure code (the outcome stays
+  `identity_dir_missing`) and leaves the schema `$id`s unchanged. The reason
+  codes form a closed set; adding a code later is a MINOR change, and a
+  consumer treats a code it does not know as plain absent. The signal is
+  independent of `cia`: a major 1 verifier MAY implement it too.
 
 ## 12. Security considerations
 
@@ -443,3 +489,8 @@ in their own tests.
   `kid`, exact `kty`/`crv` match, and ignoring key-carrying headers.
 - Bound the damage of a leaked assertion with short lifetimes, the `dir`
   binding (local) and the `aud` rule (remote).
+- The unavailability signal (section 6.1) is unauthenticated and informational.
+  It grants nothing, cannot substitute for an assertion, and MUST NOT change
+  any authorization decision: a consumer refuses exactly as it would for an
+  absent identity. Whatever can set the environment can forge it, which only
+  misattributes why an identity is missing.

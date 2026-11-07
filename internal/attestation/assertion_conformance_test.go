@@ -5,6 +5,7 @@ package attestation
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -90,6 +91,8 @@ func materializeLayout(t *testing.T, l vectorLayout) (envSet bool, dir string) {
 	switch l.Dir {
 	case "unset":
 		return false, ""
+	case "empty":
+		return true, ""
 	case "absent":
 		return true, filepath.Join(t.TempDir(), "does-not-exist")
 	}
@@ -134,11 +137,11 @@ func TestVendoredVectorsMatchProvider(t *testing.T) {
 	runVectors(t, m, keys, 1)
 }
 
-// TestVendoredV2VectorsMatchProvider runs the contract 2.0.0 supplement through
+// TestVendoredV2VectorsMatchProvider runs the contract 2.1.0 supplement through
 // the provider as configured in production, accepting majors 1 and 2.
 func TestVendoredV2VectorsMatchProvider(t *testing.T) {
 	m, keys := loadVectorsFrom(t, "../../vectors/v2")
-	if m.ContractVersion != "2.0.0" || m.Cia != supportedContractMajor {
+	if m.ContractVersion != "2.1.0" || m.Cia != supportedContractMajor {
 		t.Fatalf("vectors are contract %s cia %d; this verifier supports up to cia %d", m.ContractVersion, m.Cia, supportedContractMajor)
 	}
 	runVectors(t, m, keys, 0)
@@ -154,9 +157,22 @@ func runVectors(t *testing.T, m vectorManifest, keys vectorKeys, maxMajor int64)
 			switch v.Kind {
 			case "delivery":
 				envSet, dir := materializeLayout(t, *v.Layout)
-				if !envSet {
-					// The provider treats an unset variable as "no assertion", which
-					// the contract reports as identity_dir_missing.
+				if !envSet || dir == "" {
+					// Unset and empty go through the production provider, which
+					// answers ErrNoIdentity; the contract reports that as
+					// identity_dir_missing. The provider does not read the optional
+					// unavailability signal, so the vectors' withheld reason is not
+					// checked here.
+					t.Setenv(IdentityDirEnv, dir)
+					if !envSet {
+						if err := os.Unsetenv(IdentityDirEnv); err != nil {
+							t.Fatal(err)
+						}
+					}
+					_, rerr := (&assertionProvider{}).Resolve(context.Background())
+					if !errors.Is(rerr, ErrNoIdentity) {
+						t.Fatalf("provider returned %v for an unset or empty %s, want ErrNoIdentity", rerr, IdentityDirEnv)
+					}
 					code = CodeDirMissing
 					break
 				}

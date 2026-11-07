@@ -52,6 +52,9 @@ type layout struct {
 	DirMode string `json:"dir_mode,omitempty"`
 	File    string `json:"file,omitempty"`
 	Content string `json:"content,omitempty"`
+	// Unavailable is the value of CLAGENTIC_IDENTITY_UNAVAILABLE; nil means the
+	// variable is not set, which an empty string is not.
+	Unavailable *string `json:"unavailable,omitempty"`
 }
 
 type expectation struct {
@@ -59,6 +62,8 @@ type expectation struct {
 	Error string `json:"error,omitempty"`
 	Actor string `json:"actor,omitempty"`
 	Grade string `json:"grade,omitempty"`
+	// Withheld is the reason code a consumer may attach to identity_dir_missing.
+	Withheld string `json:"withheld,omitempty"`
 }
 
 type vector struct {
@@ -360,6 +365,24 @@ func verifyTokenUpTo(tr trust, v vector, maxCia int64) (outcome, string) {
 		out.Actor = act["sub"].(string)
 	}
 	return out, ""
+}
+
+var (
+	reReason     = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
+	knownReasons = map[string]bool{"owner_unsupported": true, "issuer_unavailable": true}
+)
+
+// withheldReason implements section 7's reading of the section 6.1 signal. It
+// returns the reason code, or "" for plain absent or when the directory
+// variable is set and non-empty (the signal is then ignored).
+func withheldReason(envSet bool, dir string, unavailable *string) string {
+	if (envSet && dir != "") || unavailable == nil {
+		return ""
+	}
+	if !reReason.MatchString(*unavailable) || !knownReasons[*unavailable] {
+		return ""
+	}
+	return *unavailable
 }
 
 // deliver implements section 6: it returns the file contents or a failure code.

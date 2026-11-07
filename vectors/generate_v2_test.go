@@ -58,6 +58,13 @@ func TestRegenerateVectorsV2(t *testing.T) {
 	}
 	okE := func(actor, grade string) expectation { return expectation{OK: true, Actor: actor, Grade: grade} }
 	errE := func(code string) expectation { return expectation{Error: code} }
+	withheldE := func(reason string) expectation {
+		return expectation{Error: "identity_dir_missing", Withheld: reason}
+	}
+	sp := func(s string) *string { return &s }
+	d := func(id, desc string, l layout, e expectation) vector {
+		return vector{ID: id, Description: desc, Kind: "delivery", Layout: &l, Expect: e}
+	}
 	L, P := audienceLocal, audiencePeer
 
 	vs := []vector{
@@ -82,10 +89,27 @@ func TestRegenerateVectorsV2(t *testing.T) {
 			ed.token(with(sessionV2(), "origin", "cron")), errE("claims_invalid")),
 		tokV("v2-contract-version-unsupported", "Validly signed, cia is 3.", L, genDirA,
 			ed.token(with(sessionV2(), "cia", 3)), errE("contract_version_unsupported")),
+
+		d("v2-delivery-withheld-owner-unsupported", "CLAGENTIC_IDENTITY_DIR is unset and the signal is owner_unsupported: withheld, reason owner_unsupported.",
+			layout{Dir: "unset", Unavailable: sp("owner_unsupported")}, withheldE("owner_unsupported")),
+		d("v2-delivery-withheld-issuer-unavailable", "CLAGENTIC_IDENTITY_DIR is unset and the signal is issuer_unavailable: withheld, reason issuer_unavailable.",
+			layout{Dir: "unset", Unavailable: sp("issuer_unavailable")}, withheldE("issuer_unavailable")),
+		d("v2-delivery-withheld-empty-dir", "CLAGENTIC_IDENTITY_DIR is set to the empty string and the signal is owner_unsupported: the empty directory counts as unset.",
+			layout{Dir: "empty", Unavailable: sp("owner_unsupported")}, withheldE("owner_unsupported")),
+		d("v2-delivery-signal-unknown-code", "The signal holds a code outside the closed set: plain absent, no reason.",
+			layout{Dir: "unset", Unavailable: sp("some_other_reason")}, errE("identity_dir_missing")),
+		d("v2-delivery-signal-bad-grammar", "The signal breaks the grammar (upper case and whitespace): plain absent, no reason.",
+			layout{Dir: "unset", Unavailable: sp("Owner Unsupported")}, errE("identity_dir_missing")),
+		d("v2-delivery-signal-list", "The signal holds a list of two known codes: a list is bad grammar, plain absent.",
+			layout{Dir: "unset", Unavailable: sp("owner_unsupported,issuer_unavailable")}, errE("identity_dir_missing")),
+		d("v2-delivery-signal-empty-value", "The signal is set to the empty string: plain absent, no reason.",
+			layout{Dir: "unset", Unavailable: sp("")}, errE("identity_dir_missing")),
+		d("v2-delivery-signal-ignored-with-dir", "A valid delivery directory and the signal both set: the signal is ignored and delivery verifies.",
+			layout{Dir: "present", DirMode: "0700", File: "regular", Content: "header.payload.signature", Unavailable: sp("owner_unsupported")}, expectation{OK: true}),
 	}
 
 	var m manifest
-	m.ContractVersion = "2.0.0"
+	m.ContractVersion = "2.1.0"
 	m.Cia = 2
 	m.Trust.Issuers = []trustedIssuer{{Iss: genIssuer}}
 	m.JWKSFiles = map[string]string{genIssuer: "jwks.json"}
