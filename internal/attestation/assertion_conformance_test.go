@@ -5,6 +5,7 @@ package attestation
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -157,10 +158,21 @@ func runVectors(t *testing.T, m vectorManifest, keys vectorKeys, maxMajor int64)
 			case "delivery":
 				envSet, dir := materializeLayout(t, *v.Layout)
 				if !envSet || dir == "" {
-					// The provider treats an unset or empty variable as "no assertion",
-					// which the contract reports as identity_dir_missing. It does not
-					// read the optional unavailability signal, so the vectors'
-					// withheld reason is not checked here.
+					// Unset and empty go through the production provider, which
+					// answers ErrNoIdentity; the contract reports that as
+					// identity_dir_missing. The provider does not read the optional
+					// unavailability signal, so the vectors' withheld reason is not
+					// checked here.
+					t.Setenv(IdentityDirEnv, dir)
+					if !envSet {
+						if err := os.Unsetenv(IdentityDirEnv); err != nil {
+							t.Fatal(err)
+						}
+					}
+					_, rerr := (&assertionProvider{}).Resolve(context.Background())
+					if !errors.Is(rerr, ErrNoIdentity) {
+						t.Fatalf("provider returned %v for an unset or empty %s, want ErrNoIdentity", rerr, IdentityDirEnv)
+					}
 					code = CodeDirMissing
 					break
 				}
