@@ -54,6 +54,13 @@ type Config struct {
 	// reports that minting is not configured. Absent means serve refuses.
 	Identity IdentityConfig `yaml:"identity,omitempty"`
 
+	// MintRecordPath is the OPTIONAL file `gatekeeper mint` appends one JSON
+	// record per mint to, success or refusal (docs/SETUP.md, "The mint
+	// record"). Absent means no record is written and mint behaves exactly as
+	// without it. It must be absolute: a relative path would resolve against
+	// whatever directory mint was started in.
+	MintRecordPath string `yaml:"mint_record_path,omitempty"`
+
 	// identityPresent records that the decoder produced an identity section,
 	// which is what makes it configured; no field inside it can stand in for
 	// that. It is read from the decoded document, so a section that arrives
@@ -497,6 +504,9 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("config %s: config_schema_version %d is newer than the %d this build reads; upgrade gatekeeper or lower the value", path, cfg.SchemaVersion, SupportedSchemaVersion)
 	}
 	if err := cfg.Attestation.validate(); err != nil {
+		return nil, fmt.Errorf("config %s: %w", path, err)
+	}
+	if err := CheckAbsPath("mint_record_path", cfg.MintRecordPath); err != nil {
 		return nil, fmt.Errorf("config %s: %w", path, err)
 	}
 	// Presence and the removed-key scan both read what the decoder produced, so

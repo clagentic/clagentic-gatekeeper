@@ -939,7 +939,75 @@ misbehaved or silently did nothing; each is now refused, naming the key or flag:
 - `config_schema_version` was never read. A value above 2 is now refused; an
   unset or lower value loads as before;
 - an `identity` section that arrives through a YAML merge key or anchor is now
-  seen as present; before, only a literal top-level `identity:` key was.
+  seen as present; before, only a literal top-level `identity:` key was;
+- a relative `mint_record_path` (see below).
+
+## The mint record
+
+When a GitHub App write is denied, the question is what the App was actually
+granted. `gatekeeper mint` can append one JSON record per mint, success or
+failure, to a file, so the answer is there afterwards.
+
+It is **off by default**. Set `mint_record_path` in `config.yaml` to an absolute
+path to turn it on; with the key absent no file is written and `mint` behaves
+exactly as before (same stdout, stderr and exit code). A relative path is refused
+at load, naming the key.
+
+```yaml
+mint_record_path: /var/lib/gatekeeper/mints.jsonl
+```
+
+The file is created `0600` and opened for append; each record is one line,
+written in a single call. The parent directory must exist. Gatekeeper does not
+rotate the file: rotate or truncate it from outside (logrotate with
+`copytruncate`, or move it aside and let the next mint create a new one).
+
+A record that cannot be written never changes the mint: the token, the error and
+the exit code are the mint's own, and stderr carries a line
+`mint record not written: ...` naming the file.
+
+### Fields
+
+| Field | Meaning |
+|-------|---------|
+| `time` | RFC 3339, UTC |
+| `role` | the role requested |
+| `caller` | the attested identity: `subject`, `source`, and `grade` when it came from an assertion; absent when no identity resolved |
+| `app_slug` | the App slug read from the broker |
+| `installation_id` | the installation id read from the broker |
+| `requested_repositories` | the repositories the token was scoped to (`[]` for all) |
+| `requested_permissions` | the permissions gatekeeper asked GitHub for |
+| `outcome` | `ok` or `error` |
+| `failure_category` | on error only, see below |
+| `status` | the HTTP status GitHub answered with |
+| `request_id` | GitHub's `X-GitHub-Request-Id`, the handle GitHub support looks a call up by |
+| `permissions` | on success, the permissions GitHub actually granted |
+| `repository_selection` | on success, `all` or `selected`, as GitHub returned it |
+| `expires_at` | on success, when the token expires |
+| `token_fingerprint` | on success, the first 16 hex characters of the SHA-256 of the token |
+
+Fields that do not apply to a mint are left out. A refusal records how far the
+mint got: an entitlement refusal has the caller but no installation id.
+
+`failure_category` is one of:
+
+| Category | Meaning |
+|----------|---------|
+| `repo_not_in_installation` | GitHub refused a requested repository as not covered by the installation (HTTP 422) |
+| `github_api` | any other non-2xx answer from GitHub; `status` and `request_id` say which |
+| `transport` | GitHub was not reached, or its answer was not read; there is no status |
+| `broker` | an App id, installation id, key or slug could not be read from the broker, or was unusable |
+| `entitlement` | the attestation or the role refused, before any GitHub call |
+| `config` | the request or the configuration cannot mint: unknown role, no App-slug binding, slug mismatch, a refused `--repo` |
+
+### What is never recorded
+
+A record has no field for the token, the App private key, the signed JWT or any
+broker secret, so none can appear. The fingerprint is a prefix of a hash, not
+the token and not recoverable from it; it lets you tell whether two records
+describe the same token. Treat the file as operational data anyway: it names
+callers, roles and installations. It covers `gatekeeper mint` only; `mint-a2a`
+keeps its own audit line.
 
 ## Summary
 

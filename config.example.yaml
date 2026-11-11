@@ -41,6 +41,14 @@ token:
   # Installation token lifetime. GitHub caps at 1h.
   ttl_minutes: 60
 
+# Mint record (OPTIONAL, off by default). When set, `gatekeeper mint` appends
+# one JSON line per mint, success or failure, to this file: the installation id,
+# the permissions and repository selection GitHub returned, GitHub's request id
+# and a token fingerprint, never the token. Must be an absolute path; a relative
+# one is refused at load. The file is created 0600 and is not rotated by
+# gatekeeper. See docs/SETUP.md, "The mint record".
+# mint_record_path: /var/lib/gatekeeper/mints.jsonl
+
 # Attestation-provider chain: resolves the ATTESTED invoking identity, in
 # order (0) identity assertion (when configured) -> (a) configured -> (b)
 # sidecar(s) -> (c) OS-user fallback (deprecated; appended only when
