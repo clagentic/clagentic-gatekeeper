@@ -9,8 +9,10 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -125,6 +127,48 @@ func newDefs(t *testing.T, dir string) *Definitions {
 	}
 	t.Cleanup(func() { d.Close() })
 	return d
+}
+
+// failer is the part of testing.TB the guard helpers use, so a test can hand
+// them a recorder and watch them fail.
+type failer interface {
+	Helper()
+	Fatalf(format string, args ...any)
+	Skipf(format string, args ...any)
+}
+
+// requireNoEntries fails when dir cannot be listed or is not empty. A listing
+// that errors proves nothing about what the directory holds, so it is a failure
+// and never a pass.
+func requireNoEntries(t failer, dir, what string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("%s: cannot list %s: %v", what, dir, err)
+		return
+	}
+	if len(entries) != 0 {
+		t.Fatalf("%s: %s holds %v", what, dir, entries)
+	}
+}
+
+// runProbe runs a probe child and returns the first line it printed. A probe
+// that could not be started skips, naming the precondition that is missing; a
+// probe that started and failed is a failure, because the thing under test may
+// be what broke it.
+func runProbe(t failer, cmd *exec.Cmd, precondition string) string {
+	t.Helper()
+	raw, err := cmd.Output()
+	if err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) {
+			t.Fatalf("the probe ran and failed: %v: %s", err, exit.Stderr)
+			return ""
+		}
+		t.Skipf("%s: %v", precondition, err)
+		return ""
+	}
+	return strings.TrimSpace(strings.SplitN(string(raw), "\n", 2)[0])
 }
 
 func selfPeer(pid int32) Peer {

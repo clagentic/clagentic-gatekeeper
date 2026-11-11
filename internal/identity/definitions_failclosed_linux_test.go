@@ -1,6 +1,7 @@
 package identity
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -60,14 +61,30 @@ func TestUnreadableRegularDefinitionRefusesStartNamingFile(t *testing.T) {
 		cmd := exec.Command(bin, "-test.run=^TestDefinitionsProbeProcess$")
 		cmd.Env = append(os.Environ(), defsProbeEnv+"="+dir)
 		runAsUID(cmd, 65534)
-		raw, err := cmd.Output()
-		if err != nil {
-			t.Skipf("cannot run a probe as a non-root uid: %v", err)
-		}
-		out = strings.TrimSpace(strings.SplitN(string(raw), "\n", 2)[0])
+		out = runProbe(t, cmd, "cannot start a process as a non-root uid")
 	}
 	if !strings.HasPrefix(out, "refused") || !strings.Contains(out, "example-sealed.md") {
 		t.Fatalf("got %q, want a refusal naming example-sealed.md", out)
+	}
+}
+
+// open(2) of a unix socket fails with ENXIO, which is not a regular file like a
+// FIFO or a link is not: the entry is skipped at start and refused when named,
+// never a reason to refuse the start.
+func TestUnixSocketEntryInDefinitionsDirIsSkippedAtStart(t *testing.T) {
+	dir := shortSocketDir(t)
+	writeDefinition(t, dir, "example-ok", "builder")
+	leaveStaleSocket(t, filepath.Join(dir, "example-sock.md"))
+	d, err := NewDefinitions(dir)
+	if err != nil {
+		t.Fatalf("a socket entry stopped the start: %v", err)
+	}
+	t.Cleanup(func() { d.Close() })
+	if _, err := d.Load("example-ok"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Load("example-sock"); !errors.Is(err, ErrUnknownDefinition) {
+		t.Fatalf("naming the socket entry: %v", err)
 	}
 }
 

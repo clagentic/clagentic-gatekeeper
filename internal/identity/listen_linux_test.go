@@ -9,6 +9,8 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+
+	"github.com/clagentic/clagentic-gatekeeper/internal/config"
 )
 
 const probeEnvPath = "IDENTITY_TEST_PROBE_PATH"
@@ -82,11 +84,7 @@ func (p *prober) connect(target string) string {
 	cmd.ExtraFiles = []*os.File{p.fd}
 	cmd.Env = append(os.Environ(), probeEnvPath+"="+viaFD+"/"+rel)
 	runAsUID(cmd, 65534)
-	out, err := cmd.Output()
-	if err != nil {
-		p.t.Fatalf("probe could not run as uid 65534: %v", err)
-	}
-	return strings.TrimSpace(strings.SplitN(string(out), "\n", 2)[0])
+	return runProbe(p.t, cmd, "cannot start a process as uid 65534")
 }
 
 func setHook(t *testing.T, f func(privateDir, tempSocket string)) {
@@ -265,13 +263,73 @@ func TestListenLeavesNoPrivateDirOnSuccessOrFailure(t *testing.T) {
 		t.Errorf("after refusal: %v", got)
 	}
 
-	// A final name the filesystem rejects fails the link after the bind, a
-	// different cleanup path from an existing target.
+	// A path over the socket length limit is refused before anything is created.
 	long := shortSocketDir(t)
 	if _, err := Listen(filepath.Join(long, strings.Repeat("x", 300)), 0o600); err == nil {
 		t.Fatal("an over-long final name was accepted")
 	}
-	if got := dirEntries(t, long); len(got) != 0 {
-		t.Errorf("after a link failure: %v", got)
+	requireNoEntries(t, long, "after an over-long path")
+
+	// A failure after the bind is a different cleanup path from a refusal before
+	// it: the staging socket vanishes, so the step that sets its mode fails.
+	failed := shortSocketDir(t)
+	setHook(t, func(_, tmp string) { _ = os.Remove(tmp) })
+	if _, err := Listen(filepath.Join(failed, "s.sock"), 0o600); err == nil {
+		t.Fatal("a vanished staging socket was accepted")
 	}
+	requireNoEntries(t, failed, "after a failure past the bind")
+}
+
+// A socket_path within the limit binds whatever the depth of its directory: the
+// staging step adds nothing to the length the kernel sees. The path here is
+// exactly at the limit, so any added staging bytes would push bind over it.
+func TestListenBindsAPathAtTheSunPathLimitInADeepDirectory(t *testing.T) {
+	dir := shortSocketDir(t)
+	for len(dir)+len("/s.sock") < config.MaxSocketPathBytes-40 {
+		dir = filepath.Join(dir, strings.Repeat("d", 30))
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	name := strings.Repeat("n", config.MaxSocketPathBytes-len(dir)-1)
+	path := filepath.Join(dir, name)
+	if len(path) != config.MaxSocketPathBytes {
+		t.Fatalf("test setup: path is %d bytes, want %d", len(path), config.MaxSocketPathBytes)
+	}
+	l, err := Listen(path, 0o600)
+	if err != nil {
+		t.Fatalf("a %d-byte socket path did not bind: %v", len(path), err)
+	}
+	defer l.Close()
+	accepted := make(chan error, 1)
+	go func() {
+		c, err := l.Accept()
+		if err == nil {
+			c.Close()
+		}
+		accepted <- err
+	}()
+	c, err := net.Dial("unix", path)
+	if err != nil {
+		t.Fatalf("the bound socket cannot be reached: %v", err)
+	}
+	c.Close()
+	if err := <-accepted; err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Listen refuses a path over the limit, and one that is not absolute, naming it,
+// before it creates anything.
+func TestListenRefusesAnUnusablePathNamingItAndCreatesNothing(t *testing.T) {
+	dir := shortSocketDir(t)
+	for name, path := range map[string]string{
+		"over the limit": filepath.Join(dir, strings.Repeat("n", config.MaxSocketPathBytes)),
+		"relative":       "relative.sock",
+	} {
+		if _, err := Listen(path, 0o600); err == nil || !strings.Contains(err.Error(), path) {
+			t.Errorf("%s: got %v, want a refusal naming %q", name, err, path)
+		}
+	}
+	requireNoEntries(t, dir, "after refused paths")
 }
