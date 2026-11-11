@@ -301,16 +301,9 @@ func runMint(args []string) error {
 
 	var repos []string
 	if *repo != "" {
-		owner, bare, err := parseRepo(*repo)
+		bare, err := repoForMint(*repo, cfg.GitHub.Owner)
 		if err != nil {
-			return fmt.Errorf("--repo %q: %w", *repo, err)
-		}
-		// github.owner is the owner every target repository belongs to: an
-		// installation token is minted for that org, so a --repo naming another
-		// owner would be silently reduced to its bare name and minted against
-		// the wrong org's repository of the same name.
-		if owner != "" && cfg.GitHub.Owner != "" && !strings.EqualFold(owner, cfg.GitHub.Owner) {
-			return fmt.Errorf("--repo %q: owner %q is not github.owner %q", *repo, owner, cfg.GitHub.Owner)
+			return err
 		}
 		repos = []string{bare}
 	}
@@ -517,6 +510,23 @@ func runMintA2A(args []string) error {
 func parseRepoName(s string) (string, error) {
 	_, name, err := parseRepo(s)
 	return name, err
+}
+
+// repoForMint returns the bare repository name a token request names. The
+// configured github.owner is the owner every target repository belongs to: an
+// installation token is minted for that org, so a --repo naming another owner
+// would otherwise be reduced to its bare name and minted against the wrong
+// org's repository of the same name. An empty owner, or a bare name, is not
+// checked.
+func repoForMint(flagValue, configuredOwner string) (string, error) {
+	owner, bare, err := parseRepo(flagValue)
+	if err != nil {
+		return "", fmt.Errorf("--repo %q: %w", flagValue, err)
+	}
+	if owner != "" && configuredOwner != "" && !strings.EqualFold(owner, configuredOwner) {
+		return "", fmt.Errorf("--repo %q: owner %q is not github.owner %q", flagValue, owner, configuredOwner)
+	}
+	return bare, nil
 }
 
 // parseRepo is parseRepoName that also returns the owner segment, empty for a
