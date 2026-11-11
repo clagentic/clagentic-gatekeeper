@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/clagentic/clagentic-gatekeeper/internal/config"
 	"github.com/clagentic/clagentic-gatekeeper/internal/hook"
 	"github.com/clagentic/clagentic-gatekeeper/internal/identity"
 )
@@ -32,22 +31,11 @@ const (
 
 // explicitSocket resolves the issuer socket for a client that must not guess:
 // the flag, else identity.socket_path from the config, else an error. Unlike
-// socketFor it has no built-in default, so a hook or a registration can never
-// quietly talk to a socket nobody named.
+// issue-session it has no built-in default, so a hook or a registration can
+// never quietly talk to a socket nobody named. Both follow the order and the
+// path check of pickSocket.
 func explicitSocket(flagValue, cfgPath string) (string, error) {
-	if flagValue != "" {
-		return flagValue, nil
-	}
-	if cfgPath != "" {
-		cfg, err := config.Load(cfgPath)
-		if err != nil {
-			return "", fmt.Errorf("load config: %w", err)
-		}
-		if cfg.Identity.SocketPath != "" {
-			return cfg.Identity.SocketPath, nil
-		}
-	}
-	return "", errors.New("no socket: pass --socket, or --config with identity.socket_path set")
+	return resolveSocket(flagValue, cfgPath, "")
 }
 
 // runHook dispatches `gatekeeper hook <adapter> ...`. It returns the process

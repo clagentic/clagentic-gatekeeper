@@ -51,9 +51,9 @@ func main() {
 		}
 	case "hook":
 		os.Exit(runHook(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
-	case "hooks-install", "render-agent":
+	case "hooks-install", "render-agent", "self-check":
 		run := map[string]func([]string, io.Writer) error{
-			"hooks-install": runHooksInstall, "render-agent": runRenderAgent,
+			"hooks-install": runHooksInstall, "render-agent": runRenderAgent, "self-check": runSelfCheck,
 		}[os.Args[1]]
 		if err := run(os.Args[2:], os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -74,8 +74,9 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  mint --role <role> [--repo <owner/name>] [--config <path>] [--json]")
 	fmt.Fprintln(os.Stderr, "  mint-a2a --audience <audience> [--config <path>] [--json]")
 	fmt.Fprintln(os.Stderr, "  serve [--socket <path>] [--config <path>]   (linux only)")
-	fmt.Fprintln(os.Stderr, "  issue-session [--socket <path>] [--definition <name>] [--origin <origin>] [--runtime] [--runtime-id <id>] [--runtime-version <v>] [--json]")
-	fmt.Fprintln(os.Stderr, "  issue-child [--socket <path>] [--parent-token-file <path>] --agent-type <name> --agent-id <id> [--json]")
+	fmt.Fprintln(os.Stderr, "  issue-session [--socket <path>] [--config <path>] [--definition <name>] [--origin <origin>] [--runtime] [--runtime-id <id>] [--runtime-version <v>] [--json]")
+	fmt.Fprintln(os.Stderr, "  issue-child [--socket <path>] [--config <path>] [--parent-token-file <path>] --agent-type <name> --agent-id <id> [--json]")
+	fmt.Fprintln(os.Stderr, "  self-check [--socket <path>] [--config <path>] [--jwks-path <path>]   (socket reachable, key set file identical to the served key set)")
 	fmt.Fprintln(os.Stderr, "  hook claude-code <session-start|subagent-start|pre-tool-use-bash|subagent-stop|user-prompt-submit> --socket <path> --state-dir <dir> [--mode warn|enforce]   (reads the hook JSON on stdin)")
 	fmt.Fprintln(os.Stderr, "  hook process --socket <path> [--definition <name>] [--origin <origin>]   (prints "+hookEnvName+"=<dir> for a launcher's child)")
 	fmt.Fprintln(os.Stderr, "  hooks-install --runtime claude-code --settings <path> --socket <path> [--mode warn|enforce] [--remove] [--dry-run]")
@@ -300,9 +301,16 @@ func runMint(args []string) error {
 
 	var repos []string
 	if *repo != "" {
-		bare, err := parseRepoName(*repo)
+		owner, bare, err := parseRepo(*repo)
 		if err != nil {
 			return fmt.Errorf("--repo %q: %w", *repo, err)
+		}
+		// github.owner is the owner every target repository belongs to: an
+		// installation token is minted for that org, so a --repo naming another
+		// owner would be silently reduced to its bare name and minted against
+		// the wrong org's repository of the same name.
+		if owner != "" && cfg.GitHub.Owner != "" && !strings.EqualFold(owner, cfg.GitHub.Owner) {
+			return fmt.Errorf("--repo %q: owner %q is not github.owner %q", *repo, owner, cfg.GitHub.Owner)
 		}
 		repos = []string{bare}
 	}
@@ -507,25 +515,32 @@ func runMintA2A(args []string) error {
 //   - "owner/name" (exactly one '/') returns the name segment.
 //   - Any other form (leading '/', trailing '/', multiple '/') is rejected.
 func parseRepoName(s string) (string, error) {
+	_, name, err := parseRepo(s)
+	return name, err
+}
+
+// parseRepo is parseRepoName that also returns the owner segment, empty for a
+// bare name.
+func parseRepo(s string) (owner, name string, err error) {
 	if s == "" {
-		return "", fmt.Errorf("repository name must not be empty")
+		return "", "", fmt.Errorf("repository name must not be empty")
 	}
 	idx := strings.IndexByte(s, '/')
 	if idx == -1 {
 		// Bare name — no owner prefix, pass through.
-		return s, nil
+		return "", s, nil
 	}
 	// Ensure exactly one '/'.
 	if strings.Count(s, "/") != 1 {
-		return "", fmt.Errorf("repository must be 'owner/name' or bare 'name'; got %q", s)
+		return "", "", fmt.Errorf("repository must be 'owner/name' or bare 'name'; got %q", s)
 	}
-	owner := s[:idx]
-	name := s[idx+1:]
+	owner = s[:idx]
+	name = s[idx+1:]
 	if owner == "" {
-		return "", fmt.Errorf("owner segment must not be empty in %q", s)
+		return "", "", fmt.Errorf("owner segment must not be empty in %q", s)
 	}
 	if name == "" {
-		return "", fmt.Errorf("name segment must not be empty in %q", s)
+		return "", "", fmt.Errorf("name segment must not be empty in %q", s)
 	}
-	return name, nil
+	return owner, name, nil
 }
