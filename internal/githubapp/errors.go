@@ -61,6 +61,45 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("GitHub API returned %d for POST %s (request id %s): %s", e.Status, e.Path, e.RequestID, e.Body)
 }
 
+// TransportError is a failure to reach GitHub or to read its answer: no HTTP
+// status was received, or the body could not be read.
+type TransportError struct {
+	Op   string // what was being done, e.g. "call GitHub API"
+	Path string
+	Err  error
+}
+
+func (e *TransportError) Error() string {
+	return fmt.Sprintf("%s POST %s: %v", e.Op, e.Path, e.Err)
+}
+
+func (e *TransportError) Unwrap() error { return e.Err }
+
+// ResponseError is a 2xx answer from GitHub that gatekeeper could not use: the
+// body was not the expected JSON or a field in it did not parse. GitHub did
+// answer, so Status and RequestID are known.
+type ResponseError struct {
+	Op        string // what failed, e.g. "parse response"
+	Status    int
+	RequestID string // NoRequestID when GitHub sent none
+	Err       error
+}
+
+func (e *ResponseError) Error() string { return fmt.Sprintf("%s: %v", e.Op, e.Err) }
+
+func (e *ResponseError) Unwrap() error { return e.Err }
+
+// NoRequestID is the placeholder an error carries when GitHub sent no
+// X-GitHub-Request-Id.
+const NoRequestID = "none"
+
+func requestIDOrNone(id string) string {
+	if id == "" {
+		return NoRequestID
+	}
+	return id
+}
+
 // excerpt flattens whitespace and caps a response body.
 func excerpt(body []byte) string {
 	s := strings.Join(strings.Fields(string(body)), " ")

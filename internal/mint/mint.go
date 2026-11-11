@@ -32,6 +32,7 @@ import (
 	"github.com/clagentic/clagentic-gatekeeper/internal/attestation"
 	"github.com/clagentic/clagentic-gatekeeper/internal/broker"
 	"github.com/clagentic/clagentic-gatekeeper/internal/githubapp"
+	"github.com/clagentic/clagentic-gatekeeper/internal/mintrecord"
 	"github.com/clagentic/clagentic-gatekeeper/internal/roles"
 )
 
@@ -187,6 +188,14 @@ type Service struct {
 	// is never called for any other identity source, so a deployment without
 	// assertions sees no new output.
 	Audit func(AuditEvent)
+
+	// Record, when set, receives one mintrecord.Record per mint, successful or
+	// refused, after the outcome is known. It carries no token material. A
+	// consumer that leaves it nil sees no change at all.
+	Record func(mintrecord.Record)
+
+	// Now supplies the record's time. Nil means time.Now.
+	Now func() time.Time
 }
 
 // AuditEvent records a mint decision for an assertion identity.
@@ -254,14 +263,25 @@ func (s *Service) MintAttributed(ctx context.Context, domain attestation.Domain,
 // attested identity as soon as one resolves, whether or not the mint then
 // succeeds.
 func (s *Service) mintForDomain(ctx context.Context, domain attestation.Domain, roleName string, repos []string, resolved *attestation.Identity) (githubapp.Token, error) {
+	var tr trace
+	token, err := s.mintCore(ctx, domain, roleName, repos, resolved, &tr)
+	if s.Record != nil {
+		s.Record(s.buildRecord(roleName, repos, &tr, token, err))
+	}
+	return token, err
+}
+
+// mintCore is the mint itself. It notes in tr what a record needs as soon as it
+// is known, so a refusal part-way through still records how far it got.
+func (s *Service) mintCore(ctx context.Context, domain attestation.Domain, roleName string, repos []string, resolved *attestation.Identity, tr *trace) (githubapp.Token, error) {
 	role, err := s.Roles.Resolve(roleName)
 	if err != nil {
-		return githubapp.Token{}, err
+		return githubapp.Token{}, categorize(mintrecord.CategoryConfig, err)
 	}
 
 	binding, ok := s.Bindings[roleName]
 	if !ok {
-		return githubapp.Token{}, fmt.Errorf("no broker binding configured for role %q", roleName)
+		return githubapp.Token{}, categorize(mintrecord.CategoryConfig, fmt.Errorf("no broker binding configured for role %q", roleName))
 	}
 
 	// Gap 1: entitlement — attested identity -> role. Resolved and checked
@@ -278,17 +298,18 @@ func (s *Service) mintForDomain(ctx context.Context, domain attestation.Domain, 
 	domainResolver := s.DomainResolver
 	if domainResolver == nil {
 		if s.AttestationResolver == nil {
-			return githubapp.Token{}, fmt.Errorf("mint role %q: no attestation resolver configured; cannot verify entitlement", roleName)
+			return githubapp.Token{}, categorize(mintrecord.CategoryConfig, fmt.Errorf("mint role %q: no attestation resolver configured; cannot verify entitlement", roleName))
 		}
 		domainResolver = &attestation.DomainResolver{Chain: s.AttestationResolver}
 	}
 	identity, err := domainResolver.Resolve(ctx, domain)
 	if err != nil {
-		return githubapp.Token{}, fmt.Errorf("mint role %q: resolve attested identity: %w", roleName, err)
+		return githubapp.Token{}, categorize(mintrecord.CategoryEntitlement, fmt.Errorf("mint role %q: resolve attested identity: %w", roleName, err))
 	}
 	if resolved != nil {
 		*resolved = identity
 	}
+	tr.identity = &identity
 	if identity.Source == attestation.SourceAssertion {
 		// An assertion's roles are a ceiling the issuer set, so they replace
 		// entitled_identities as the entitlement; the list only narrows.
@@ -301,46 +322,49 @@ func (s *Service) mintForDomain(ctx context.Context, domain attestation.Domain, 
 			s.Audit(ev)
 		}
 		if gateErr != nil {
-			return githubapp.Token{}, gateErr
+			return githubapp.Token{}, categorize(mintrecord.CategoryEntitlement, gateErr)
 		}
 	} else if !binding.entitled(identity.Subject) {
-		return githubapp.Token{}, fmt.Errorf("mint role %q: attested identity %q is not entitled to this role", roleName, identity.Subject)
+		return githubapp.Token{}, categorize(mintrecord.CategoryEntitlement, fmt.Errorf("mint role %q: attested identity %q is not entitled to this role", roleName, identity.Subject))
 	}
 
 	// Gap 2: verifiable App-slug binding — role -> App. Required for every
 	// role; a role without a configured slug binding cannot be verified and
 	// therefore cannot mint.
 	if !binding.appSlugConfigured() {
-		return githubapp.Token{}, fmt.Errorf("mint role %q: no App-slug binding configured (app_slug and app_slug_path are both required)", roleName)
-	}
-
-	appID, err := s.Broker.Get(ctx, binding.AppIDPath)
-	if err != nil {
-		return githubapp.Token{}, fmt.Errorf("read app id for role %q: %w", roleName, err)
-	}
-	installID, err := s.Broker.Get(ctx, binding.InstallationIDPath)
-	if err != nil {
-		return githubapp.Token{}, fmt.Errorf("read installation id for role %q: %w", roleName, err)
-	}
-	actualSlug, err := s.Broker.Get(ctx, binding.AppSlugPath)
-	if err != nil {
-		return githubapp.Token{}, fmt.Errorf("read app slug for role %q: %w", roleName, err)
-	}
-	if actualSlug != binding.AppSlug {
-		// Never fall back to whatever App the broker paths happened to
-		// resolve to — a mismatch here means the role's broker paths point
-		// at a different App than the one legitimately configured for it.
-		return githubapp.Token{}, fmt.Errorf("mint role %q: resolved App slug %q does not match configured App slug %q", roleName, actualSlug, binding.AppSlug)
-	}
-	privateKey, err := s.Broker.Get(ctx, binding.PrivateKeyPath)
-	if err != nil {
-		// Do not wrap with the value — only the path/role.
-		return githubapp.Token{}, fmt.Errorf("read private key for role %q: %w", roleName, err)
+		return githubapp.Token{}, categorize(mintrecord.CategoryConfig, fmt.Errorf("mint role %q: no App-slug binding configured (app_slug and app_slug_path are both required)", roleName))
 	}
 
 	renderer := s.Renderer
 	if renderer == nil {
 		renderer = roles.DefaultGitHubRenderer
+	}
+	tr.permissions = renderer.RenderPermissions(role)
+
+	appID, err := s.Broker.Get(ctx, binding.AppIDPath)
+	if err != nil {
+		return githubapp.Token{}, categorize(mintrecord.CategoryBroker, fmt.Errorf("read app id for role %q: %w", roleName, err))
+	}
+	installID, err := s.Broker.Get(ctx, binding.InstallationIDPath)
+	if err != nil {
+		return githubapp.Token{}, categorize(mintrecord.CategoryBroker, fmt.Errorf("read installation id for role %q: %w", roleName, err))
+	}
+	tr.installationID = installID
+	actualSlug, err := s.Broker.Get(ctx, binding.AppSlugPath)
+	if err != nil {
+		return githubapp.Token{}, categorize(mintrecord.CategoryBroker, fmt.Errorf("read app slug for role %q: %w", roleName, err))
+	}
+	tr.appSlug = actualSlug
+	if actualSlug != binding.AppSlug {
+		// Never fall back to whatever App the broker paths happened to
+		// resolve to — a mismatch here means the role's broker paths point
+		// at a different App than the one legitimately configured for it.
+		return githubapp.Token{}, categorize(mintrecord.CategoryConfig, fmt.Errorf("mint role %q: resolved App slug %q does not match configured App slug %q", roleName, actualSlug, binding.AppSlug))
+	}
+	privateKey, err := s.Broker.Get(ctx, binding.PrivateKeyPath)
+	if err != nil {
+		// Do not wrap with the value — only the path/role.
+		return githubapp.Token{}, categorize(mintrecord.CategoryBroker, fmt.Errorf("read private key for role %q: %w", roleName, err))
 	}
 
 	mintFn := s.MintFunc

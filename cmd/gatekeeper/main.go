@@ -136,6 +136,9 @@ func runMint(args []string) error {
 		return fmt.Errorf("mint: minting is not configured: config %s has no roles section (github, broker and roles are needed to mint; an identity-only config serves assertions only)", *cfgPath)
 	}
 
+	// Off unless mint_record_path is set; see docs/SETUP.md, "The mint record".
+	writeRecord := recordWriter(cfg.MintRecordPath, os.Stderr)
+
 	registry := roles.NewRegistry()
 	for name, rc := range cfg.Roles {
 		if len(rc.Permissions) == 0 {
@@ -170,9 +173,11 @@ func runMint(args []string) error {
 	// clear config error rather than a confusing "unknown role" at runtime.
 	for name, rc := range cfg.Roles {
 		if len(rc.Permissions) == 0 && !roles.IsReference(name) {
+			recordRefusal(writeRecord, *roleName, nil)
 			return fmt.Errorf("config error: role %q has a broker binding but no permissions defined", name)
 		}
 		if !mint.ValidMinGrade(rc.MinGrade) {
+			recordRefusal(writeRecord, *roleName, nil)
 			return fmt.Errorf("config error: role %q has min_grade %q; it must be workload or harness", name, rc.MinGrade)
 		}
 	}
@@ -185,6 +190,7 @@ func runMint(args []string) error {
 	if err != nil {
 		// Config-level error — print to stderr and exit 2.
 		fmt.Fprintf(os.Stderr, "broker: %v\n", err)
+		recordRefusal(writeRecord, *roleName, nil)
 		os.Exit(2)
 	}
 
@@ -215,6 +221,7 @@ func runMint(args []string) error {
 	assertionProvider, err := buildAssertionProvider(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "attestation: %v\n", err)
+		recordRefusal(writeRecord, *roleName, nil)
 		os.Exit(2)
 	}
 
@@ -232,6 +239,7 @@ func runMint(args []string) error {
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "attestation: %v\n", err)
+		recordRefusal(writeRecord, *roleName, nil)
 		os.Exit(2)
 	}
 
@@ -249,6 +257,7 @@ func runMint(args []string) error {
 		perSpawnProvider, err := attestation.NewSidecarProvider(chainSidecars[0])
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "attestation: build per-spawn resolver: %v\n", err)
+			recordRefusal(writeRecord, *roleName, nil)
 			os.Exit(2)
 		}
 		if perSpawnProvider != nil {
@@ -297,6 +306,7 @@ func runMint(args []string) error {
 			fmt.Fprintf(os.Stderr, "mint audit: subject=%q source=%q grade=%q issuer=%q role=%q permitted=%v reason=%q\n",
 				ev.Subject, ev.Source, ev.Grade, ev.Issuer, ev.Role, ev.Permitted, ev.Reason)
 		},
+		Record: writeRecord,
 	}
 
 	var repos []string
@@ -304,6 +314,7 @@ func runMint(args []string) error {
 	if *repo != "" {
 		bare, err := repoForMint(*repo, cfg.GitHub.Owner)
 		if err != nil {
+			recordRefusal(writeRecord, *roleName, nil)
 			return err
 		}
 		repos = []string{bare}
