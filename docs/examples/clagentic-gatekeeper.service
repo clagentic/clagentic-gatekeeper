@@ -4,6 +4,9 @@
 [Unit]
 Description=clagentic: gatekeeper identity assertion issuer
 After=local-fs.target
+# Restart rate limit: these two belong in [Unit], not [Service].
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -34,8 +37,6 @@ ExecStart=/usr/local/bin/gatekeeper serve --config /etc/clagentic/gatekeeper/con
 # entry) fails again until the config is fixed; do not spin on it.
 Restart=on-failure
 RestartSec=5
-StartLimitIntervalSec=60
-StartLimitBurst=5
 
 SyslogIdentifier=clagentic-gatekeeper
 NoNewPrivileges=yes
