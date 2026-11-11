@@ -37,10 +37,20 @@ import (
 // ignores this field (zero value "") sees exactly the same Token shape and
 // behavior as before this field existed; nothing about Value or ExpiresAt
 // changes based on whether AppSlug is set.
+//
+// Permissions, RepositorySelection, Status and RequestID are what GitHub
+// answered with: the permissions it actually granted, whether the token covers
+// "all" or "selected" repositories, the HTTP status and the X-GitHub-Request-Id.
+// They are additive and exist so a later write denial can be explained from the
+// grant rather than from the request. RequestID is empty when GitHub sent none.
 type Token struct {
-	Value     string
-	ExpiresAt time.Time
-	AppSlug   string
+	Value               string
+	ExpiresAt           time.Time
+	AppSlug             string
+	Permissions         map[string]string
+	RepositorySelection string
+	Status              int
+	RequestID           string
 }
 
 // MintRequest narrows an installation token to a role's permissions and repos.
@@ -181,8 +191,10 @@ type accessTokenRequest struct {
 
 // accessTokenResponse is the relevant subset of GitHub's access_tokens response.
 type accessTokenResponse struct {
-	Token     string `json:"token"`
-	ExpiresAt string `json:"expires_at"`
+	Token               string            `json:"token"`
+	ExpiresAt           string            `json:"expires_at"`
+	Permissions         map[string]string `json:"permissions"`
+	RepositorySelection string            `json:"repository_selection"`
 }
 
 // isRepoNotInstalled reports whether a 422 body carries GitHub's documented
@@ -235,19 +247,20 @@ func exchangeToken(ctx context.Context, apiBase string, installationID int64, jw
 		if errors.As(err, &ue) {
 			err = ue.Err
 		}
-		return Token{}, fmt.Errorf("call GitHub API POST %s: %w", path, err)
+		return Token{}, &TransportError{Op: "call GitHub API", Path: path, Err: err}
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return Token{}, fmt.Errorf("read response body from POST %s: %w", path, err)
+		return Token{}, &TransportError{Op: "read response body from", Path: path, Err: err}
 	}
 
+	rawRequestID := resp.Header.Get("X-GitHub-Request-Id")
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		requestID := resp.Header.Get("X-GitHub-Request-Id")
+		requestID := rawRequestID
 		if requestID == "" {
-			requestID = "none"
+			requestID = NoRequestID
 		}
 		if resp.StatusCode == http.StatusUnprocessableEntity && isRepoNotInstalled(respBody) {
 			return Token{}, &RepoNotInInstallationError{Repos: repositories, Path: path, RequestID: requestID}
@@ -267,7 +280,11 @@ func exchangeToken(ctx context.Context, apiBase string, installationID int64, jw
 	}
 
 	return Token{
-		Value:     tokenResp.Token,
-		ExpiresAt: expiresAt,
+		Value:               tokenResp.Token,
+		ExpiresAt:           expiresAt,
+		Permissions:         tokenResp.Permissions,
+		RepositorySelection: tokenResp.RepositorySelection,
+		Status:              resp.StatusCode,
+		RequestID:           rawRequestID,
 	}, nil
 }
