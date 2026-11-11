@@ -7,6 +7,15 @@ import (
 
 // github.owner has a reader: a --repo that names another owner is refused
 // rather than reduced to its bare name and minted against the wrong org.
+func TestRepoSlugNamesOwnerAndRepo(t *testing.T) {
+	if got := repoSlug("example-repo", "example-org", "example-repo"); got != "example-org/example-repo" {
+		t.Fatalf("bare with owner: got %q", got)
+	}
+	if got := repoSlug("Example-Org/example-repo", "example-org", "example-repo"); got != "example-org/example-repo" {
+		t.Fatalf("owner/name: got %q", got)
+	}
+}
+
 func TestRepoForMintChecksTheOwnerAgainstGithubOwner(t *testing.T) {
 	for _, c := range []struct {
 		name, repo, owner string
@@ -19,6 +28,7 @@ func TestRepoForMintChecksTheOwnerAgainstGithubOwner(t *testing.T) {
 		{"bare name is not checked", "example-repo", "example-org", "example-repo", ""},
 		{"no configured owner is not checked", "other-org/example-repo", "", "example-repo", ""},
 		{"a malformed repo is still refused", "a/b/c", "example-org", "", "owner/name"},
+		{"bare name without github.owner is refused", "example-repo", "", "", "pass owner/name or set github.owner"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			got, err := repoForMint(c.repo, c.owner)
