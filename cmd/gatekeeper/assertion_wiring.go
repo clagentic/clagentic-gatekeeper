@@ -5,6 +5,7 @@ import (
 
 	"github.com/clagentic/clagentic-gatekeeper/internal/attestation"
 	"github.com/clagentic/clagentic-gatekeeper/internal/config"
+	"github.com/clagentic/clagentic-gatekeeper/internal/identity"
 )
 
 // buildAssertionProvider returns the Identity Assertion provider when the
@@ -27,7 +28,11 @@ func buildAssertionProvider(cfg *config.Config) (attestation.Provider, error) {
 	}
 	localIss := cfg.Identity.Issuer
 	if localIss == "" {
-		localIss = "unix://" + socketFor("", cfg)
+		sock, err := pickSocket("", cfg, identity.DefaultSocketPath)
+		if err != nil {
+			return nil, err
+		}
+		localIss = "unix://" + sock
 	}
 	if !listed[localIss] {
 		issuers = append(issuers, attestation.AssertionIssuer{Iss: localIss, JWKS: cfg.Identity.JWKSPath})

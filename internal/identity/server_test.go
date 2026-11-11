@@ -147,9 +147,7 @@ func TestRequestBodyMustBeExactlyOneJSONObject(t *testing.T) {
 			}
 		}
 	}
-	if entries, err := os.ReadDir(f.root); err == nil && len(entries) != 0 {
-		t.Fatalf("a refused body still ran the operation: %v", entries)
-	}
+	requireNoEntries(t, f.root, "a refused body still ran the operation")
 	if status, got := post(t, c, PathIssueSession, " {\"definition\":\"example-builder\"}\n "); status != 200 {
 		t.Fatalf("a single object with surrounding whitespace: %d %s", status, got)
 	}

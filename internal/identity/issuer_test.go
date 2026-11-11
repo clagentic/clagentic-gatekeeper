@@ -319,9 +319,7 @@ func TestUnreadableProcAndUnderivableRuntimeRefuseInsteadOfGranting(t *testing.T
 	if _, err := f.issuer.IssueSession(selfPeer(10), SessionRequest{}); err == nil {
 		t.Fatal("an underivable runtime id produced a grant")
 	}
-	if entries, err := os.ReadDir(f.root); err == nil && len(entries) != 0 {
-		t.Fatalf("a refusal left delivery directories: %v", entries)
-	}
+	requireNoEntries(t, f.root, "a refusal left delivery directories")
 }
 
 func TestChildRefusesWhenPidWasReused(t *testing.T) {

@@ -4,6 +4,7 @@ package identity
 
 import (
 	"errors"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -14,7 +15,10 @@ import (
 	"testing"
 )
 
-func parsePackageSources(t *testing.T) []*ast.File {
+func parsePackageSources(t *testing.T) []*ast.File { return parseSources(t, nil) }
+
+// parseSources parses the package's non-test sources except those named in skip.
+func parseSources(t *testing.T, skip map[string]bool) []*ast.File {
 	t.Helper()
 	entries, err := os.ReadDir(".")
 	if err != nil {
@@ -24,7 +28,7 @@ func parsePackageSources(t *testing.T) []*ast.File {
 	fset := token.NewFileSet()
 	for _, e := range entries {
 		n := e.Name()
-		if !strings.HasSuffix(n, ".go") || strings.HasSuffix(n, "_test.go") {
+		if !strings.HasSuffix(n, ".go") || strings.HasSuffix(n, "_test.go") || skip[n] {
 			continue
 		}
 		f, err := parser.ParseFile(fset, filepath.Join(".", n), nil, 0)
@@ -111,37 +115,99 @@ func TestNoRefusalCarriesFormatArgumentsOrABypass(t *testing.T) {
 	for name := range codes {
 		known[name] = true
 	}
-	calls := 0
-	for _, f := range parsePackageSources(t) {
+	// client.go reads a refusal back off the wire into an IssueError: it builds
+	// what the server already built, so it is the one source outside the guard.
+	violations, calls := refusalViolations(parseSources(t, map[string]bool{"client.go": true}), known)
+	for _, v := range violations {
+		t.Error(v)
+	}
+	if calls < 10 {
+		t.Fatalf("only %d refuse calls found; the walk is not reaching the issuer", calls)
+	}
+}
+
+// refusalViolations walks files for every way an IssueError, or its message,
+// can come into being other than through refuse: a composite literal, new, a
+// zero-value declaration, and an assignment to a Message member. It also checks
+// each refuse call's shape. calls is how many refuse calls it saw.
+func refusalViolations(files []*ast.File, known map[string]bool) (violations []string, calls int) {
+	isIssueError := func(e ast.Expr) bool {
+		id, ok := e.(*ast.Ident)
+		return ok && id.Name == "IssueError"
+	}
+	for _, f := range files {
 		ast.Inspect(f, func(n ast.Node) bool {
 			switch x := n.(type) {
 			case *ast.FuncDecl:
 				// refuse is the one place an IssueError is built.
 				return x.Name.Name != "refuse"
 			case *ast.CallExpr:
+				if fn, ok := x.Fun.(*ast.Ident); ok && fn.Name == "new" && len(x.Args) == 1 && isIssueError(x.Args[0]) {
+					violations = append(violations, "IssueError built with new outside refuse")
+					return true
+				}
 				id, ok := x.Fun.(*ast.Ident)
 				if !ok || id.Name != "refuse" {
 					return true
 				}
 				calls++
 				if len(x.Args) != 3 {
-					t.Errorf("refuse called with %d arguments, want (status, code, detail)", len(x.Args))
+					violations = append(violations, fmt.Sprintf("refuse called with %d arguments, want (status, code, detail)", len(x.Args)))
 					return true
 				}
 				code, ok := x.Args[1].(*ast.Ident)
 				if !ok || !known[code.Name] {
-					t.Errorf("refuse's code must be one of the Code constants, got %T", x.Args[1])
+					violations = append(violations, fmt.Sprintf("refuse's code must be one of the Code constants, got %T", x.Args[1]))
 				}
 			case *ast.CompositeLit:
-				if id, ok := x.Type.(*ast.Ident); ok && id.Name == "IssueError" {
-					t.Errorf("IssueError built outside refuse")
+				if isIssueError(x.Type) {
+					violations = append(violations, "IssueError built outside refuse")
+				}
+			case *ast.ValueSpec:
+				if isIssueError(x.Type) {
+					violations = append(violations, "IssueError declared as a zero value outside refuse")
+				}
+			case *ast.AssignStmt:
+				for _, lhs := range x.Lhs {
+					if sel, ok := lhs.(*ast.SelectorExpr); ok && sel.Sel.Name == "Message" {
+						violations = append(violations, "a Message member assigned outside refuse")
+					}
 				}
 			}
 			return true
 		})
 	}
-	if calls < 10 {
-		t.Fatalf("only %d refuse calls found; the walk is not reaching the issuer", calls)
+	return violations, calls
+}
+
+// The guard has to fail when the thing it guards happens. Each snippet builds an
+// IssueError, or sets its message, by a route the guard must refuse.
+func TestRefusalGuardCatchesEveryBypass(t *testing.T) {
+	for name, body := range map[string]string{
+		"composite literal":    `func f() *IssueError { return &IssueError{Code: "x"} }`,
+		"new":                  `func f() *IssueError { return new(IssueError) }`,
+		"zero-value var":       `func f() { var e IssueError; _ = e }`,
+		"message assignment":   `func f(e *IssueError) { e.Message = "x" }`,
+		"message reassignment": `func f(e IssueError) { e.Message, e.Code = "x", "y" }`,
+		"refuse with 2 args":   `func f() { refuse(500, CodeInternal) }`,
+		"refuse unknown code":  `func f() { refuse(500, "internal", nil) }`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, err := parser.ParseFile(token.NewFileSet(), "snippet.go", "package identity\n"+body, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if v, _ := refusalViolations([]*ast.File{f}, map[string]bool{"CodeInternal": true}); len(v) == 0 {
+				t.Fatalf("the guard passed %s", body)
+			}
+		})
+	}
+	f, err := parser.ParseFile(token.NewFileSet(), "snippet.go", "package identity\nfunc f() { refuse(500, CodeInternal, nil) }", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, calls := refusalViolations([]*ast.File{f}, map[string]bool{"CodeInternal": true}); len(v) != 0 || calls != 1 {
+		t.Fatalf("the guard refused a legitimate call: %v (%d calls)", v, calls)
 	}
 }
 

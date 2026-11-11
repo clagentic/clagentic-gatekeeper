@@ -17,6 +17,8 @@ import (
 	"strconv"
 	"syscall"
 	"time"
+
+	"github.com/clagentic/clagentic-gatekeeper/internal/config"
 )
 
 const maxRequestBytes = 64 << 10
@@ -71,8 +73,10 @@ func (s *Server) log() func(format string, args ...any) {
 	if s.Logf != nil {
 		return s.Logf
 	}
-	return func(format string, args ...any) { fmt.Fprintf(os.Stderr, format+"\n", args...) }
+	return stderrLogf
 }
+
+func stderrLogf(format string, args ...any) { fmt.Fprintf(os.Stderr, format+"\n", args...) }
 
 // Handler returns the HTTP surface; the peer is taken from the request
 // context set by ConnContext.
@@ -206,6 +210,18 @@ var listenAfterBind func(privateDir, tempSocket string)
 // call generated, and no uid but the serving uid and root can alter any
 // component of them; everything else here goes through the directory handle.
 func Listen(path string, mode os.FileMode) (net.Listener, error) {
+	return ListenLogged(path, mode, nil)
+}
+
+// ListenLogged is Listen with the sink for its one cleanup warning; nil logs to
+// stderr like Server.Logf.
+func ListenLogged(path string, mode os.FileMode, logf func(format string, args ...any)) (net.Listener, error) {
+	if logf == nil {
+		logf = stderrLogf
+	}
+	if err := config.CheckSocketPath("socket path", path); err != nil {
+		return nil, err
+	}
 	path = filepath.Clean(path)
 	dirPath := filepath.Dir(path)
 	dir, err := openTrustedDir(dirPath, 0o755)
@@ -230,16 +246,24 @@ func Listen(path string, mode os.FileMode) (net.Listener, error) {
 		cleanup()
 		return nil, err
 	}
+	// pfd stays open until the bind is done: the socket is bound through it, so
+	// the bind path never depends on how long the configured directory is.
+	defer syscall.Close(pfd)
 	// Mkdirat is filtered by the umask; fchmod is not.
-	err = syscall.Fchmod(pfd, 0o700)
-	syscall.Close(pfd)
-	if err != nil {
+	if err := syscall.Fchmod(pfd, 0o700); err != nil {
 		cleanup()
 		return nil, err
 	}
 	private := filepath.Join(dirPath, privName)
 	tmp := filepath.Join(private, "s")
-	l, err := net.ListenUnix("unix", &net.UnixAddr{Name: tmp, Net: "unix"})
+	// bind(2) takes a path of at most MaxSocketPathBytes and the staging path
+	// under the configured directory is longer than the directory itself, so a
+	// socket_path that fits would not bind. The descriptor path is short whatever
+	// the directory is, and bind creates the socket inside the directory pfd
+	// names; only the final link sees the configured path, and link(2) has no
+	// such limit.
+	bindPath := fmt.Sprintf("/proc/self/fd/%d/s", pfd)
+	l, err := net.ListenUnix("unix", &net.UnixAddr{Name: bindPath, Net: "unix"})
 	if err != nil {
 		cleanup()
 		return nil, publishError(path, "bind", err)
@@ -265,7 +289,7 @@ func Listen(path string, mode os.FileMode) (net.Listener, error) {
 	// The socket is already published with its mode; a leftover private
 	// directory is unreachable to other uids, but report it.
 	if err := removeAt(dfd, privName); err != nil {
-		fmt.Fprintf(os.Stderr, "identity: could not remove temporary socket directory %s: %v\n", private, err)
+		logf("identity: could not remove temporary socket directory %s: %v", private, err)
 	}
 	return publishedListener{UnixListener: l, addr: &net.UnixAddr{Name: path, Net: "unix"}}, nil
 }
@@ -331,13 +355,14 @@ func (s *Server) reapLoop(ctx context.Context) {
 	maxAge := 2 * MaxLifetimeSeconds * time.Second
 	t := time.NewTicker(time.Hour)
 	defer t.Stop()
+	logf := s.log()
 	for {
 		n, err := s.Issuer.Dirs.Reap(s.Issuer.Now(), maxAge)
 		if n > 0 {
-			fmt.Fprintf(os.Stderr, "identity: removed %d stale spawn directories\n", n)
+			logf("identity: removed %d stale spawn directories", n)
 		}
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "identity: stale spawn directories remain: %v\n", err)
+			logf("identity: stale spawn directories remain: %v", err)
 		}
 		select {
 		case <-ctx.Done():

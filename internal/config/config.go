@@ -6,7 +6,6 @@ package config
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"reflect"
 	"strings"
 
@@ -16,18 +15,18 @@ import (
 const (
 	defaultAPIBase    = "https://api.github.com"
 	defaultTTLMinutes = 60
+
+	// SupportedSchemaVersion is the newest config_schema_version this build reads.
+	SupportedSchemaVersion = 2
 )
 
 // Config is the top-level configuration structure for gatekeeper.
 type Config struct {
-	// SchemaVersion is an informational marker of the config.yaml shape a
-	// deployment was authored against (see config.example.yaml). Gatekeeper
-	// does not currently reject an unset or mismatched value — every field
-	// added to the schema so far (including identity_field, lr-f1bfe8) is
-	// additive and optional, so an old config.yaml keeps loading and
-	// behaving exactly as before. This field exists so that stops being
-	// true for a future breaking change: Load has one place to add a
-	// version check.
+	// SchemaVersion is the config.yaml shape a deployment was authored
+	// against (see config.example.yaml). Load refuses a value newer than
+	// SupportedSchemaVersion, because a config written for a later shape may
+	// carry keys this build would ignore. An unset or older value loads: every
+	// field added to the schema so far is additive and optional.
 	SchemaVersion int                   `yaml:"config_schema_version,omitempty"`
 	GitHub        GitHubConfig          `yaml:"github"`
 	Broker        BrokerConfig          `yaml:"broker"`
@@ -55,9 +54,10 @@ type Config struct {
 	// reports that minting is not configured. Absent means serve refuses.
 	Identity IdentityConfig `yaml:"identity,omitempty"`
 
-	// identityPresent records that the YAML document has an identity key, which
-	// is what makes the section configured; no field inside it can stand in for
-	// that.
+	// identityPresent records that the decoder produced an identity section,
+	// which is what makes it configured; no field inside it can stand in for
+	// that. It is read from the decoded document, so a section that arrives
+	// through a YAML anchor or merge key counts.
 	identityPresent bool
 
 	// removedIdentityKeys are the removed identity keys the document still
@@ -77,7 +77,7 @@ type IdentityConfig struct {
 	// the form verifiers discover keys from without extra configuration.
 	Issuer string `yaml:"issuer,omitempty"`
 	// SocketPath is the unix socket serve listens on (flag --socket wins).
-	SocketPath string `yaml:"socket_path,omitempty" abspath:"true"`
+	SocketPath string `yaml:"socket_path,omitempty" abspath:"true" sockpath:"true"`
 	// SocketMode is the octal permission of the socket, default "0600": the
 	// serving uid only. It is a second layer behind the in-process check on the
 	// SO_PEERCRED uid, which admits the serving uid alone; a wider mode lets
@@ -108,12 +108,21 @@ type IdentityConfig struct {
 	// SessionTTLSeconds is the session assertion lifetime, default and
 	// maximum 43200.
 	SessionTTLSeconds int `yaml:"session_ttl_seconds,omitempty"`
+	// RetiredKeys are previous signing keys, as public JWKs, that stay in the
+	// published key set so an assertion they signed verifies until its exp.
+	// They never sign. Each kid must be the key's RFC 7638 thumbprint.
+	RetiredKeys []RetiredKeyConfig `yaml:"retired_keys,omitempty"`
 }
 
-// absPathTag marks an IdentityConfig field whose value is a filesystem path.
-// validate checks every tagged field, so a path key is covered by tagging it
-// and by nothing else; a test fails for any path-named field left untagged.
-const absPathTag = "abspath"
+const (
+	// absPathTag marks an IdentityConfig field whose value is a filesystem path.
+	// validate checks every tagged field, so a path key is covered by tagging it
+	// and by nothing else; a test fails for any path-named field left untagged.
+	absPathTag = "abspath"
+	// sockPathTag additionally marks a field that names a unix socket, which has
+	// a length limit besides.
+	sockPathTag = "sockpath"
+)
 
 // validate refuses a relative value for every tagged path key. Such a path
 // would resolve against whatever directory the service manager started serve
@@ -127,18 +136,22 @@ func (c IdentityConfig) validate() error {
 		if f.Tag.Get(absPathTag) != "true" {
 			continue
 		}
-		value := v.Field(i).String()
-		if value != "" && !filepath.IsAbs(value) {
-			key, _, _ := strings.Cut(f.Tag.Get("yaml"), ",")
-			return fmt.Errorf("identity.%s %q must be an absolute path", key, value)
+		key, _, _ := strings.Cut(f.Tag.Get("yaml"), ",")
+		check := CheckAbsPath
+		if f.Tag.Get(sockPathTag) == "true" {
+			check = CheckSocketPath
+		}
+		if err := check("identity."+key, v.Field(i).String()); err != nil {
+			return err
 		}
 	}
-	return nil
+	return validateRetiredKeys(c.RetiredKeys)
 }
 
 // GitHubConfig holds GitHub connectivity settings.
 type GitHubConfig struct {
-	// Owner is the org or user login that owns the target repositories.
+	// Owner is the org or user login that owns the target repositories. mint
+	// refuses a --repo that names a different owner.
 	Owner string `yaml:"owner"`
 	// APIBase is the GitHub API root. Defaults to https://api.github.com.
 	// Override for GitHub Enterprise Server.
@@ -257,6 +270,19 @@ func (a AttestationConfig) validate() error {
 			"use `sidecars:` alone (with the per-spawn namespace first, per docs/SIDECAR-READ-CONTRACT.md " +
 			"section 2) — mixing the two makes which namespace lands in the per-spawn resolver depend on " +
 			"merge order rather than explicit config")
+	}
+	// Both are looked up in the filesystem of whatever directory mint runs in
+	// unless absolute, and decide who the caller is.
+	if err := CheckAbsPath("attestation.sidecar.dir", a.Sidecar.Dir); err != nil {
+		return err
+	}
+	for i, sc := range a.Sidecars {
+		if err := CheckAbsPath(fmt.Sprintf("attestation.sidecars[%d].dir", i), sc.Dir); err != nil {
+			return err
+		}
+	}
+	if a.Configured.Type == "file" {
+		return CheckAbsPath("attestation.configured.source", a.Configured.Source)
 	}
 	return nil
 }
@@ -467,13 +493,21 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
 	}
 
+	if cfg.SchemaVersion > SupportedSchemaVersion {
+		return nil, fmt.Errorf("config %s: config_schema_version %d is newer than the %d this build reads; upgrade gatekeeper or lower the value", path, cfg.SchemaVersion, SupportedSchemaVersion)
+	}
 	if err := cfg.Attestation.validate(); err != nil {
 		return nil, fmt.Errorf("config %s: %w", path, err)
 	}
-	present, err := hasTopLevelKey(data, "identity")
-	if err != nil {
+	// Presence and the removed-key scan both read what the decoder produced, so
+	// an identity section supplied through a merge key or an anchor is seen.
+	var probe struct {
+		Identity yaml.Node `yaml:"identity"`
+	}
+	if err := yaml.Unmarshal(data, &probe); err != nil {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
 	}
+	present := probe.Identity.Kind != 0
 	cfg.identityPresent = present
 	if cfg.removedIdentityKeys, err = removedKeysPresent(data); err != nil {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
@@ -489,25 +523,6 @@ func Load(path string) (*Config, error) {
 
 	applyDefaults(&cfg)
 	return &cfg, nil
-}
-
-// hasTopLevelKey reports whether the YAML document's root mapping has key,
-// whatever its value, including an empty one.
-func hasTopLevelKey(data []byte, key string) (bool, error) {
-	var doc yaml.Node
-	if err := yaml.Unmarshal(data, &doc); err != nil {
-		return false, err
-	}
-	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
-		return false, nil
-	}
-	m := doc.Content[0].Content
-	for i := 0; i+1 < len(m); i += 2 {
-		if m[i].Value == key {
-			return true, nil
-		}
-	}
-	return false, nil
 }
 
 // applyDefaults fills in zero-value fields with their documented defaults.

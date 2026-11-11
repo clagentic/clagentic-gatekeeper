@@ -240,9 +240,7 @@ func TestAncestryViolationsRefuseWithoutIssuing(t *testing.T) {
 		if ie, ok := IsIssueError(err); !ok || ie.Code != CodeRuntimeUnbound {
 			t.Errorf("%s: got %v", name, err)
 		}
-		if entries, rerr := os.ReadDir(b.root); rerr == nil && len(entries) != 0 {
-			t.Errorf("%s: a refusal left delivery directories: %v", name, entries)
-		}
+		requireNoEntries(t, b.root, name+": a refusal left delivery directories")
 	}
 }
 

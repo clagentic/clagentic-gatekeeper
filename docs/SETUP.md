@@ -654,12 +654,43 @@ what it finds. Nothing a client sends can change who the kernel says it is.
 | Command | Purpose |
 |---------|---------|
 | `gatekeeper serve [--socket <path>] [--config <path>]` | Run the issuer. Socket: `--socket`, else `identity.socket_path`, else `/run/clagentic-gatekeeper/identity.sock`. |
-| `gatekeeper issue-session [--socket <path>] [--definition <name>] [--origin <origin>] [--runtime] [--runtime-id <id>] [--runtime-version <v>] [--json]` | Ask for a session assertion. Prints the token, or the full response with `--json`. |
-| `gatekeeper issue-child [--socket <path>] [--parent-token-file <path>] --agent-type <name> --agent-id <id> [--json]` | Ask for a child assertion. The parent token defaults to `$CLAGENTIC_IDENTITY_DIR/identity.jwt`. |
+| `gatekeeper issue-session [--socket <path>] [--config <path>] [--definition <name>] [--origin <origin>] [--runtime] [--runtime-id <id>] [--runtime-version <v>] [--json]` | Ask for a session assertion. Prints the token, or the full response with `--json`. |
+| `gatekeeper issue-child [--socket <path>] [--config <path>] [--parent-token-file <path>] --agent-type <name> --agent-id <id> [--json]` | Ask for a child assertion. The parent token defaults to `$CLAGENTIC_IDENTITY_DIR/identity.jwt`. |
+| `gatekeeper self-check [--socket <path>] [--config <path>] [--jwks-path <path>]` | Check that a running `serve` is reachable and that the key set file is byte-identical to the key set the socket serves. |
+
+Every command that names the issuer socket resolves it in one order: the
+`--socket` flag, then `identity.socket_path` from `--config`, then
+`/run/clagentic-gatekeeper/identity.sock`. The commands a hook or a registration
+runs (`hook`, `hooks-install`) have no built-in default: they need `--socket` or
+a `--config` that sets `identity.socket_path`. A socket path from any of these
+must be absolute and at most 107 bytes (the unix socket path limit); a relative
+or longer one is refused, naming the flag or the key. The same absolute-path
+rule applies to every other path the config names: `identity.key_path`,
+`jwks_path`, `definitions_dir`, `spawn_root`, `attestation.sidecars[].dir` (and
+the legacy `attestation.sidecar.dir`), and `attestation.configured.source` when
+its `type` is `file`.
 
 The socket also answers `GET /.well-known/jwks.json` (HTTP/1.1), so a
 verifier trusting `iss = unix:///path/to/socket` finds the keys with no extra
 configuration.
+
+#### `self-check`
+
+```
+$ gatekeeper self-check --config /etc/clagentic/gatekeeper/config.yaml
+socket: reachable (/run/clagentic-gatekeeper/identity.sock)
+jwks: fresh (264 bytes, identical to /var/lib/clagentic-gatekeeper/jwks.json)
+```
+
+`serve` renders the key set once and both serves those bytes and writes
+`identity.jwks_path` from them, with no trailing newline added, so the two are
+identical by construction. `self-check` fetches the served bytes and compares
+them with the file, byte for byte; it does no JSON comparison, so a file that
+differs only in whitespace is reported stale. A difference prints
+`jwks: stale: ...` with the two lengths and the offset of the first differing
+byte. An unreachable socket prints `socket: unreachable: ...`. Either exits 1.
+With no key set file named (no `identity.jwks_path` and no `--jwks-path`) the
+socket check still runs and the key set line says it was not checked.
 
 `serve` runs on linux only (it needs `SO_PEERCRED` and `/proc`). On other
 platforms the module still builds, the client commands (`issue-session`,
@@ -674,10 +705,41 @@ mode there, and only then links it to the socket path.
 
 `serve` refuses to start when anything exists at the socket path (a socket, a
 file, a directory, a link) and names it. It never removes or replaces any path,
-including its own socket on shutdown: telling a stale socket from one a live
-server is about to use cannot be done without racing that server. The service
-manager removes the socket after a stop (for a systemd unit,
-`RuntimeDirectory=` does this); otherwise remove a leftover socket by hand.
+including its own socket on shutdown and a socket it created in a start that
+then failed: telling a stale socket from one a live server is about to use
+cannot be done without racing that server. The service manager removes the
+socket after a stop (see "Running under a service manager"); otherwise remove a
+leftover socket by hand.
+
+The socket is bound through a descriptor on the private staging directory, so
+the staging step adds nothing to the path length: any `socket_path` that fits
+the 107-byte limit binds, however deep its directory.
+
+### Running under a service manager
+
+The service manager owns the socket directory, and `serve` never unlinks
+anything in it. With systemd, `RuntimeDirectory=clagentic-gatekeeper` creates
+`/run/clagentic-gatekeeper` owned by the unit's `User=` before each start and
+removes it, with the socket and the `spawn` directory under it, whenever the
+unit stops, including between an automatic restart and the failure before it.
+That is what makes a restart start clean: `serve` refuses to start over a
+leftover socket.
+
+[`docs/examples/clagentic-gatekeeper.service`](examples/clagentic-gatekeeper.service)
+is a complete unit. The settings that carry the contract:
+
+| Setting | Why |
+|---------|-----|
+| `User=` / `Group=` | The serving uid. `serve` answers that uid and no other, so it is the uid your agents run as. |
+| `RuntimeDirectory=clagentic-gatekeeper`, `RuntimeDirectoryPreserve=no` | The socket directory, created before start and removed on every stop. The default `identity.socket_path` and `identity.spawn_root` sit in it. |
+| `RuntimeDirectoryMode=0755` | `serve` refuses a socket directory that is writable by group or other. |
+| `StateDirectory=clagentic-gatekeeper` | A directory for `identity.jwks_path`, owned by the serving uid. |
+| `SyslogIdentifier=clagentic-gatekeeper` | The product's log identifier. |
+
+Other service managers need the same two things: the socket directory exists,
+owned by the serving uid and not writable by others, before `serve` starts, and
+whatever is left in it is removed after `serve` stops. Check a running service
+with `gatekeeper self-check`.
 
 ### Who may ask
 
@@ -815,7 +877,33 @@ The umask is set before the file exists, so it is created mode 0600 and is never
 readable by anyone but its owner, at any instant. A `chmod` after the write
 would leave a window in which a permissive umask exposes the private key.
 
-The published key set holds the current signing key only.
+The published key set holds the current signing key, then any
+`identity.retired_keys`.
+
+#### Rotating the signing key
+
+A token signed by the previous key must keep verifying until its `exp`, which
+is at most `session_ttl_seconds` (43200) after it was issued. To rotate:
+
+1. Create the new key as above and point `identity.key_path` at it.
+2. Add the old key's public JWK, taken from the key set `serve` published, to
+   `identity.retired_keys` (`kty`, `crv`, `x`, `y` for EC, `kid`, `alg`; a
+   `use: sig` member is accepted).
+3. Restart `serve`. The key set now lists the new key first and the old one
+   after it; new assertions are signed by the new key and an assertion the old
+   key signed still verifies. A retired key never signs.
+4. After the longest lifetime an old assertion can have has passed, remove the
+   entry.
+
+Retired keys are inline public keys and nothing else: there are no retired key
+files. `serve` refuses to start, naming the `retired_keys` entry, when an entry
+carries a private member (`d`) or any member outside the list above, lacks a
+required member, repeats another entry's `kid`, has a `kid` that is not the RFC
+7638 thumbprint of its key (the error prints the one it should be), or is the
+current signing key. The private, unknown, missing and repeated-`kid` cases are
+judged when the config loads; the thumbprint, the curve and the current-key
+check need the key, so they are judged when `serve` loads the signing key, a
+step later in the same start.
 
 ### Issuer-only and combined configs
 
@@ -823,6 +911,27 @@ A config with only the `identity:` section starts `serve` without any
 `github`, `broker` or `roles` section; `gatekeeper mint` then reports that
 minting is not configured. A config with both runs both, and `mint` behaves as
 it did before.
+
+### Config that is refused now and loaded before
+
+No config key was removed. These inputs were accepted and silently
+misbehaved or silently did nothing; each is now refused, naming the key or flag:
+
+- a relative path in `identity.socket_path`, `jwks_path`, `key_path`,
+  `definitions_dir` or `spawn_root` was already refused; the same rule now
+  covers `attestation.sidecars[].dir`, `attestation.sidecar.dir`,
+  `attestation.configured.source` (type `file`), and the socket flags of
+  `serve`, `issue-session`, `issue-child`, `hook`, `hooks-install` and
+  `self-check`;
+- an `identity.socket_path` or `--socket` longer than 107 bytes;
+- `github.owner` was never read. `gatekeeper mint --repo owner/name` now refuses
+  an owner that differs from it; a bare `--repo name` is unchanged. If the key
+  still holds the placeholder from an old copy of the example, set it to the real
+  owner or remove it;
+- `config_schema_version` was never read. A value above 2 is now refused; an
+  unset or lower value loads as before;
+- an `identity` section that arrives through a YAML merge key or anchor is now
+  seen as present; before, only a literal top-level `identity:` key was.
 
 ## Summary
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -16,16 +17,41 @@ import (
 // identityEnvDir is the delivery variable of the contract's section 6.
 const identityEnvDir = "CLAGENTIC_IDENTITY_DIR"
 
-// socketFor resolves the socket path: the flag, then identity.socket_path,
-// then the built-in default.
-func socketFor(flagValue string, cfg *config.Config) string {
+// errNoSocket is what a client that must not guess answers when nothing names
+// the socket.
+var errNoSocket = errors.New("no socket: pass --socket, or --config with identity.socket_path set")
+
+// pickSocket is the one resolution order every command that names the issuer
+// socket uses: the flag, then identity.socket_path, then fallback. An empty
+// fallback means no default, and the answer is errNoSocket. A flag goes through
+// the same check identity.socket_path gets at config load: absolute, and short
+// enough for a unix socket.
+func pickSocket(flagValue string, cfg *config.Config, fallback string) (string, error) {
 	switch {
 	case flagValue != "":
-		return flagValue
+		if err := config.CheckSocketPath("--socket", flagValue); err != nil {
+			return "", err
+		}
+		return flagValue, nil
 	case cfg != nil && cfg.Identity.SocketPath != "":
-		return cfg.Identity.SocketPath
+		return cfg.Identity.SocketPath, nil
+	case fallback != "":
+		return fallback, nil
 	}
-	return identity.DefaultSocketPath
+	return "", errNoSocket
+}
+
+// resolveSocket is pickSocket for a command that reads the config only to find
+// the socket: cfgPath empty means no config.
+func resolveSocket(flagValue, cfgPath, fallback string) (string, error) {
+	var cfg *config.Config
+	if flagValue == "" && cfgPath != "" {
+		var err error
+		if cfg, err = config.Load(cfgPath); err != nil {
+			return "", fmt.Errorf("load config: %w", err)
+		}
+	}
+	return pickSocket(flagValue, cfg, fallback)
 }
 
 // printIssued writes the bare token, or the full response with --json.
@@ -52,9 +78,14 @@ func reportNarrowing(w io.Writer, out *identity.Issued) error {
 	return nil
 }
 
-func runIssueSession(args []string) error {
+func runIssueSession(args []string) error { return issueSession(args, os.Stdout) }
+
+// issueSession is runIssueSession with its output as a parameter, so a caller
+// can read what it prints without touching a process global.
+func issueSession(args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("issue-session", flag.ContinueOnError)
-	socket := fs.String("socket", "", "unix socket of the server (default "+identity.DefaultSocketPath+")")
+	socket := fs.String("socket", "", "unix socket of the server (default identity.socket_path from --config, then "+identity.DefaultSocketPath+")")
+	cfgPath := fs.String("config", "", "config file whose identity.socket_path names the socket")
 	definition := fs.String("definition", "", "agent definition name; its roles become the ceiling")
 	origin := fs.String("origin", "", "scheduled, loop, trigger, agent or driven (human is refused for sessions)")
 	runtime := fs.Bool("runtime", false, "declare a runtime session (informational: every assertion is a workload assertion)")
@@ -68,16 +99,24 @@ func runIssueSession(args []string) error {
 	if *runtime || *runtimeID != "" || *runtimeVersion != "" {
 		req.Runtime = &identity.RuntimeDecl{ID: *runtimeID, Version: *runtimeVersion}
 	}
-	out, err := identity.Client{Socket: socketFor(*socket, nil)}.IssueSession(req)
+	sock, err := resolveSocket(*socket, *cfgPath, identity.DefaultSocketPath)
 	if err != nil {
 		return fmt.Errorf("issue-session: %w", err)
 	}
-	return printIssued(os.Stdout, out, *asJSON)
+	out, err := identity.Client{Socket: sock}.IssueSession(req)
+	if err != nil {
+		return fmt.Errorf("issue-session: %w", err)
+	}
+	return printIssued(stdout, out, *asJSON)
 }
 
-func runIssueChild(args []string) error {
+func runIssueChild(args []string) error { return issueChild(args, os.Stdout, os.Stderr) }
+
+// issueChild is runIssueChild with its outputs as parameters.
+func issueChild(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("issue-child", flag.ContinueOnError)
-	socket := fs.String("socket", "", "unix socket of the server (default "+identity.DefaultSocketPath+")")
+	socket := fs.String("socket", "", "unix socket of the server (default identity.socket_path from --config, then "+identity.DefaultSocketPath+")")
+	cfgPath := fs.String("config", "", "config file whose identity.socket_path names the socket")
 	parentFile := fs.String("parent-token-file", "", "file holding the parent token (default $"+identityEnvDir+"/"+identity.DeliveryFile+")")
 	agentType := fs.String("agent-type", "", "definition name of the child (required)")
 	agentID := fs.String("agent-id", "", "identifier of this spawn (required)")
@@ -100,14 +139,18 @@ func runIssueChild(args []string) error {
 	if err != nil {
 		return fmt.Errorf("read parent token: %w", err)
 	}
-	out, err := identity.Client{Socket: socketFor(*socket, nil)}.IssueChild(identity.ChildRequest{
+	sock, err := resolveSocket(*socket, *cfgPath, identity.DefaultSocketPath)
+	if err != nil {
+		return fmt.Errorf("issue-child: %w", err)
+	}
+	out, err := identity.Client{Socket: sock}.IssueChild(identity.ChildRequest{
 		ParentToken: strings.TrimSpace(string(raw)), AgentType: *agentType, AgentID: *agentID,
 	})
 	if err != nil {
 		return fmt.Errorf("issue-child: %w", err)
 	}
-	if err := reportNarrowing(os.Stderr, out); err != nil {
+	if err := reportNarrowing(stderr, out); err != nil {
 		return fmt.Errorf("issue-child: write narrowing report: %w", err)
 	}
-	return printIssued(os.Stdout, out, *asJSON)
+	return printIssued(stdout, out, *asJSON)
 }

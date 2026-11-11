@@ -12,30 +12,20 @@ import (
 var removedIdentityKeys = []string{"operator_uid", "operator_name", "operator_roles"}
 
 // removedKeysPresent returns the removed identity keys the decoded YAML
-// document carries, whatever their values. The document is walked as a tree,
-// so a key named only inside a comment or a string value is not counted.
+// document carries, whatever their values. The scan reads what the decoder
+// produced, so a key named only inside a comment or a string value is not
+// counted and a key that arrives through an anchor or merge key is.
 func removedKeysPresent(data []byte) ([]string, error) {
-	var doc yaml.Node
+	var doc struct {
+		Identity map[string]yaml.Node `yaml:"identity"`
+	}
 	if err := yaml.Unmarshal(data, &doc); err != nil {
 		return nil, err
 	}
-	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
-		return nil, nil
-	}
-	root := doc.Content[0].Content
 	var found []string
-	for i := 0; i+1 < len(root); i += 2 {
-		if root[i].Value != "identity" || root[i+1].Kind != yaml.MappingNode {
-			continue
-		}
-		section := root[i+1].Content
-		for _, want := range removedIdentityKeys {
-			for j := 0; j+1 < len(section); j += 2 {
-				if section[j].Value == want {
-					found = append(found, want)
-					break
-				}
-			}
+	for _, want := range removedIdentityKeys {
+		if _, ok := doc.Identity[want]; ok {
+			found = append(found, want)
 		}
 	}
 	return found, nil

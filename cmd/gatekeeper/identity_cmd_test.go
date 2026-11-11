@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/x509"
@@ -14,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -35,18 +37,8 @@ func identityDeployment(t *testing.T) (dir, key, defs string) {
 	if sock := filepath.Join(dir, "id.sock"); len(sock) >= 108 {
 		t.Fatalf("socket path %q is %d bytes, over the 108-byte sun_path limit; point TMPDIR at a shorter directory", sock, len(sock))
 	}
-	_, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	der, err := x509.MarshalPKCS8PrivateKey(priv)
-	if err != nil {
-		t.Fatal(err)
-	}
 	key = filepath.Join(dir, "key.pem")
-	if err := os.WriteFile(key, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	writeSigningKey(t, key)
 	defs = filepath.Join(dir, "defs")
 	if err := os.Mkdir(defs, 0o755); err != nil {
 		t.Fatal(err)
@@ -55,6 +47,22 @@ func identityDeployment(t *testing.T) (dir, key, defs string) {
 		t.Fatal(err)
 	}
 	return dir, key, defs
+}
+
+// writeSigningKey writes a new Ed25519 signing key, mode 0600, at path.
+func writeSigningKey(t *testing.T, path string) {
+	t.Helper()
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0o600); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func writeConfig(t *testing.T, dir, body string) string {
@@ -68,8 +76,50 @@ func writeConfig(t *testing.T, dir, body string) string {
 
 func startServe(t *testing.T, cfgPath, sock string) {
 	t.Helper()
+	startServeWith(t, []string{"--config", cfgPath, "--socket", sock}, sock, io.Discard)
+}
+
+// syncBuffer is a writer a test can read while serve is still writing to it.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// waitForLog returns the captured log once it holds want, and fails when it
+// does not within a few seconds.
+func waitForLog(t *testing.T, b *syncBuffer, want string) string {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if got := b.String(); strings.Contains(got, want) {
+			return got
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the injected writer never received %q; it holds %q", want, b.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// startServeWith runs serve with args, writing its log to logOut, and waits for
+// the socket sock to appear. The log goes through the writer, never through a
+// swapped os.Stderr.
+func startServeWith(t *testing.T, args []string, sock string, logOut io.Writer) {
+	t.Helper()
 	done := make(chan error, 1)
-	go func() { done <- runServe([]string{"--config", cfgPath, "--socket", sock}) }()
+	go func() { done <- serve(args, logOut) }()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		if _, err := os.Stat(sock); err == nil {
@@ -289,21 +339,14 @@ func TestServeLogsOneWarningNamingRemovedOperatorKeys(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			dir, key, defs := identityDeployment(t)
 			cfg := writeConfig(t, dir, "identity:\n  key_path: "+key+"\n  definitions_dir: "+defs+"\n  spawn_root: "+filepath.Join(dir, "spawn")+"\n"+c.extra)
-			r, w, err := os.Pipe()
-			if err != nil {
-				t.Fatal(err)
-			}
-			orig := os.Stderr
-			os.Stderr = w
-			startServe(t, cfg, filepath.Join(dir, "id.sock"))
-			os.Stderr = orig
-			w.Close()
-			raw, err := io.ReadAll(r)
-			if err != nil {
-				t.Fatal(err)
-			}
+			sock := filepath.Join(dir, "id.sock")
+			var logOut syncBuffer
+			startServeWith(t, []string{"--config", cfg, "--socket", sock}, sock, &logOut)
+			// The capture has to reach serve's own lines, or an empty warning
+			// list proves nothing about the warning.
+			raw := waitForLog(t, &logOut, "identity: serving")
 			var warnings []string
-			for _, line := range strings.Split(string(raw), "\n") {
+			for _, line := range strings.Split(raw, "\n") {
 				if strings.Contains(line, "deprecated") {
 					warnings = append(warnings, line)
 				}

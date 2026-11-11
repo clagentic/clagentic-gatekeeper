@@ -9,11 +9,7 @@ import (
 
 func loadIdentity(t *testing.T, body string) *Config {
 	t.Helper()
-	p := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := Load(p)
+	cfg, err := Load(writeTemp(t, body))
 	if err != nil {
 		t.Fatal(err)
 	}

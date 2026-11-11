@@ -89,14 +89,24 @@ func (c Client) IssueChild(req ChildRequest) (*Issued, error) {
 	return c.issue(PathIssueChild, req)
 }
 
-// FetchJWKS reads the key set the server publishes.
-func (c Client) FetchJWKS() (JWKS, error) {
+// FetchJWKSBytes reads the key set document exactly as the server sends it, so
+// a caller can compare it with a file byte for byte.
+func (c Client) FetchJWKSBytes() ([]byte, error) {
 	body, status, err := c.do(http.MethodGet, PathJWKS, nil)
 	if err != nil {
-		return JWKS{}, err
+		return nil, err
 	}
 	if status != http.StatusOK {
-		return JWKS{}, fmt.Errorf("jwks answered %d", status)
+		return nil, fmt.Errorf("jwks answered %d", status)
+	}
+	return body, nil
+}
+
+// FetchJWKS reads the key set the server publishes.
+func (c Client) FetchJWKS() (JWKS, error) {
+	body, err := c.FetchJWKSBytes()
+	if err != nil {
+		return JWKS{}, err
 	}
 	var doc JWKS
 	if err := json.Unmarshal(body, &doc); err != nil {

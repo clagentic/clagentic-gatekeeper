@@ -10,11 +10,16 @@
 # and the domain-aware fail-closed MISS semantics for an A2A-domain mint
 # request (a resolution-policy change, not a config-shape change — see
 # docs/SETUP.md and docs/SIDECAR-READ-CONTRACT.md).
+#
+# Gatekeeper refuses a config_schema_version newer than the one it reads (2).
+# Leaving the key out is accepted.
 config_schema_version: 2
 
 # GitHub org/account the Apps are installed on.
 github:
-  # The org or user login that owns the target repositories.
+  # The org or user login that owns the target repositories. `gatekeeper mint
+  # --repo owner/name` refuses an owner that differs from this one (compared
+  # without regard to case); a bare `--repo name` is not checked.
   owner: your-org-name
   # GitHub API base. Override for GitHub Enterprise Server.
   api_base: https://api.github.com
@@ -78,7 +83,9 @@ attestation:
   # Layer (b): the crew-sidecar adapter(s). Each entry is ONE adapter
   # behind the attestation interface, never assumed to exist — all three
   # fields (dir, file_prefix, session_id_env) are required together to
-  # enable an entry; a partial entry is treated as disabled. Entries are
+  # enable an entry; a partial entry is treated as disabled. dir must be an
+  # absolute path (so must configured.source when type is file); a relative
+  # one is refused at load. Entries are
   # tried in the order listed; the first whose identity file is present
   # for the current invocation wins.
   #
@@ -355,11 +362,16 @@ roles:
 #   key_path: /etc/gatekeeper/identity-key.pem
 #   # EdDSA (default) or ES256; must agree with the key type.
 #   alg: EdDSA
-#   # The published key set is written here at start and served on the socket.
+#   # The published key set is written here at start, from the same bytes the
+#   # socket serves, so `gatekeeper self-check` can compare them byte for byte.
 #   jwks_path: /var/lib/gatekeeper/jwks.json
 #   # iss claim. Default: unix://<socket path>.
 #   issuer: unix:///run/clagentic-gatekeeper/identity.sock
 #   # Default /run/clagentic-gatekeeper/identity.sock; `serve --socket` wins.
+#   # Every command that names the socket resolves it in the same order: the
+#   # --socket flag, then this key (read through --config), then the default.
+#   # It must be absolute and at most 107 bytes (the unix socket path limit);
+#   # a relative or longer value is refused at load, naming this key.
 #   socket_path: /run/clagentic-gatekeeper/identity.sock
 #   # Default "0600" (serving uid only). A second layer: serve answers only a
 #   # peer whose SO_PEERCRED uid is the serving uid, whatever the mode.
@@ -383,3 +395,18 @@ roles:
 #   spawn_root: /run/clagentic-gatekeeper/spawn
 #   # Default and maximum 43200.
 #   session_ttl_seconds: 43200
+#   # Previous signing keys, as public JWKs (kty, crv, x, y, kid, alg; `use: sig`
+#   # is accepted so an entry can be copied from the published key set). On
+#   # rotation, move the old key's entry here: it is published beside the
+#   # current key, so a token it signed verifies until its exp. It never signs.
+#   # Refused, naming the entry: a private member (d), an unknown member, a kid
+#   # that is not the key's RFC 7638 thumbprint, a repeated kid, or the kid of
+#   # the current signing key (checked when serve loads the key, since the config
+#   # alone does not know it). Drop an entry once the longest-lived token it
+#   # signed (session_ttl_seconds) has expired.
+#   retired_keys:
+#     - kty: OKP
+#       crv: Ed25519
+#       alg: EdDSA
+#       kid: the-rfc-7638-thumbprint-of-x
+#       x: the-base64url-public-key

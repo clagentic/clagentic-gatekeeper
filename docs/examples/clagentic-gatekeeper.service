@@ -1,0 +1,45 @@
+# Example systemd unit for `gatekeeper serve`. Copy it to the unit directory,
+# adjust the paths and the user, and see "Running under a service manager" in
+# docs/SETUP.md for what each setting is for.
+[Unit]
+Description=clagentic: gatekeeper identity assertion issuer
+After=local-fs.target
+# Restart rate limit: these two belong in [Unit], not [Service].
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+# The serving uid. Every agent that asks for an assertion runs as this uid:
+# the issuer serves that uid and no other.
+User=gatekeeper
+Group=gatekeeper
+
+# The service manager owns the socket directory. It creates
+# /run/clagentic-gatekeeper before start, owned by User, and removes it, socket
+# and spawn directories included, whenever the unit stops, a restart after a
+# failure included. serve refuses to start over an existing socket and never
+# unlinks one, so this is what clears a stale socket.
+RuntimeDirectory=clagentic-gatekeeper
+# Not group or other writable: serve refuses a socket directory that is.
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=no
+
+# Where identity.jwks_path points. Created owned by User for the same reason.
+StateDirectory=clagentic-gatekeeper
+StateDirectoryMode=0755
+
+# identity.socket_path is /run/clagentic-gatekeeper/identity.sock in this
+# config, which is also the built-in default.
+ExecStart=/usr/local/bin/gatekeeper serve --config /etc/clagentic/gatekeeper/config.yaml
+
+# A start that fails (a trust root another uid can write, a bad retired_keys
+# entry) fails again until the config is fixed; do not spin on it.
+Restart=on-failure
+RestartSec=5
+
+SyslogIdentifier=clagentic-gatekeeper
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target
