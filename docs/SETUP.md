@@ -925,9 +925,17 @@ misbehaved or silently did nothing; each is now refused, naming the key or flag:
   `self-check`;
 - an `identity.socket_path` or `--socket` longer than 107 bytes;
 - `github.owner` was never read. `gatekeeper mint --repo owner/name` now refuses
-  an owner that differs from it; a bare `--repo name` is unchanged. If the key
-  still holds the placeholder from an old copy of the example, set it to the real
-  owner or remove it;
+  an owner that differs from it. A bare `--repo name` is resolved against it, and
+  is refused, before any broker or GitHub call, when `github.owner` is unset:
+  pass `owner/name` or set the key. If the key still holds the placeholder from an
+  old copy of the example, set it to the real owner;
+- a mint for a repository the App installation does not cover now fails with
+  `REPO_NOT_IN_INSTALLATION` (GitHub's 422 "does not exist or is not accessible to
+  the parent installation"), naming the repository: the repository name is the
+  likely cause, not the installation. Every other GitHub error from the token
+  call keeps its own class and now names the HTTP status, the endpoint path and
+  `X-GitHub-Request-Id` (`none` when GitHub sent none), with the response body
+  capped at 512 bytes;
 - `config_schema_version` was never read. A value above 2 is now refused; an
   unset or lower value loads as before;
 - an `identity` section that arrives through a YAML merge key or anchor is now

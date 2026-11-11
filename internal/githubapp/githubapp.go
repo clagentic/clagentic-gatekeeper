@@ -15,11 +15,14 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
 	"net/http"
+	neturl "net/url"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -182,6 +185,18 @@ type accessTokenResponse struct {
 	ExpiresAt string `json:"expires_at"`
 }
 
+// isRepoNotInstalled reports whether a 422 body carries GitHub's documented
+// repository-not-accessible message, read from the JSON message field.
+func isRepoNotInstalled(body []byte) bool {
+	var e struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(body, &e); err != nil {
+		return false
+	}
+	return strings.Contains(e.Message, repoNotInstalledMessage)
+}
+
 // exchangeToken swaps a signed App JWT for a scoped installation access token.
 func exchangeToken(ctx context.Context, apiBase string, installationID int64, jwt string, permissions map[string]string, repositories []string) (Token, error) {
 	url := fmt.Sprintf("%s/app/installations/%d/access_tokens", apiBase, installationID)
@@ -208,20 +223,37 @@ func exchangeToken(ctx context.Context, apiBase string, installationID int64, jw
 	httpReq.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	httpReq.Header.Set("Content-Type", "application/json")
 
+	path := "/app/installations/" + strconv.FormatInt(installationID, 10) + "/access_tokens"
+	if u, perr := neturl.Parse(url); perr == nil && u.Path != "" {
+		path = u.Path
+	}
+
 	resp, err := http.DefaultClient.Do(httpReq)
 	if err != nil {
-		return Token{}, fmt.Errorf("call GitHub API: %w", err)
+		// url.Error repeats the full URL; the path is what the caller needs.
+		var ue *neturl.Error
+		if errors.As(err, &ue) {
+			err = ue.Err
+		}
+		return Token{}, fmt.Errorf("call GitHub API POST %s: %w", path, err)
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return Token{}, fmt.Errorf("read response body: %w", err)
+		return Token{}, fmt.Errorf("read response body from POST %s: %w", path, err)
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		// GitHub error bodies are safe to surface — no secrets.
-		return Token{}, fmt.Errorf("GitHub API returned %d: %s", resp.StatusCode, string(respBody))
+		requestID := resp.Header.Get("X-GitHub-Request-Id")
+		if requestID == "" {
+			requestID = "none"
+		}
+		if resp.StatusCode == http.StatusUnprocessableEntity && isRepoNotInstalled(respBody) {
+			return Token{}, &RepoNotInInstallationError{Repos: repositories, Path: path, RequestID: requestID}
+		}
+		// GitHub error bodies carry no secrets; the excerpt is capped.
+		return Token{}, &APIError{Status: resp.StatusCode, Path: path, RequestID: requestID, Body: excerpt(respBody)}
 	}
 
 	var tokenResp accessTokenResponse

@@ -300,16 +300,21 @@ func runMint(args []string) error {
 	}
 
 	var repos []string
+	slug := ""
 	if *repo != "" {
 		bare, err := repoForMint(*repo, cfg.GitHub.Owner)
 		if err != nil {
 			return err
 		}
 		repos = []string{bare}
+		slug = repoSlug(*repo, cfg.GitHub.Owner, bare)
 	}
 
 	res, err := svc.MintAttributed(context.Background(), mintDomain, *roleName, repos)
 	if err != nil {
+		if slug != "" {
+			return fmt.Errorf("mint (repo %s): %w", slug, err)
+		}
 		return fmt.Errorf("mint: %w", err)
 	}
 	token := res.Token
@@ -516,17 +521,30 @@ func parseRepoName(s string) (string, error) {
 // configured github.owner is the owner every target repository belongs to: an
 // installation token is minted for that org, so a --repo naming another owner
 // would otherwise be reduced to its bare name and minted against the wrong
-// org's repository of the same name. An empty owner, or a bare name, is not
-// checked.
+// org's repository of the same name. A bare name is resolved against
+// github.owner and refused when that is unset, so a bare name is never
+// forwarded to GitHub unvalidated.
 func repoForMint(flagValue, configuredOwner string) (string, error) {
 	owner, bare, err := parseRepo(flagValue)
 	if err != nil {
 		return "", fmt.Errorf("--repo %q: %w", flagValue, err)
 	}
+	if owner == "" && configuredOwner == "" {
+		return "", fmt.Errorf("--repo %q: a bare repository name needs github.owner to resolve it; pass owner/name or set github.owner", flagValue)
+	}
 	if owner != "" && configuredOwner != "" && !strings.EqualFold(owner, configuredOwner) {
 		return "", fmt.Errorf("--repo %q: owner %q is not github.owner %q", flagValue, owner, configuredOwner)
 	}
 	return bare, nil
+}
+
+// repoSlug is the owner/name a mint error names: the owner the request was
+// resolved against, or the flag's own owner when github.owner is unset.
+func repoSlug(flagValue, configuredOwner, bare string) string {
+	if configuredOwner != "" {
+		return configuredOwner + "/" + bare
+	}
+	return flagValue
 }
 
 // parseRepo is parseRepoName that also returns the owner segment, empty for a
