@@ -86,24 +86,6 @@ roles:
 `), pemKey
 }
 
-func captureStderr(t *testing.T, fn func()) string {
-	t.Helper()
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("captureStderr: %v", err)
-	}
-	orig := os.Stderr
-	os.Stderr = w
-	defer func() { os.Stderr = orig }()
-	fn()
-	w.Close()
-	data, err := io.ReadAll(r)
-	if err != nil {
-		t.Fatalf("captureStderr: read: %v", err)
-	}
-	return string(data)
-}
-
 type mintRun struct {
 	stdout, stderr string
 	err            error
