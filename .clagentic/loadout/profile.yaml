@@ -1,4 +1,12 @@
-# DRAFT repo profile, inferred from the file tree. Review every line before committing.
-# Observations:
-#   - root packaging manifest: go.mod
+# Repo profile for the gatekeeper: a released Go tool (CLI plus a local unix-socket issuer).
 class: released-tool
+paths:
+  # Deployment-local loadout config: carries agent role names, a host install command and absolute Go paths.
+  ".clagentic/**": {class: internal}
+  # Session-memory project config for this deployment's tooling, not part of what ships.
+  ".lore": {class: internal}
+exposure: local_or_ci_only      # no network listener; the issuer serves a unix socket only
+data: internal                  # handles credential material, not customer data
+visibility: public
+merge_control: review_required  # .clagentic/loadout/config.yaml requires reviewer and security roles
+confirmed_at: 2026-11-11
