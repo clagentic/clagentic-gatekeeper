@@ -954,8 +954,10 @@ exactly as before (same stdout, stderr and exit code). A relative path is refuse
 at load, naming the key.
 
 ```yaml
-mint_record_path: /var/lib/gatekeeper/mints.jsonl
+mint_record_path: /absolute/path/to/mint-records.jsonl
 ```
+
+The operator picks the path; the one above is a placeholder.
 
 The file is created `0600` and opened for append; each record is one line,
 written in a single call. The parent directory must exist. Gatekeeper does not
@@ -995,6 +997,7 @@ mint got: an entitlement refusal has the caller but no installation id.
 |----------|---------|
 | `repo_not_in_installation` | GitHub refused a requested repository as not covered by the installation (HTTP 422) |
 | `github_api` | any other non-2xx answer from GitHub; `status` and `request_id` say which |
+| `github_response` | GitHub answered 2xx but gatekeeper could not parse the body (malformed JSON, unparseable `expires_at`); `status` and `request_id` say which answer |
 | `transport` | GitHub was not reached, or its answer was not read; there is no status |
 | `broker` | an App id, installation id, key or slug could not be read from the broker, or was unusable |
 | `entitlement` | the attestation or the role refused, before any GitHub call |

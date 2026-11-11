@@ -46,8 +46,9 @@ token:
 # the permissions and repository selection GitHub returned, GitHub's request id
 # and a token fingerprint, never the token. Must be an absolute path; a relative
 # one is refused at load. The file is created 0600 and is not rotated by
-# gatekeeper. See docs/SETUP.md, "The mint record".
-# mint_record_path: /var/lib/gatekeeper/mints.jsonl
+# gatekeeper. The operator picks the path; the one below is a placeholder.
+# See docs/SETUP.md, "The mint record".
+# mint_record_path: /absolute/path/to/mint-records.jsonl
 
 # Attestation-provider chain: resolves the ATTESTED invoking identity, in
 # order (0) identity assertion (when configured) -> (a) configured -> (b)

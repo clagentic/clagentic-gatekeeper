@@ -127,6 +127,20 @@ func TestMintRecordFailureCategories(t *testing.T) {
 			wantTail: `"outcome":"error","failure_category":"github_api","status":500}`,
 		},
 		{
+			name: "github_response malformed json", role: "tester", broker: fullBroker(), binding: builderBinding(),
+			mintFn: func(context.Context, githubapp.MintRequest) (githubapp.Token, error) {
+				return githubapp.Token{}, &githubapp.ResponseError{Op: "parse response", Status: 201, RequestID: "REQ-201", Err: errors.New("invalid character")}
+			},
+			wantTail: `"outcome":"error","failure_category":"github_response","status":201,"request_id":"REQ-201"}`,
+		},
+		{
+			name: "github_response bad expires_at without request id", role: "tester", broker: fullBroker(), binding: builderBinding(),
+			mintFn: func(context.Context, githubapp.MintRequest) (githubapp.Token, error) {
+				return githubapp.Token{}, &githubapp.ResponseError{Op: `parse expires_at "soon"`, Status: 201, RequestID: githubapp.NoRequestID, Err: errors.New("bad time")}
+			},
+			wantTail: `"outcome":"error","failure_category":"github_response","status":201}`,
+		},
+		{
 			name: "transport", role: "tester", broker: fullBroker(), binding: builderBinding(),
 			mintFn: func(context.Context, githubapp.MintRequest) (githubapp.Token, error) {
 				return githubapp.Token{}, &githubapp.TransportError{Op: "call GitHub API", Path: "/p", Err: errors.New("connection refused")}

@@ -40,8 +40,11 @@ func failure(err error) (category string, status int, requestID string) {
 	var repoErr *githubapp.RepoNotInInstallationError
 	var apiErr *githubapp.APIError
 	var transportErr *githubapp.TransportError
+	var responseErr *githubapp.ResponseError
 	var tagged *categorizedError
 	switch {
+	case errors.As(err, &responseErr):
+		return mintrecord.CategoryGitHubResponse, responseErr.Status, requestIDOrEmpty(responseErr.RequestID)
 	case errors.As(err, &repoErr):
 		return mintrecord.CategoryRepoNotInInstallation, 422, requestIDOrEmpty(repoErr.RequestID)
 	case errors.As(err, &apiErr):

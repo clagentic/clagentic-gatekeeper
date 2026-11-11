@@ -75,9 +75,30 @@ func (e *TransportError) Error() string {
 
 func (e *TransportError) Unwrap() error { return e.Err }
 
+// ResponseError is a 2xx answer from GitHub that gatekeeper could not use: the
+// body was not the expected JSON or a field in it did not parse. GitHub did
+// answer, so Status and RequestID are known.
+type ResponseError struct {
+	Op        string // what failed, e.g. "parse response"
+	Status    int
+	RequestID string // NoRequestID when GitHub sent none
+	Err       error
+}
+
+func (e *ResponseError) Error() string { return fmt.Sprintf("%s: %v", e.Op, e.Err) }
+
+func (e *ResponseError) Unwrap() error { return e.Err }
+
 // NoRequestID is the placeholder an error carries when GitHub sent no
 // X-GitHub-Request-Id.
 const NoRequestID = "none"
+
+func requestIDOrNone(id string) string {
+	if id == "" {
+		return NoRequestID
+	}
+	return id
+}
 
 // excerpt flattens whitespace and caps a response body.
 func excerpt(body []byte) string {

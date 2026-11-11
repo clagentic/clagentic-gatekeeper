@@ -29,6 +29,9 @@ const (
 	CategoryRepoNotInInstallation = "repo_not_in_installation"
 	// CategoryGitHubAPI: any other non-2xx answer from GitHub; Status is set.
 	CategoryGitHubAPI = "github_api"
+	// CategoryGitHubResponse: GitHub answered 2xx but the body could not be
+	// parsed (malformed JSON, unparseable expires_at); Status is set.
+	CategoryGitHubResponse = "github_response"
 	// CategoryTransport: GitHub was not reached or its answer was not read.
 	CategoryTransport = "transport"
 	// CategoryBroker: a credential could not be read from the broker (App id,

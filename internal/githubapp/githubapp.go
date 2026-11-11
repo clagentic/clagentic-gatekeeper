@@ -258,10 +258,7 @@ func exchangeToken(ctx context.Context, apiBase string, installationID int64, jw
 
 	rawRequestID := resp.Header.Get("X-GitHub-Request-Id")
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		requestID := rawRequestID
-		if requestID == "" {
-			requestID = NoRequestID
-		}
+		requestID := requestIDOrNone(rawRequestID)
 		if resp.StatusCode == http.StatusUnprocessableEntity && isRepoNotInstalled(respBody) {
 			return Token{}, &RepoNotInInstallationError{Repos: repositories, Path: path, RequestID: requestID}
 		}
@@ -271,12 +268,12 @@ func exchangeToken(ctx context.Context, apiBase string, installationID int64, jw
 
 	var tokenResp accessTokenResponse
 	if err := json.Unmarshal(respBody, &tokenResp); err != nil {
-		return Token{}, fmt.Errorf("parse response: %w", err)
+		return Token{}, &ResponseError{Op: "parse response", Status: resp.StatusCode, RequestID: requestIDOrNone(rawRequestID), Err: err}
 	}
 
 	expiresAt, err := time.Parse(time.RFC3339, tokenResp.ExpiresAt)
 	if err != nil {
-		return Token{}, fmt.Errorf("parse expires_at %q: %w", tokenResp.ExpiresAt, err)
+		return Token{}, &ResponseError{Op: fmt.Sprintf("parse expires_at %q", tokenResp.ExpiresAt), Status: resp.StatusCode, RequestID: requestIDOrNone(rawRequestID), Err: err}
 	}
 
 	return Token{
