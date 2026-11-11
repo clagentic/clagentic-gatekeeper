@@ -674,6 +674,19 @@ The socket also answers `GET /.well-known/jwks.json` (HTTP/1.1), so a
 verifier trusting `iss = unix:///path/to/socket` finds the keys with no extra
 configuration.
 
+#### `version`
+
+`gatekeeper version` prints the source the binary was built from, read from the
+Go build info: `clagentic-gatekeeper <commit> dirty=<true|false>`. With `--json`
+it prints `{"commit", "dirty", "go_version", "vcs_time"}`. Run it after
+`make install` to check that the installed binary matches the commit you meant
+to deploy; `make install` builds from the checkout so the commit is stamped.
+
+A binary built without VCS data (outside a checkout, or with
+`-buildvcs=false`) prints `clagentic-gatekeeper commit unknown`; with `--json`,
+`commit` and `dirty` are `null`. No commit is guessed in its place. The text
+form used to be the fixed string `clagentic-gatekeeper dev`.
+
 #### `self-check`
 
 ```

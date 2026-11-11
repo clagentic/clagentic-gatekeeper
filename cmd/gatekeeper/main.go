@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -60,7 +61,10 @@ func main() {
 			os.Exit(1)
 		}
 	case "version":
-		fmt.Println("clagentic-gatekeeper dev")
+		if err := runVersion(os.Args[2:], debug.ReadBuildInfo, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	default:
 		usage()
 		os.Exit(2)
@@ -81,7 +85,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  hook process --socket <path> [--definition <name>] [--origin <origin>]   (prints "+hookEnvName+"=<dir> for a launcher's child)")
 	fmt.Fprintln(os.Stderr, "  hooks-install --runtime claude-code --settings <path> --socket <path> [--mode warn|enforce] [--remove] [--dry-run]")
 	fmt.Fprintln(os.Stderr, "  render-agent --runtime claude-code [--definitions-dir <dir>] <definition>")
-	fmt.Fprintln(os.Stderr, "  version")
+	fmt.Fprintln(os.Stderr, "  version [--json]   (source commit and dirty flag the binary was built from)")
 }
 
 // mintResult is the OPTIONAL structured mint output emitted with --json

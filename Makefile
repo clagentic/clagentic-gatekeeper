@@ -38,8 +38,11 @@ LIVETEST_ARGS ?=
 live-test:
 	go run ./cmd/livetest $(LIVETEST_ARGS)
 
+# -buildvcs=true stamps the checkout's commit and dirty flag into the binary so
+# `gatekeeper version` can report them; it fails the build outside a checkout
+# rather than shipping a binary that reports an unknown commit.
 install:
-	go build -o gatekeeper ./cmd/gatekeeper
+	go build -buildvcs=true -o gatekeeper ./cmd/gatekeeper
 	install -d "$(BINDIR)"
 	install -m 0755 gatekeeper "$(BINDIR)/gatekeeper"
 	rm -f gatekeeper
