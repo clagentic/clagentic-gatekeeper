@@ -10,3 +10,7 @@ data: internal                  # handles credential material, not customer data
 visibility: public
 merge_control: review_required  # .clagentic/loadout/config.yaml requires reviewer and security roles
 confirmed_at: 2026-11-11
+test:
+  # go test -json writes the event stream to stdout; no junit file, no extra host binary.
+  report_format: go-test-json
+  full: [go, test, -json, ./...]
