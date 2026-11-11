@@ -43,6 +43,15 @@ merge:
     - cmd: "GOPATH=/root/go GOMODCACHE=/root/go/pkg/mod GOCACHE=/root/.cache/go make install PREFIX=/usr/local"
       description: "Rebuild and install the role-scoped mint binary via the shared parameterized `make install` target so reference-role changes (e.g. builder workflows:write, lr-8681; multi-sidecar attestation.sidecars, lr-86779f) take effect on this host without a manual redeploy. GOPATH/GOMODCACHE/GOCACHE/PREFIX are supplied inline here, our-env-only, off the shipped Makefile's own defaults. Runs against the merged origin/main loadout-merge already syncs the working tree to before invoking post_merge_steps."
       on_failure: fail
+    # Readback of the install above: the installed binary prints the commit and
+    # dirty flag it was built from, so the merge output carries what is now
+    # deployed. Same single-command, no-shell-operator shape as the step above;
+    # the path follows that step's PREFIX. on_failure is warn because the step
+    # schema allows only fail or warn, and a failed readback must not report a
+    # merge whose install passed as failed.
+    - cmd: "/usr/local/bin/gatekeeper version --json"
+      description: "Read back the installed gatekeeper binary's source commit and dirty flag (commit null means the binary carries no VCS data)."
+      on_failure: warn
 
   # required_reviewer_roles (lr-9c7f47): WHY THIS GATE EXISTS HERE, SPECIFICALLY
   # -- the post_merge_steps step above does not just land code on main, it
