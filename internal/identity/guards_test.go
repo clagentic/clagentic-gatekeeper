@@ -149,6 +149,26 @@ func TestReapFailuresAreLoggedThroughLogf(t *testing.T) {
 	}
 }
 
+// The final name is published once link succeeds, so a failed removal of the
+// temporary name must not skip the directory flush; the flush error is joined.
+func TestPublishFileAtFlushesTheDirectoryWhenTheTemporaryNameCannotBeRemoved(t *testing.T) {
+	origUnlink, origFsync := unlinkat, fsyncDir
+	t.Cleanup(func() { unlinkat, fsyncDir = origUnlink, origFsync })
+	unlinkat = func(int, string) error { return syscall.EPERM }
+	flushes := 0
+	flushErr := syscall.EIO
+	fsyncDir = func(int) error { flushes++; return flushErr }
+
+	dfd := openDirFD(t, t.TempDir())
+	err := publishFileAt(dfd, "out", []byte("x"), 0o600, false)
+	if flushes != 1 {
+		t.Fatalf("directory flushes after an unremovable temporary name: %d, want 1", flushes)
+	}
+	if !errors.Is(err, syscall.EPERM) || !errors.Is(err, flushErr) {
+		t.Fatalf("both the removal and the flush failure are reported: %v", err)
+	}
+}
+
 // A failed removal of the temporary name is part of the result, whichever way
 // the publish went.
 func TestPublishFileAtReportsAFailedRemovalOfItsTemporaryName(t *testing.T) {

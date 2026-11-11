@@ -14,6 +14,10 @@ import (
 // filesystem cannot produce on demand.
 var unlinkat = syscall.Unlinkat
 
+// fsyncDir is syscall.Fsync unless a test needs to see whether the directory
+// flush ran.
+var fsyncDir = syscall.Fsync
+
 // publishFileAt is the one way serve makes a file visible under its final name:
 // the content is written to a hidden temporary name inside the directory dfd,
 // flushed to disk, moved to name, and the directory entry is flushed too. A
@@ -84,12 +88,18 @@ func publishFileAt(dfd int, name string, content []byte, mode os.FileMode, repla
 		if err := linkat(dfd, tmpName, dfd, name); err != nil {
 			return fmt.Errorf("publish %s: %w", name, err)
 		}
-		if err := removeTmp(); err != nil {
-			return err
+		// The final name exists now, so a failed removal must not skip the
+		// directory flush below; both outcomes are reported.
+		if rerr := removeTmp(); rerr != nil {
+			return errors.Join(rerr, flushDir(dfd, name))
 		}
 	}
 	// Past this point the final name exists; a failed flush is reported.
-	if err := syscall.Fsync(dfd); err != nil {
+	return flushDir(dfd, name)
+}
+
+func flushDir(dfd int, name string) error {
+	if err := fsyncDir(dfd); err != nil {
 		return fmt.Errorf("flush the directory of %s: %w", name, err)
 	}
 	return nil
