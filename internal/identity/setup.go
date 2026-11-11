@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"path/filepath"
 	"time"
+
+	"github.com/clagentic/clagentic-gatekeeper/internal/config"
 )
 
 // Settings is everything NewIssuer needs, already resolved from config and
@@ -24,6 +26,9 @@ type Settings struct {
 	SessionTTL     time.Duration
 	// HelperExe is the path of the gatekeeper client binary; see Issuer.HelperExe.
 	HelperExe string
+	// RetiredKeys are previous signing keys published beside the current one;
+	// see LoadKeyringRetired.
+	RetiredKeys []JWK
 }
 
 // NewIssuer validates s, verifies every trust root it names (signing key,
@@ -34,8 +39,14 @@ func NewIssuer(s Settings) (*Issuer, error) {
 	if s.KeyPath == "" {
 		return nil, errors.New("identity.key_path is required to serve")
 	}
-	if !filepath.IsAbs(s.SocketPath) {
-		return nil, fmt.Errorf("socket path %q must be absolute", s.SocketPath)
+	// The length limit is enforced where the path is bound (Listen) and where it
+	// is named (config load, the socket flags); a Settings that only derives the
+	// default issuer and spawn root from it is not bound here.
+	if err := config.CheckAbsPath("socket path", s.SocketPath); err != nil {
+		return nil, err
+	}
+	if s.SocketPath == "" {
+		return nil, errors.New("socket path is empty")
 	}
 	ttl := s.SessionTTL
 	if ttl == 0 {
@@ -59,7 +70,7 @@ func NewIssuer(s Settings) (*Issuer, error) {
 		return nil, fmt.Errorf("identity.spawn_root %q must be absolute", root)
 	}
 
-	keys, err := LoadKeyring(s.KeyPath, s.Alg)
+	keys, err := LoadKeyringRetired(s.KeyPath, s.Alg, s.RetiredKeys)
 	if err != nil {
 		return nil, err
 	}
@@ -111,5 +122,7 @@ func (k *Keyring) WriteJWKS(path string) error {
 		return err
 	}
 	defer dir.Close()
-	return publishFileAt(int(dir.Fd()), filepath.Base(path), append(body, '\n'), 0o644, true)
+	// The bytes are written as they are served, with no trailing newline, so
+	// the file and the socket answer can be compared byte for byte.
+	return publishFileAt(int(dir.Fd()), filepath.Base(path), body, 0o644, true)
 }

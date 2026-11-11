@@ -32,12 +32,17 @@ type publicKey struct {
 	ec  *ecdsa.PublicKey
 }
 
-// Keyring holds the current signing key and every published public key.
+// Keyring holds the current signing key and every published public key: the
+// current one first, then the retired ones in the order they were given.
 type Keyring struct {
 	current publicKey
 	edPriv  ed25519.PrivateKey
 	ecPriv  *ecdsa.PrivateKey
 	public  []publicKey
+	// jwks is the published document, rendered once. The socket serves these
+	// bytes and jwks_path is written from them, so the two are identical by
+	// construction and a reader can compare them byte for byte.
+	jwks []byte
 }
 
 func b64(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
@@ -45,6 +50,15 @@ func b64(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
 // LoadKeyring reads the signing key. wantAlg may be empty, in which case the
 // key type decides; otherwise it must agree with the key.
 func LoadKeyring(keyPath, wantAlg string) (*Keyring, error) {
+	return LoadKeyringRetired(keyPath, wantAlg, nil)
+}
+
+// LoadKeyringRetired is LoadKeyring with previous signing keys published
+// beside the current one, so a token the previous key signed still verifies
+// until its exp. A retired key never signs. An entry that is not a public key,
+// whose kid is not its RFC 7638 thumbprint, that repeats another entry's kid or
+// that is the current key is refused, naming the entry.
+func LoadKeyringRetired(keyPath, wantAlg string, retired []JWK) (*Keyring, error) {
 	der, err := readPrivateKeyPEM(keyPath, "PRIVATE KEY")
 	if err != nil {
 		return nil, fmt.Errorf("signing key: %w", err)
@@ -71,6 +85,26 @@ func LoadKeyring(keyPath, wantAlg string) (*Keyring, error) {
 		return nil, fmt.Errorf("identity.alg %q does not match the %s key at %s", wantAlg, kr.current.jwk.Alg, keyPath)
 	}
 	kr.public = []publicKey{kr.current}
+	seen := map[string]int{kr.current.jwk.Kid: -1}
+	for i, r := range retired {
+		pk, err := retiredPublicKey(r)
+		if err != nil {
+			return nil, fmt.Errorf("identity.retired_keys[%d] (kid %q): %w", i, r.Kid, err)
+		}
+		if prev, dup := seen[pk.jwk.Kid]; dup {
+			if prev < 0 {
+				return nil, fmt.Errorf("identity.retired_keys[%d] (kid %q): this is the current signing key; remove it from retired_keys", i, r.Kid)
+			}
+			return nil, fmt.Errorf("identity.retired_keys[%d] (kid %q): repeats the kid of identity.retired_keys[%d]", i, r.Kid, prev)
+		}
+		seen[pk.jwk.Kid] = i
+		kr.public = append(kr.public, pk)
+	}
+	doc, err := json.MarshalIndent(kr.JWKS(), "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("render the key set: %w", err)
+	}
+	kr.jwks = doc
 	return kr, nil
 }
 
@@ -145,7 +179,8 @@ func ecPublic(pub *ecdsa.PublicKey) publicKey {
 	return publicKey{ec: pub, jwk: JWK{Kty: "EC", Crv: "P-256", Kid: kid, Alg: AlgES256, Use: "sig", X: xs, Y: ys}}
 }
 
-// JWKS returns the published key set: the current signing key only.
+// JWKS returns the published key set: the current signing key, then the retired
+// keys.
 func (k *Keyring) JWKS() JWKS {
 	out := JWKS{Keys: make([]JWK, 0, len(k.public))}
 	for _, p := range k.public {
@@ -196,7 +231,8 @@ func (k *Keyring) verify(kid, alg string, input, sig []byte) bool {
 	return false
 }
 
-// MarshalJWKS renders the published document.
+// MarshalJWKS returns the published document exactly as served and as written
+// to jwks_path.
 func (k *Keyring) MarshalJWKS() ([]byte, error) {
-	return json.MarshalIndent(k.JWKS(), "", "  ")
+	return append([]byte(nil), k.jwks...), nil
 }

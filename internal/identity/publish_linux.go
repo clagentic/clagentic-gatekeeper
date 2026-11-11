@@ -3,11 +3,16 @@
 package identity
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"syscall"
 	"unsafe"
 )
+
+// unlinkat is syscall.Unlinkat unless a test needs a removal failure the
+// filesystem cannot produce on demand.
+var unlinkat = syscall.Unlinkat
 
 // publishFileAt is the one way serve makes a file visible under its final name:
 // the content is written to a hidden temporary name inside the directory dfd,
@@ -19,7 +24,11 @@ import (
 // (a key set being refreshed); false fails with EEXIST and leaves it alone (a
 // delivery file that must not already be there). Everything is relative to
 // dfd and never follows a link.
-func publishFileAt(dfd int, name string, content []byte, mode os.FileMode, replace bool) error {
+//
+// A failure to remove the temporary name is part of the result: it is joined to
+// the error that caused the cleanup, or returned on its own when the file was
+// published.
+func publishFileAt(dfd int, name string, content []byte, mode os.FileMode, replace bool) (err error) {
 	id, err := randomID()
 	if err != nil {
 		return err
@@ -31,10 +40,22 @@ func publishFileAt(dfd int, name string, content []byte, mode os.FileMode, repla
 	}
 	tmp := os.NewFile(uintptr(fd), tmpName)
 	tmpExists := true
+	removeTmp := func() error {
+		if !tmpExists {
+			return nil
+		}
+		tmpExists = false
+		if err := unlinkat(dfd, tmpName); err != nil && !errors.Is(err, syscall.ENOENT) {
+			return fmt.Errorf("remove temporary %s: %w", tmpName, err)
+		}
+		return nil
+	}
 	defer func() {
-		tmp.Close()
-		if tmpExists {
-			_ = syscall.Unlinkat(dfd, tmpName)
+		// The explicit Close below already reported a failed flush; this one
+		// only covers the early returns, where the file is discarded anyway.
+		_ = tmp.Close()
+		if cerr := removeTmp(); cerr != nil {
+			err = errors.Join(err, cerr)
 		}
 	}()
 	// Openat's mode is filtered by the umask; fchmod is not.
@@ -56,14 +77,22 @@ func publishFileAt(dfd int, name string, content []byte, mode os.FileMode, repla
 		}
 		tmpExists = false
 	} else {
-		// link(2) never replaces, which is the no-overwrite rename.
+		// link(2) never replaces, which is the no-overwrite rename. It leaves the
+		// temporary name as a second hard link, so that name is removed at once:
+		// a crash after this point leaves the complete file under its final name
+		// and, but for the instant between the two calls, nothing else.
 		if err := linkat(dfd, tmpName, dfd, name); err != nil {
 			return fmt.Errorf("publish %s: %w", name, err)
 		}
+		if err := removeTmp(); err != nil {
+			return err
+		}
 	}
-	// Past this point the final name exists; a failed flush or cleanup is
-	// reported, and the deferred unlink removes the leftover temporary name.
-	return syscall.Fsync(dfd)
+	// Past this point the final name exists; a failed flush is reported.
+	if err := syscall.Fsync(dfd); err != nil {
+		return fmt.Errorf("flush the directory of %s: %w", name, err)
+	}
+	return nil
 }
 
 func linkat(olddirfd int, oldpath string, newdirfd int, newpath string) error {

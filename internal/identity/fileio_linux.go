@@ -15,10 +15,11 @@ import (
 var errNotRegular = errors.New("not a regular file")
 
 // isNotRegularEntry reports whether an openRegularAt failure means the entry
-// is not a plain file at all (a symlink is refused by O_NOFOLLOW with ELOOP),
-// as opposed to a plain file that could not be opened or inspected.
+// is not a plain file at all (a symlink is refused by O_NOFOLLOW with ELOOP, and
+// open(2) of a unix socket fails with ENXIO), as opposed to a plain file that
+// could not be opened or inspected.
 func isNotRegularEntry(err error) bool {
-	return errors.Is(err, errNotRegular) || errors.Is(err, syscall.ELOOP)
+	return errors.Is(err, errNotRegular) || errors.Is(err, syscall.ELOOP) || errors.Is(err, syscall.ENXIO)
 }
 
 // openRegularAt opens the plain file name inside dir for reading and returns
