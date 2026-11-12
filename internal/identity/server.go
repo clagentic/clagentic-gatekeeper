@@ -343,7 +343,18 @@ func (s *Server) Serve(ctx context.Context, l net.Listener) error {
 		_ = srv.Shutdown(shutdown)
 		_ = l.Close()
 	}()
-	go s.reapLoop(ctx)
+	// Serve must not return while the sweep can still touch the spawn root: the
+	// caller closes the issuer's directory handles as soon as Serve returns.
+	reapCtx, stopReap := context.WithCancel(ctx)
+	reaped := make(chan struct{})
+	go func() {
+		defer close(reaped)
+		s.reapLoop(reapCtx)
+	}()
+	defer func() {
+		stopReap()
+		<-reaped
+	}()
 	err := srv.Serve(peerListener{Listener: l, logf: s.log()})
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
