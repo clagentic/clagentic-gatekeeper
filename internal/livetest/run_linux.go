@@ -37,6 +37,7 @@ func Run(ctx context.Context, opts Options, out io.Writer) int {
 
 	var all []shape
 	all = append(all, env.issuerShapes()...)
+	all = append(all, env.selfCheckShapes()...)
 	all = append(all, env.hookShapes()...)
 	all = append(all, env.mintShapes()...)
 	all = append(all, env.callerShapes()...)

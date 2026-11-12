@@ -175,16 +175,25 @@ func (e *Env) prepareBinary(ctx context.Context) error {
 // writeKey creates the signing key owner-only from the first byte: the file is
 // created with mode 0600 and never exists with a wider one.
 func (e *Env) writeKey() (string, error) {
-	_, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		return "", err
-	}
-	der, err := x509.MarshalPKCS8PrivateKey(priv)
+	data, err := newSigningKeyPEM()
 	if err != nil {
 		return "", err
 	}
 	path := filepath.Join(e.Dir, "key.pem")
-	return path, writeOwnerOnly(path, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}))
+	return path, writeOwnerOnly(path, data)
+}
+
+// newSigningKeyPEM generates an Ed25519 signing key as a PKCS#8 PEM.
+func newSigningKeyPEM() ([]byte, error) {
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, err
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(priv)
+	if err != nil {
+		return nil, err
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), nil
 }
 
 func writeOwnerOnly(path string, data []byte) error {
@@ -288,7 +297,11 @@ func (e *Env) client() identity.Client {
 
 // publishedKeys reads the key set the issuer wrote at start.
 func (e *Env) publishedKeys() (identity.JWKS, error) {
-	raw, err := os.ReadFile(e.JWKSFile)
+	return readKeySet(e.JWKSFile)
+}
+
+func readKeySet(path string) (identity.JWKS, error) {
+	raw, err := os.ReadFile(path)
 	if err != nil {
 		return identity.JWKS{}, err
 	}
