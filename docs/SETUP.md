@@ -676,16 +676,37 @@ configuration.
 
 #### `version`
 
-`gatekeeper version` prints the source the binary was built from, read from the
-Go build info: `clagentic-gatekeeper <commit> dirty=<true|false>`. With `--json`
-it prints `{"commit", "dirty", "go_version", "vcs_time"}`. Run it after
-`make install` to check that the installed binary matches the commit you meant
-to deploy; `make install` builds from the checkout so the commit is stamped.
+`gatekeeper version` prints the source the binary was built from:
+`clagentic-gatekeeper <commit> dirty=<true|false|unknown> commit_source=<source>`.
+With `--json` it prints
+`{"commit", "commit_source", "vcs_revision", "dirty", "go_version", "vcs_time"}`.
+Run it after `make install` to check that the installed binary matches the
+commit you meant to deploy.
 
-A binary built without VCS data (outside a checkout, or with
-`-buildvcs=false`) prints `clagentic-gatekeeper commit unknown`; with `--json`,
-`commit` and `dirty` are `null`. No commit is guessed in its place. The text
-form used to be the fixed string `clagentic-gatekeeper dev`.
+`commit_source` says where `commit` came from:
+
+- `build_flag`: the `COMMIT` variable passed to `make install`.
+- `vcs`: the revision Go stamped from the checkout (Go build info).
+- `none`: neither was available.
+
+The `COMMIT` variable is optional and defaults to empty. When set, the install
+build links it in (`-ldflags '-X main.buildCommit=<COMMIT>'`) and it takes
+precedence over Go's VCS stamp:
+
+```
+make install COMMIT=$(git rev-parse HEAD)
+```
+
+When both a `COMMIT` and a VCS revision are present, `commit` is the `COMMIT`
+value and the Go-stamped revision is shown as `vcs_revision` (text:
+`vcs_revision=<rev>`), so a mismatch is visible. `dirty` and `vcs_time` come
+from VCS data only: they are `null` (text: `dirty=unknown`) when only `COMMIT`
+supplied the commit, never guessed.
+
+A binary built with neither `COMMIT` nor VCS data prints
+`clagentic-gatekeeper commit unknown`; with `--json`, `commit` is `null` and
+`commit_source` is `none`. No commit is guessed in its place. The text form used
+to be the fixed string `clagentic-gatekeeper dev`.
 
 #### `self-check`
 

@@ -38,11 +38,19 @@ LIVETEST_ARGS ?=
 live-test:
 	go run ./cmd/livetest $(LIVETEST_ARGS)
 
+# COMMIT, when set, is linked into the binary as main.buildCommit and reported by
+# `gatekeeper version` in preference to Go's VCS stamping. Use it where the
+# stamp is unavailable or unreliable:
+#   make install COMMIT=$(git rev-parse HEAD)
+# Left empty, no flag is passed and only the VCS stamp is used.
+COMMIT ?=
+COMMIT_LDFLAGS = $(if $(COMMIT),-ldflags '-X main.buildCommit=$(COMMIT)')
+
 # -buildvcs=true stamps the checkout's commit and dirty flag into the binary so
 # `gatekeeper version` can report them; it fails the build outside a checkout
 # rather than shipping a binary that reports an unknown commit.
 install:
-	go build -buildvcs=true -o gatekeeper ./cmd/gatekeeper
+	go build -buildvcs=true $(COMMIT_LDFLAGS) -o gatekeeper ./cmd/gatekeeper
 	install -d "$(BINDIR)"
 	install -m 0755 gatekeeper "$(BINDIR)/gatekeeper"
 	rm -f gatekeeper
