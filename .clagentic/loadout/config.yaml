@@ -23,10 +23,12 @@
 # with no shell operators) — .crew/naomi.yaml is left UNCHANGED; it remains
 # the config crew_merge.py's own Forgejo fallback path reads.
 #
-# loadout-merge already syncs the working tree to the merged SHA (git fetch
-# + git checkout --detach <merged_sha>) immediately before running
-# post_merge_steps, so this step builds from merged main automatically — no
-# checkout/sync step is added here.
+# The steps run against the merged SHA with no checkout/sync step added here.
+# loadout-merge advances the working tree in place only when it is a clean
+# checkout of the base branch; otherwise it runs the steps in a tool-owned git
+# worktree detached at the merged SHA and exports its path as
+# CLAGENTIC_LOADOUT_MERGE_TREE. Go's VCS stamping gave no commit in that tree,
+# so the install step passes the commit explicitly (see step 0).
 #
 # GOPATH/GOMODCACHE/GOCACHE are supplied inline on the cmd, matching
 # .crew/naomi.yaml's existing step exactly: these are machine-specific
@@ -40,17 +42,24 @@
 # paths.
 merge:
   post_merge_steps:
-    - cmd: "GOPATH=/root/go GOMODCACHE=/root/go/pkg/mod GOCACHE=/root/.cache/go make install PREFIX=/usr/local"
-      description: "Rebuild and install the role-scoped mint binary via the shared parameterized `make install` target so reference-role changes (e.g. builder workflows:write, lr-8681; multi-sidecar attestation.sidecars, lr-86779f) take effect on this host without a manual redeploy. GOPATH/GOMODCACHE/GOCACHE/PREFIX are supplied inline here, our-env-only, off the shipped Makefile's own defaults. Runs against the merged origin/main loadout-merge already syncs the working tree to before invoking post_merge_steps."
+    # COMMIT={merged_sha}: loadout substitutes the documented {merged_sha}
+    # placeholder with the merged commit in both loadout-merge and
+    # loadout-post-merge (the same value is exported as
+    # CLAGENTIC_LOADOUT_MERGED_SHA), and the Makefile links it in as
+    # main.buildCommit.
+    - cmd: "GOPATH=/root/go GOMODCACHE=/root/go/pkg/mod GOCACHE=/root/.cache/go make install PREFIX=/usr/local COMMIT={merged_sha}"
+      description: "Rebuild and install the role-scoped mint binary via the shared parameterized `make install` target so reference-role changes (e.g. builder workflows:write, lr-8681; multi-sidecar attestation.sidecars, lr-86779f) take effect on this host without a manual redeploy. GOPATH/GOMODCACHE/GOCACHE/PREFIX are supplied inline here, our-env-only, off the shipped Makefile's own defaults. COMMIT comes from the {merged_sha} placeholder that loadout substitutes with the merged commit before the step runs, not from git or Go's VCS stamping, so the installed binary reports the merged commit. Runs against the merged commit in the tree loadout prepares before invoking post_merge_steps."
       on_failure: fail
     # Readback of the install above: the installed binary prints the commit and
     # dirty flag it was built from, so the merge output carries what is now
     # deployed. Same single-command, no-shell-operator shape as the step above;
     # the path follows that step's PREFIX. on_failure is warn because the step
     # schema allows only fail or warn, and a failed readback must not report a
-    # merge whose install passed as failed.
+    # merge whose install passed as failed. The step above passes
+    # COMMIT={merged_sha}, so this readback is expected to show commit equal to
+    # the merged SHA with commit_source build_flag.
     - cmd: "/usr/local/bin/gatekeeper version --json"
-      description: "Read back the installed gatekeeper binary's source commit and dirty flag (commit null means the binary carries no VCS data)."
+      description: "Read back the installed gatekeeper binary's source commit and dirty flag. Expected: commit equal to the merged SHA (supplied by the {merged_sha} placeholder in the install step) with commit_source build_flag; commit null or commit_source none means the install did not receive the commit."
       on_failure: warn
     # Live harness against an isolated serve, without a runtime CLI: self-check
     # (fresh, and stale after one byte of the key set file changes) and an
