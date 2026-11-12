@@ -115,9 +115,10 @@ func TestNoRefusalCarriesFormatArgumentsOrABypass(t *testing.T) {
 	for name := range codes {
 		known[name] = true
 	}
-	// client.go reads a refusal back off the wire into an IssueError: it builds
-	// what the server already built, so it is the one source outside the guard.
-	violations, calls := refusalViolations(parseSources(t, map[string]bool{"client.go": true}), known)
+	// Client.issue reads a refusal back off the wire into an IssueError: it
+	// builds what the server already built, so it is the one site outside the
+	// guard (see isWireReadBack). The rest of client.go is walked.
+	violations, calls := refusalViolations(parsePackageSources(t), known)
 	for _, v := range violations {
 		t.Error(v)
 	}
@@ -126,21 +127,93 @@ func TestNoRefusalCarriesFormatArgumentsOrABypass(t *testing.T) {
 	}
 }
 
+// isWireReadBack reports whether fd is Client.issue, the one function that
+// decodes a refusal from the wire into an IssueError.
+func isWireReadBack(fd *ast.FuncDecl) bool {
+	if fd.Name.Name != "issue" || fd.Recv == nil || len(fd.Recv.List) != 1 {
+		return false
+	}
+	id, ok := fd.Recv.List[0].Type.(*ast.Ident)
+	return ok && id.Name == "Client"
+}
+
+// issueErrorTyped reports whether e names the IssueError type or a pointer to it.
+func issueErrorTyped(e ast.Expr) bool {
+	if star, ok := e.(*ast.StarExpr); ok {
+		e = star.X
+	}
+	id, ok := e.(*ast.Ident)
+	return ok && id.Name == "IssueError"
+}
+
+// issueErrorVars returns the names within fd that hold an IssueError: receivers,
+// parameters, results and var declarations typed IssueError or *IssueError, and
+// the first result of IsIssueError.
+func issueErrorVars(fd *ast.FuncDecl) map[string]bool {
+	vars := map[string]bool{}
+	addFields := func(fl *ast.FieldList) {
+		if fl == nil {
+			return
+		}
+		for _, field := range fl.List {
+			if issueErrorTyped(field.Type) {
+				for _, n := range field.Names {
+					vars[n.Name] = true
+				}
+			}
+		}
+	}
+	addFields(fd.Recv)
+	ast.Inspect(fd, func(n ast.Node) bool {
+		switch x := n.(type) {
+		case *ast.FuncType:
+			addFields(x.Params)
+			addFields(x.Results)
+		case *ast.ValueSpec:
+			if x.Type != nil && issueErrorTyped(x.Type) {
+				for _, n := range x.Names {
+					vars[n.Name] = true
+				}
+			}
+		case *ast.AssignStmt:
+			if len(x.Rhs) != 1 {
+				break
+			}
+			if call, ok := x.Rhs[0].(*ast.CallExpr); ok {
+				if fn, ok := call.Fun.(*ast.Ident); ok && fn.Name == "IsIssueError" {
+					if id, ok := x.Lhs[0].(*ast.Ident); ok {
+						vars[id.Name] = true
+					}
+				}
+			}
+		}
+		return true
+	})
+	return vars
+}
+
 // refusalViolations walks files for every way an IssueError, or its message,
 // can come into being other than through refuse: a composite literal, new, a
-// zero-value declaration, and an assignment to a Message member. It also checks
-// each refuse call's shape. calls is how many refuse calls it saw.
+// zero-value declaration, and an assignment to the Message member of an
+// IssueError. It also checks each refuse call's shape. calls is how many refuse
+// calls it saw.
 func refusalViolations(files []*ast.File, known map[string]bool) (violations []string, calls int) {
 	isIssueError := func(e ast.Expr) bool {
 		id, ok := e.(*ast.Ident)
 		return ok && id.Name == "IssueError"
 	}
 	for _, f := range files {
+		var issueVars map[string]bool
 		ast.Inspect(f, func(n ast.Node) bool {
 			switch x := n.(type) {
 			case *ast.FuncDecl:
-				// refuse is the one place an IssueError is built.
-				return x.Name.Name != "refuse"
+				// refuse is the one place an IssueError is built, and Client.issue
+				// the one place one is decoded off the wire.
+				if x.Name.Name == "refuse" || isWireReadBack(x) {
+					return false
+				}
+				issueVars = issueErrorVars(x)
+				return true
 			case *ast.CallExpr:
 				if fn, ok := x.Fun.(*ast.Ident); ok && fn.Name == "new" && len(x.Args) == 1 && isIssueError(x.Args[0]) {
 					violations = append(violations, "IssueError built with new outside refuse")
@@ -169,7 +242,12 @@ func refusalViolations(files []*ast.File, known map[string]bool) (violations []s
 				}
 			case *ast.AssignStmt:
 				for _, lhs := range x.Lhs {
-					if sel, ok := lhs.(*ast.SelectorExpr); ok && sel.Sel.Name == "Message" {
+					sel, ok := lhs.(*ast.SelectorExpr)
+					if !ok || sel.Sel.Name != "Message" {
+						continue
+					}
+					// A Message member of some other type is not a public message.
+					if recv, ok := sel.X.(*ast.Ident); ok && issueVars[recv.Name] {
 						violations = append(violations, "a Message member assigned outside refuse")
 					}
 				}
@@ -189,6 +267,9 @@ func TestRefusalGuardCatchesEveryBypass(t *testing.T) {
 		"zero-value var":       `func f() { var e IssueError; _ = e }`,
 		"message assignment":   `func f(e *IssueError) { e.Message = "x" }`,
 		"message reassignment": `func f(e IssueError) { e.Message, e.Code = "x", "y" }`,
+		"message via decoded":  `func f(err error) { ie, _ := IsIssueError(err); ie.Message = "x" }`,
+		"bypass in client.go":  `func (c Client) other() { var ie IssueError; _ = ie }`,
+		"wrong receiver issue": `func (c Server) issue() { var ie IssueError; _ = ie }`,
 		"refuse with 2 args":   `func f() { refuse(500, CodeInternal) }`,
 		"refuse unknown code":  `func f() { refuse(500, "internal", nil) }`,
 	} {
@@ -202,12 +283,21 @@ func TestRefusalGuardCatchesEveryBypass(t *testing.T) {
 			}
 		})
 	}
-	f, err := parser.ParseFile(token.NewFileSet(), "snippet.go", "package identity\nfunc f() { refuse(500, CodeInternal, nil) }", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if v, calls := refusalViolations([]*ast.File{f}, map[string]bool{"CodeInternal": true}); len(v) != 0 || calls != 1 {
-		t.Fatalf("the guard refused a legitimate call: %v (%d calls)", v, calls)
+	for name, c := range map[string]struct {
+		body  string
+		calls int
+	}{
+		"refuse call":    {`func f() { refuse(500, CodeInternal, nil) }`, 1},
+		"wire read-back": {`func (c Client) issue() { var ie IssueError; _ = ie }`, 0},
+		"other message":  {`func f(o other) { o.Message = "x" }`, 0},
+	} {
+		f, err := parser.ParseFile(token.NewFileSet(), "snippet.go", "package identity\n"+c.body, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if v, calls := refusalViolations([]*ast.File{f}, map[string]bool{"CodeInternal": true}); len(v) != 0 || calls != c.calls {
+			t.Fatalf("the guard refused %s: %v (%d calls)", name, v, calls)
+		}
 	}
 }
 

@@ -145,4 +145,12 @@ func TestPublishedKeySetBytesAreRenderedOnce(t *testing.T) {
 	if c, _ := ring.MarshalJWKS(); c[0] == 'X' {
 		t.Fatal("a caller changed the keyring's published bytes")
 	}
+	// Equal bytes do not show a single rendering: a keyring that rendered on
+	// every call would agree with itself. The bytes must be the ones made at load,
+	// so drop a key from the set they were rendered from and they must not change.
+	want, _ := ring.MarshalJWKS()
+	ring.public = ring.public[:1]
+	if got, _ := ring.MarshalJWKS(); string(got) != string(want) {
+		t.Fatalf("the published bytes follow the key set instead of the one rendering made at load:\n got %s\nwant %s", got, want)
+	}
 }
