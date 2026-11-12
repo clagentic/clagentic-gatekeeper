@@ -77,6 +77,9 @@ merge:
   # highest-stakes instance of that gap in the fleet (lr-9c7f47 comment #1).
   # Do not "simplify" this away back to an absent key or an empty list --
   # that is the exact silent fail-open this task exists to close.
+  #
+  # Transitional: gate.yaml takes over from the next merge; a follow-up PR
+  # removes this key from this file.
   required_reviewer_roles: [reviewer, security]
 
 # roles (lr-9c7f47): this repo declares its OWN role -> verb-set taxonomy
