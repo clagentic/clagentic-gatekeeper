@@ -985,6 +985,29 @@ misbehaved or silently did nothing; each is now refused, naming the key or flag:
   seen as present; before, only a literal top-level `identity:` key was;
 - a relative `mint_record_path` (see below).
 
+### Unknown config keys are named, not refused
+
+A key that no setting declares, such as a misspelled one, used to be dropped
+without a word. Every command that loads the config (`mint`, `mint-a2a`,
+`serve`, `issue-session`, `issue-child`, `self-check`) now writes one line to
+stderr for each such key and keeps going; an unknown key never refuses the
+load, changes stdout or changes the exit status:
+
+```
+config: unknown key identity.socket_pth has no effect; check its spelling against config.example.yaml
+```
+
+The key is named by its full path, with list items as `[i]`
+(`attestation.sidecars[1].dirr`). The walk follows the YAML the decoder reads,
+so a key that arrives through a merge key (`<<`) or an anchor is checked where
+it lands, and `<<` itself is never reported. The names of the entries under
+`roles` and `a2a_mapping` are yours to choose; the keys inside each entry are
+checked. `roles.<name>.permissions` is free-form. A top-level key that only
+holds an anchor the document then uses is a place to define it, not a setting,
+and is not reported. The removed `identity.operator_*` keys keep their own
+warning and are not reported twice. A config with no unknown key writes
+nothing, so a caller that requires an empty stderr from `mint` is unaffected.
+
 ## The mint record
 
 When a GitHub App write is denied, the question is what the App was actually

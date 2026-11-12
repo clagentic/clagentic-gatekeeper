@@ -70,6 +70,9 @@ type Config struct {
 	// removedIdentityKeys are the removed identity keys the document still
 	// carries; see RemovedIdentityKeysWarning.
 	removedIdentityKeys []string
+
+	// unknownKeys are the keys no setting declares; see UnknownKeyWarnings.
+	unknownKeys []string
 }
 
 // IdentityEnabled reports whether the config has an identity section. Load has
@@ -520,6 +523,9 @@ func Load(path string) (*Config, error) {
 	present := probe.Identity.Kind != 0
 	cfg.identityPresent = present
 	if cfg.removedIdentityKeys, err = removedKeysPresent(data); err != nil {
+		return nil, fmt.Errorf("parse config %s: %w", path, err)
+	}
+	if cfg.unknownKeys, err = unknownKeys(data); err != nil {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
 	}
 	if present {

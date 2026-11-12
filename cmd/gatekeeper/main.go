@@ -21,7 +21,6 @@ import (
 	"github.com/clagentic/clagentic-gatekeeper/internal/a2apolicy"
 	"github.com/clagentic/clagentic-gatekeeper/internal/attestation"
 	"github.com/clagentic/clagentic-gatekeeper/internal/broker"
-	"github.com/clagentic/clagentic-gatekeeper/internal/config"
 	"github.com/clagentic/clagentic-gatekeeper/internal/mint"
 	"github.com/clagentic/clagentic-gatekeeper/internal/roles"
 )
@@ -129,7 +128,7 @@ func runMint(args []string) error {
 		return fmt.Errorf("--role is required")
 	}
 
-	cfg, err := config.Load(*cfgPath)
+	cfg, err := loadConfig(*cfgPath, os.Stderr)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
@@ -387,7 +386,7 @@ func runMintA2A(args []string) error {
 		return fmt.Errorf("--audience is required")
 	}
 
-	cfg, err := config.Load(*cfgPath)
+	cfg, err := loadConfig(*cfgPath, os.Stderr)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}

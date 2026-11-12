@@ -67,7 +67,7 @@ func serveCtx(ctx context.Context, args []string, stderr io.Writer) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	cfg, err := config.Load(*cfgPath)
+	cfg, err := loadConfig(*cfgPath, log)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}

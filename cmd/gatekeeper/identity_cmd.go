@@ -47,7 +47,7 @@ func resolveSocket(flagValue, cfgPath, fallback string) (string, error) {
 	var cfg *config.Config
 	if flagValue == "" && cfgPath != "" {
 		var err error
-		if cfg, err = config.Load(cfgPath); err != nil {
+		if cfg, err = loadConfig(cfgPath, os.Stderr); err != nil {
 			return "", fmt.Errorf("load config: %w", err)
 		}
 	}
