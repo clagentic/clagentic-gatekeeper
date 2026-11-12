@@ -319,14 +319,18 @@ func TestListenBindsAPathAtTheSunPathLimitInADeepDirectory(t *testing.T) {
 	}
 }
 
-// Listen refuses a path over the limit, and one that is not absolute, naming it,
-// before it creates anything.
+// Listen refuses a path one byte over the limit, and one that is not absolute,
+// naming it, before it creates anything. The cleanup test refuses a far longer
+// path without naming it; the boundary and the named path are checked here.
 func TestListenRefusesAnUnusablePathNamingItAndCreatesNothing(t *testing.T) {
 	dir := shortSocketDir(t)
 	for name, path := range map[string]string{
-		"over the limit": filepath.Join(dir, strings.Repeat("n", config.MaxSocketPathBytes)),
-		"relative":       "relative.sock",
+		"one over the limit": filepath.Join(dir, strings.Repeat("n", config.MaxSocketPathBytes+1-len(dir)-1)),
+		"relative":           "relative.sock",
 	} {
+		if name == "one over the limit" && len(path) != config.MaxSocketPathBytes+1 {
+			t.Fatalf("test setup: path is %d bytes, want %d", len(path), config.MaxSocketPathBytes+1)
+		}
 		if _, err := Listen(path, 0o600); err == nil || !strings.Contains(err.Error(), path) {
 			t.Errorf("%s: got %v, want a refusal naming %q", name, err, path)
 		}

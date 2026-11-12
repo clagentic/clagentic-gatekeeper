@@ -4,6 +4,8 @@ package hook
 
 import (
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -300,7 +302,14 @@ func TestStoreRefusesUnsafeKeysItself(t *testing.T) {
 			}
 		}
 	}
-	if entries, err := os.ReadDir(root); err == nil && len(entries) != 0 {
+	// Only "the root was never created" proves nothing was written; any other
+	// read error means the check could not run.
+	entries, err := os.ReadDir(root)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+	case err != nil:
+		t.Fatalf("the store root could not be read: %v", err)
+	case len(entries) != 0:
 		t.Fatalf("a refused key left %v", entries)
 	}
 	if err := s.Put(testSession, "agent-ok", rec); err != nil {
