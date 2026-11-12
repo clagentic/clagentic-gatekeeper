@@ -48,7 +48,7 @@ func runSelfCheck(args []string, stdout io.Writer) error {
 	var cfg *config.Config
 	if *cfgPath != "" {
 		var err error
-		if cfg, err = config.Load(*cfgPath); err != nil {
+		if cfg, err = loadConfig(*cfgPath, os.Stderr); err != nil {
 			return fmt.Errorf("self-check: load config: %w", err)
 		}
 	}
