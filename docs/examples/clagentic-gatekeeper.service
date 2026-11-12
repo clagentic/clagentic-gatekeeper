@@ -9,6 +9,11 @@ StartLimitIntervalSec=60
 StartLimitBurst=5
 
 [Service]
+# Type=simple has no readiness signal: systemd reports the unit started as soon
+# as the process is forked, before the socket exists. A "systemctl start"
+# followed at once by "gatekeeper self-check" can report unreachable; retry, or
+# wait until the socket answers a request. identity.jwks_path is current once it
+# does, not when the socket file appears.
 Type=simple
 # The serving uid. Every agent that asks for an assertion runs as this uid:
 # the issuer serves that uid and no other.
