@@ -754,6 +754,15 @@ owned by the serving uid and not writable by others, before `serve` starts, and
 whatever is left in it is removed after `serve` stops. Check a running service
 with `gatekeeper self-check`.
 
+The example unit is `Type=simple`, which has no readiness signal, so
+`systemctl start` returns before the socket exists and an immediate
+`gatekeeper self-check` can report the issuer unreachable. Retry, or wait until
+the socket answers a request. The socket file appears before `serve` writes
+`identity.jwks_path`, so the file is current only once a request over the socket
+succeeds, not when the socket file appears. A consumer that reads `jwks_path`
+directly should wait for that answer too: on a first start the file is absent
+until then, and after a restart it still holds the previous key set until then.
+
 ### Who may ask
 
 This release serves callers that run as the serving uid, and only those. The

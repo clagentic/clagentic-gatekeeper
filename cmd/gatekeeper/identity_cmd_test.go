@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/x509"
@@ -17,7 +18,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 
@@ -113,37 +113,101 @@ func waitForLog(t *testing.T, b *syncBuffer, want string) string {
 	}
 }
 
-// startServeWith runs serve with args, writing its log to logOut, and waits for
-// the socket sock to appear. The log goes through the writer, never through a
-// swapped os.Stderr.
-func startServeWith(t *testing.T, args []string, sock string, logOut io.Writer) {
-	t.Helper()
-	done := make(chan error, 1)
-	go func() { done <- serve(args, logOut) }()
-	deadline := time.Now().Add(5 * time.Second)
+// serveHandle is one in-process serve and the means to stop it.
+type serveHandle struct {
+	cancel context.CancelFunc
+	exited chan struct{} // closed once serveCtx has returned and err is set
+	err    error
+}
+
+// launchServe runs serveCtx with args in a goroutine, logging to logOut. The log
+// goes through the writer, never through a swapped os.Stderr.
+func launchServe(args []string, logOut io.Writer) *serveHandle {
+	ctx, cancel := context.WithCancel(context.Background())
+	h := &serveHandle{cancel: cancel, exited: make(chan struct{})}
+	go func() {
+		h.err = serveCtx(ctx, args, logOut)
+		close(h.exited)
+	}()
+	return h
+}
+
+// stop cancels serve and waits for it to return. Nothing is signalled to the
+// test process.
+func (h *serveHandle) stop() error {
+	h.cancel()
+	<-h.exited
+	return h.err
+}
+
+// waitReady returns once a request over sock succeeds. The socket file appears
+// before serve has written jwks_path, so only an answer proves serve is up and
+// the key set file is current.
+func (h *serveHandle) waitReady(sock string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
 	for {
-		if _, err := os.Stat(sock); err == nil {
-			break
+		if _, err := (identity.Client{Socket: sock}).FetchJWKSBytes(); err == nil {
+			return nil
 		}
 		select {
-		case err := <-done:
-			t.Fatalf("serve exited early: %v", err)
+		case <-h.exited:
+			return fmt.Errorf("serve exited early: %v", h.err)
 		default:
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("serve did not open its socket")
+			return fmt.Errorf("serve did not answer on %s within %s", sock, timeout)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+// startServeWith runs serve with args, writing its log to logOut, and returns
+// once serve answers a request on sock. The stop is registered before the wait,
+// so a failed wait leaves no serve goroutine behind.
+func startServeWith(t *testing.T, args []string, sock string, logOut io.Writer) {
+	t.Helper()
+	h := launchServe(args, logOut)
 	t.Cleanup(func() {
-		// runServe handles SIGTERM itself; the signal never reaches the test runner.
-		if self, err := os.FindProcess(os.Getpid()); err == nil {
-			_ = self.Signal(syscall.SIGTERM)
-		}
-		if err := <-done; err != nil {
+		if err := h.stop(); err != nil {
 			t.Errorf("serve: %v", err)
 		}
 	})
+	if err := h.waitReady(sock, 10*time.Second); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestServeHelperTimeoutStopsServe(t *testing.T) {
+	dir, key, defs := identityDeployment(t)
+	sock := filepath.Join(dir, "id.sock")
+	cfg := writeConfig(t, dir, deploymentConfig(key, defs, filepath.Join(dir, "spawn"), ""))
+	h := launchServe([]string{"--config", cfg, "--socket", sock}, io.Discard)
+	// A socket nothing listens on: the wait must time out, and stop must then
+	// end serve.
+	if err := h.waitReady(filepath.Join(dir, "nobody.sock"), 100*time.Millisecond); err == nil {
+		t.Fatal("waitReady succeeded against a socket nobody serves")
+	}
+	if err := h.stop(); err != nil {
+		t.Fatalf("serve: %v", err)
+	}
+	select {
+	case <-h.exited:
+	default:
+		t.Fatal("serve goroutine still running after stop")
+	}
+}
+
+func TestServeHelperReportsAnEarlyExit(t *testing.T) {
+	dir, _, _ := identityDeployment(t)
+	cfg := writeConfig(t, dir, "github:\n  owner: example-org\n")
+	h := launchServe([]string{"--config", cfg, "--socket", filepath.Join(dir, "x.sock")}, io.Discard)
+	err := h.waitReady(filepath.Join(dir, "x.sock"), 5*time.Second)
+	if err == nil || !strings.Contains(err.Error(), "exited early") {
+		t.Fatalf("got %v", err)
+	}
+	if h.stop() == nil {
+		t.Fatal("stop lost the serve error")
+	}
 }
 
 func TestIdentityOnlyConfigServesAndMintReportsNotConfigured(t *testing.T) {

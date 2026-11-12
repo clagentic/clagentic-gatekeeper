@@ -44,10 +44,20 @@ func retiredJWKs(in []config.RetiredKeyConfig) []identity.JWK {
 }
 
 // serve is runServe with its log destination as a parameter, so a caller can
-// capture what serve writes without touching a process global. It reads only
-// the identity section: a config without github, broker or roles serves
-// normally.
+// capture what serve writes without touching a process global. It stops on
+// SIGINT or SIGTERM. The handler is registered before serveCtx opens the
+// socket, so a signal that arrives as the socket appears is never the default
+// kill.
 func serve(args []string, stderr io.Writer) error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return serveCtx(ctx, args, stderr)
+}
+
+// serveCtx serves until ctx is cancelled. It reads only the identity section:
+// a config without github, broker or roles serves normally. Tests cancel the
+// context instead of signalling their own process.
+func serveCtx(ctx context.Context, args []string, stderr io.Writer) error {
 	log := &lockedWriter{w: stderr}
 	logf := func(format string, a ...any) { fmt.Fprintf(log, format+"\n", a...) }
 
@@ -110,8 +120,6 @@ func serve(args []string, stderr io.Writer) error {
 		}
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	logf("identity: serving iss=%s kid=%s on %s", issuer.Issuer, issuer.Keys.Kid(), sock)
 	return (&identity.Server{Issuer: issuer, Logf: logf}).Serve(ctx, l)
 }
