@@ -85,6 +85,13 @@ Issuer, always run:
 | `issuer/child-under-different-runtime-refused` | `issue-child` under a different runtime is refused as `parent_pid_mismatch`. |
 | `issuer/unknown-definition-refused` | An unknown definition is refused as `definition_unknown`. |
 | `adapter-process/child-holds-assertion` | The process adapter's assignment, placed in a child's environment, gives that child a valid assertion with no per-command step. |
+| `self-check/fresh-against-isolated-serve` | `gatekeeper self-check` against the isolated serve and its published key set file reports the socket reachable and the key set fresh, and exits 0. |
+| `self-check/stale-after-one-byte-of-jwks-changes` | The same check against a copy of the published file with one byte changed reports `stale` and exits non-zero. |
+| `issuer/rotation-old-kid-verifies-unknown-kid-refused` | On a serve of its own: a token is issued, serve is restarted with a new current key and the previous key as an inline retired public JWK, and the old token still verifies before its `exp` against the key set both from the published file and from the socket, as does a token under the new key. The same token with an unknown `kid` is refused. |
+
+These three need only a Go toolchain, so `--no-runtime` runs them with the rest
+of the always-run shapes. The rotation shape starts its own serve, so the run's
+shared issuer and its key are never restarted.
 
 Hook adapter, always run, no runtime needed. These feed the hook the payload
 shapes of the runtime to the real binary, as separate processes:

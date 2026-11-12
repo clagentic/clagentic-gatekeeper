@@ -52,6 +52,14 @@ merge:
     - cmd: "/usr/local/bin/gatekeeper version --json"
       description: "Read back the installed gatekeeper binary's source commit and dirty flag (commit null means the binary carries no VCS data)."
       on_failure: warn
+    # Live harness against an isolated serve, without a runtime CLI: self-check
+    # (fresh, and stale after one byte of the key set file changes) and an
+    # old-kid token after a key rotation. Its output lands in the merge result.
+    # Same inline Go env values as the install step; a single command with no
+    # shell operators. on_failure is warn: the install already passed.
+    - cmd: "GOPATH=/root/go GOMODCACHE=/root/go/pkg/mod GOCACHE=/root/.cache/go make live-test LIVETEST_ARGS=--no-runtime"
+      description: "Run the live harness on the merged tree without a runtime CLI: self-check fresh and stale, and old-kid verification after a key rotation."
+      on_failure: warn
 
   # required_reviewer_roles (lr-9c7f47): WHY THIS GATE EXISTS HERE, SPECIFICALLY
   # -- the post_merge_steps step above does not just land code on main, it
