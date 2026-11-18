@@ -27,6 +27,9 @@ type Issuer struct {
 	Registry *Registry
 	Proc     ProcReader
 	Now      func() time.Time
+	// Approvals holds pending and granted operator approvals; nil means operator
+	// approval is off and every approval operation is refused.
+	Approvals *Approvals
 	// HelperExe names the gatekeeper client executable. A peer running that file
 	// is a transient hook or CLI process and is bound to the runtime above it
 	// (bindRuntime); empty means every peer is its own runtime.
@@ -148,33 +151,9 @@ func (i *Issuer) IssueChild(peer Peer, req ChildRequest) (*Issued, error) {
 	if !reName.MatchString(req.AgentType) || !reName.MatchString(req.AgentID) {
 		return nil, refuse(http.StatusBadRequest, CodeBadRequest, fmt.Errorf("agent_type and agent_id must match %s", reName))
 	}
-	parent, err := i.Keys.ParseOwn(req.ParentToken)
-	if err != nil {
-		return nil, refuse(http.StatusForbidden, CodeParentInvalid, err)
-	}
-	if parent.Exp <= now.Unix() {
-		return nil, refuse(http.StatusForbidden, CodeParentExpired, fmt.Errorf("the parent token expired at %d", parent.Exp))
-	}
-	issued, ok := i.Registry.get(parent.Jti)
-	if !ok {
-		return nil, refuse(http.StatusForbidden, CodeParentUnknown, fmt.Errorf("jti %q is not in this process's registry", parent.Jti))
-	}
-	if issued.uid != peer.UID {
-		return nil, refuse(http.StatusForbidden, CodeUIDMismatch, fmt.Errorf("the parent token was issued to uid %d, the request comes from uid %d", issued.uid, peer.UID))
-	}
-	bound, err := i.bindRuntime(peer)
+	parent, bound, err := i.holder(peer, req.ParentToken, now)
 	if err != nil {
 		return nil, err
-	}
-	proc := bound.Proc
-	if issued.pid != bound.PID {
-		return nil, refuse(http.StatusForbidden, CodePIDMismatch, fmt.Errorf("the parent token was issued to runtime pid %d, the request is bound to runtime pid %d (peer pid %d)", issued.pid, bound.PID, peer.PID))
-	}
-	if proc.StartTime != issued.startTime {
-		return nil, refuse(http.StatusForbidden, CodePIDMismatch, fmt.Errorf("pid %d is no longer the process the parent token was issued to (start time differs)", bound.PID))
-	}
-	if proc.ExeDev != issued.exeDev || proc.ExeIno != issued.exeIno {
-		return nil, refuse(http.StatusForbidden, CodeExeMismatch, fmt.Errorf("pid %d runs a different executable file than at issue time (dev/inode %d/%d, was %d/%d)", bound.PID, proc.ExeDev, proc.ExeIno, issued.exeDev, issued.exeIno))
 	}
 	def, err := i.Defs.Load(req.AgentType)
 	if err != nil {
@@ -211,6 +190,42 @@ func (i *Issuer) IssueChild(peer Peer, req ChildRequest) (*Issued, error) {
 		exp = pe
 	}
 	return i.finish(peer, bound, child, now, exp, narrowed)
+}
+
+// holder verifies that token is an unexpired assertion this process issued to
+// the runtime the request comes from, and returns its claims. It is the one
+// proof of who holds a session that issue-child and the approval operations
+// share; every failure is a refusal.
+func (i *Issuer) holder(peer Peer, token string, now time.Time) (Claims, Binding, error) {
+	parent, err := i.Keys.ParseOwn(token)
+	if err != nil {
+		return Claims{}, Binding{}, refuse(http.StatusForbidden, CodeParentInvalid, err)
+	}
+	if parent.Exp <= now.Unix() {
+		return Claims{}, Binding{}, refuse(http.StatusForbidden, CodeParentExpired, fmt.Errorf("the parent token expired at %d", parent.Exp))
+	}
+	issued, ok := i.Registry.get(parent.Jti)
+	if !ok {
+		return Claims{}, Binding{}, refuse(http.StatusForbidden, CodeParentUnknown, fmt.Errorf("jti %q is not in this process's registry", parent.Jti))
+	}
+	if issued.uid != peer.UID {
+		return Claims{}, Binding{}, refuse(http.StatusForbidden, CodeUIDMismatch, fmt.Errorf("the parent token was issued to uid %d, the request comes from uid %d", issued.uid, peer.UID))
+	}
+	bound, err := i.bindRuntime(peer)
+	if err != nil {
+		return Claims{}, Binding{}, err
+	}
+	proc := bound.Proc
+	if issued.pid != bound.PID {
+		return Claims{}, Binding{}, refuse(http.StatusForbidden, CodePIDMismatch, fmt.Errorf("the parent token was issued to runtime pid %d, the request is bound to runtime pid %d (peer pid %d)", issued.pid, bound.PID, peer.PID))
+	}
+	if proc.StartTime != issued.startTime {
+		return Claims{}, Binding{}, refuse(http.StatusForbidden, CodePIDMismatch, fmt.Errorf("pid %d is no longer the process the parent token was issued to (start time differs)", bound.PID))
+	}
+	if proc.ExeDev != issued.exeDev || proc.ExeIno != issued.exeIno {
+		return Claims{}, Binding{}, refuse(http.StatusForbidden, CodeExeMismatch, fmt.Errorf("pid %d runs a different executable file than at issue time (dev/inode %d/%d, was %d/%d)", bound.PID, proc.ExeDev, proc.ExeIno, issued.exeDev, issued.exeIno))
+	}
+	return parent, bound, nil
 }
 
 // finish allocates the delivery directory, signs, publishes and records. now
