@@ -63,16 +63,44 @@ type Claims struct {
 	Cia   int      `json:"cia"`
 }
 
+// ApprovalClaims is the payload of an operator approval (contract section 13):
+// one operation, bound to the session it was requested in and to the digest of
+// its parameters.
+type ApprovalClaims struct {
+	Iss string `json:"iss"`
+	Rid string `json:"rid"`
+	Op  string `json:"op"`
+	PD  string `json:"pd"`
+	Sid string `json:"sid"`
+	// AckedBy is the approver name from configuration, never a value the request
+	// or the typed prompt carried.
+	AckedBy string `json:"acked_by"`
+	Iat     int64  `json:"iat"`
+	Exp     int64  `json:"exp"`
+	Cap     int    `json:"cap"`
+}
+
 // SignClaims returns the compact JWS for c.
 func (k *Keyring) SignClaims(c Claims) (string, error) {
 	if c.Roles == nil {
 		c.Roles = []string{}
 	}
-	hdr, err := json.Marshal(map[string]string{"alg": k.Alg(), "kid": k.Kid()})
+	return k.signJWS(map[string]string{"alg": k.Alg(), "kid": k.Kid()}, c)
+}
+
+// SignApproval returns the compact JWS for an approval: the assertion's key and
+// algorithm with the header typ that tells the two artifacts apart.
+func (k *Keyring) SignApproval(c ApprovalClaims) (string, error) {
+	return k.signJWS(map[string]string{"alg": k.Alg(), "kid": k.Kid(), "typ": ApprovalTyp}, c)
+}
+
+// signJWS signs payload under the given protected header.
+func (k *Keyring) signJWS(header map[string]string, payloadValue any) (string, error) {
+	hdr, err := json.Marshal(header)
 	if err != nil {
 		return "", err
 	}
-	payload, err := json.Marshal(c)
+	payload, err := json.Marshal(payloadValue)
 	if err != nil {
 		return "", err
 	}

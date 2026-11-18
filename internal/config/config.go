@@ -122,6 +122,9 @@ type IdentityConfig struct {
 	// published key set so an assertion they signed verifies until its exp.
 	// They never sign. Each kid must be the key's RFC 7638 thumbprint.
 	RetiredKeys []RetiredKeyConfig `yaml:"retired_keys,omitempty"`
+	// Approval configures operator approval of a single operation. Absent or
+	// without an approver, it is off.
+	Approval ApprovalConfig `yaml:"approval,omitempty"`
 }
 
 const (
@@ -154,6 +157,9 @@ func (c IdentityConfig) validate() error {
 		if err := check("identity."+key, v.Field(i).String()); err != nil {
 			return err
 		}
+	}
+	if err := c.Approval.validate(); err != nil {
+		return err
 	}
 	return validateRetiredKeys(c.RetiredKeys)
 }

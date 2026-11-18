@@ -419,3 +419,25 @@ roles:
 #       alg: EdDSA
 #       kid: the-rfc-7638-thumbprint-of-x
 #       x: the-base64url-public-key
+#   # Operator approval of a single operation (docs/identity-contract.md section
+#   # 13). Off unless `approver` is set: serve then refuses every approval
+#   # operation. See docs/RUNTIME-HOOKS.md, "Operator approval".
+#   approval:
+#     # The name signed into every approval as acked_by. It is a setting of this
+#     # deployment, never read from a request or a prompt.
+#     approver: operator
+#     # How long a request stays pending and how long a granted approval stays
+#     # valid. Default and maximum 300; a larger value is refused at load.
+#     ttl_seconds: 300
+#     # OPTIONAL. A command the user-prompt-submit hook asks how a turn started,
+#     # for a runtime whose hook payload does not say. The hook reads it through
+#     # its --config flag, only for a prompt that is exactly the approval phrase.
+#     # command is an argv list run without a shell; its first element must be an
+#     # absolute path. It gets the hook payload on stdin and prints one JSON object,
+#     # {"origin": {"kind": "human"}}; kind human means the operator typed the
+#     # turn, anything else, a non-zero exit, bad output or a run past the timeout
+#     # means it did not.
+#     turn_origin:
+#       command: [/usr/local/bin/example-turn-origin]
+#       # Default 2, at most 5.
+#       timeout_seconds: 2

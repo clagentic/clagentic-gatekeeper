@@ -115,7 +115,7 @@ accepted in place of `--socket`).
 | `subagent-start` | `issue-child` with the payload's `agent_type` and `agent_id`, parented on the session assertion. Prints nothing. |
 | `pre-tool-use-bash` | In enforce mode prefixes exactly one statement, `export CLAGENTIC_IDENTITY_DIR=<dir>; `, to the original command for the current `agent_id`, or for the session when the payload has none (see "Calls without an agent_id"). The original text follows byte for byte. No shell wrapper, no other variable, and `TMPDIR` is never touched. A command that already starts with the statement is left alone, and so is a command that provably cannot use the identity (see "Read-only commands are not rewritten"). If the agent has no directory yet (its start event never arrived), the first Bash call issues the child. |
 | `subagent-stop` | Removes the agent's delivery directory and record. The directory is removed only if it is named like an issuer-created directory, is a real directory owned by the user, and holds an assertion. |
-| `user-prompt-submit` | When `--refresh-below` is set and the session assertion has less than that left, asks for a new session under the same definition and records the new directory. The old directory is left for the issuer's reaper because a running command may still use it. |
+| `user-prompt-submit` | When `--refresh-below` is set and the session assertion has less than that left, asks for a new session under the same definition and records the new directory. The old directory is left for the issuer's reaper because a running command may still use it. Independently of refresh, when the prompt is exactly the approval phrase `approve <rid>` it asks the issuer to grant an operator approval for that request (see "Operator approval"); the grant runs first, so it presents the assertion the request was made under. The hook never answers the prompt, blocks it or rewrites it. |
 
 ### Calls without an agent_id
 
@@ -358,12 +358,124 @@ code is still the upstream's). Details:
   upstream is read until it exits plus a 250ms window for pipes a background
   descendant keeps open, where the runtime would wait for those pipes to close.
 
+### Operator approval
+
+`user-prompt-submit` carries the one place a hook turns what the operator typed
+into a signed fact. The contract is in section 13 of
+[`identity-contract.md`](identity-contract.md); this section is the hook's part.
+
+A session asks its issuer for an approval of one operation
+(`gatekeeper approval request --op <op> --params-digest <sha256> --summary <text>`)
+and shows the operator the phrase it prints, `approve <rid>`. When a prompt is
+exactly that phrase, with only whitespace around it, the hook checks whether
+the operator typed the turn, and if so asks the issuer to grant, presenting the
+session's own assertion from its state record. Every other prompt is left
+alone: the origin check below is not run, the issuer is not called and nothing
+is logged.
+
+The hook fails open like every other event. It adds no permission decision,
+blocks nothing, rewrites no prompt and prints nothing; each outcome is one line
+in `<state-dir>/hook.log` naming the request id and, for a refusal, the cause.
+The grant does not depend on `--refresh-below`.
+
+#### Was the turn typed by the operator
+
+A hook payload says how a turn started in its `source` member, when the runtime
+sends one. The hook decides in this order, in one function, and stops at the
+first rung that applies:
+
+1. `source` is `user`: **typed.**
+2. `source` is present and anything else (`sdk`, `system`, `loop_wakeup`,
+   `schedule_wakeup`, `poll_event`, a value this release does not know, or a
+   value that is not a string): **not typed.**
+3. No `source`, and a turn-origin provider is configured: **its answer
+   decides.** Origin kind `human` is typed. Any other kind, a non-zero exit,
+   output that is not what the provider contract below describes, a run past its
+   timeout, or a config that cannot be read, is not typed.
+4. No `source`, no provider, and the process's environment has no
+   `CLAUDE_CODE_HOST_SCHEDULED_RUN` or an empty one: **typed.** This is the
+   plain terminal baseline: a host that can inject turns declares it, so a
+   process that does not declare it has none to confuse with the operator's.
+5. Otherwise: **no grant.** The log line says no origin was available.
+
+Every not-typed outcome logs one line that names its rung. `CLAUDE_CODE_HOST_SCHEDULED_RUN`
+is the runtime's variable, the only environment variable the hook reads, and it
+is read only for a prompt that is the phrase.
+
+#### The turn-origin provider
+
+For a host that does not put the turn's origin in the hook payload, the hook
+asks a command the user configures. It is a documented setting of the user, not
+something gatekeeper chooses: gatekeeper knows no host by name, and a deployment
+points it at whatever can say how a turn started.
+
+```yaml
+identity:
+  approval:
+    approver: operator          # acked_by in every approval; unset turns approval off
+    ttl_seconds: 300            # request and approval lifetime, at most 300
+    turn_origin:
+      command: [/usr/local/bin/example-turn-origin]   # argv, absolute program, no shell
+      timeout_seconds: 2        # default 2, at most 5
+```
+
+The contract:
+
+- The hook runs `command` directly, never through a shell, with the hook
+  payload (the JSON it received) on stdin and its own environment.
+- The provider prints one JSON object on stdout and exits 0:
+
+  ```json
+  {"origin": {"kind": "human"}}
+  ```
+
+  `origin.kind` is the runtime's vocabulary for how the turn started: `human`
+  for a turn the operator typed, anything else (for example a scheduled or sent
+  turn's kind) for a turn something else started. Other members are ignored.
+- Stdout over 4 KiB, more than one JSON value, a missing `origin.kind`, a
+  non-zero exit or a run past `timeout_seconds` mean the provider gave no
+  answer, which is not typed. The provider is run only for the phrase.
+- The provider runs inside the hook, so it delays the one prompt that is the
+  phrase by at most its timeout.
+
+The hook reads the provider from the config named by its `--config` flag, at
+the moment a prompt is the phrase, so changing it needs no re-registration.
+
+#### Registration and timeouts
+
+`hooks-install --config <path>` (already used to find the socket) also writes
+`--config <absolute path>` into the `user-prompt-submit` command, and gives that
+one hook a runtime timeout 5 seconds longer than the others (the provider's
+longest run), 10 seconds by default. Without `--config` nothing about the
+registration changes and the hook has no provider. The hook's own deadline for
+this event is extended by the same 5 seconds. A re-run of `hooks-install` with
+`--config` updates the entry in place.
+
+#### Residuals
+
+The trust grade is the contract's (section 13.4): attribution-grade while agents
+run as the issuer's user. The order above decides whether the hook asks; it does
+not make the grant unforgeable.
+
+- A headless run an agent launches (`claude -p`) does not set
+  `CLAUDE_CODE_HOST_SCHEDULED_RUN`, so with no `source` and no provider it
+  reaches rung 4 like a terminal the operator started. The approval records the
+  session id it was issued in, so a consumer can tell an approval issued in a
+  session an agent asserted from one in a session an operator drives. The hook
+  makes no further check.
+- With a provider configured, the host's answer replaces rung 4 for every
+  prompt that has no `source`: a provider that is down is not typed, never a
+  fall back to the baseline.
+- A session assertion refreshed between the request and the phrase has a new
+  session id, so the grant is refused (`approval_session_mismatch`); the
+  request is made again.
+
 ### Registration
 
 ```
 gatekeeper hooks-install --runtime claude-code --settings <path> --socket <path> \
     [--state-dir <dir>] [--mode warn|enforce] [--origin <o>] [--refresh-below 30m] \
-    [--compose <path>] [--binary <path>] [--dry-run]
+    [--compose <path>] [--config <path>] [--binary <path>] [--dry-run]
 gatekeeper hooks-install --runtime claude-code --settings <path> --remove
 ```
 

@@ -99,6 +99,7 @@ func serveCtx(ctx context.Context, args []string, stderr io.Writer) error {
 		SessionTTL:  time.Duration(ic.SessionTTLSeconds) * time.Second,
 		HelperExe:   strings.TrimSuffix(self, " (deleted)"),
 		RetiredKeys: retiredJWKs(ic.RetiredKeys),
+		Approver:    ic.Approval.Approver, ApprovalTTL: ic.Approval.TTL(),
 	})
 	if err != nil {
 		return fmt.Errorf("identity: %w", err)

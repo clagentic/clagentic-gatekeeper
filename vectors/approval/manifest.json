@@ -1,0 +1,340 @@
+{
+  "contract_version": "2.2.0",
+  "typ": "clagentic-approval+jwt",
+  "trust": {
+    "issuers": [
+      {
+        "iss": "https://issuer.example"
+      }
+    ]
+  },
+  "jwks_files": {
+    "https://issuer.example": "jwks.json"
+  },
+  "vectors": [
+    {
+      "id": "approval-valid-eddsa",
+      "description": "An approval, EdDSA, issued a minute ago for 300 seconds.",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6ImVkLTEiLCJ0eXAiOiJjbGFnZW50aWMtYXBwcm92YWwrand0In0.eyJhY2tlZF9ieSI6ImV4YW1wbGUtb3BlcmF0b3IiLCJjYXAiOjEsImV4cCI6MTc5MjAwMDI0MCwiaWF0IjoxNzkxOTk5OTQwLCJpc3MiOiJodHRwczovL2lzc3Vlci5leGFtcGxlIiwib3AiOiJleGFtcGxlLnJ1bi1jb21tYW5kIiwicGQiOiJmZWRjYmE5ODc2NTQzMjEwZmVkY2JhOTg3NjU0MzIxMGZlZGNiYTk4NzY1NDMyMTBmZWRjYmE5ODc2NTQzMjEwIiwicmlkIjoiMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYiLCJzaWQiOiJzZXNzLTAwMDEifQ.L425J3-kf0H1_RVqv3vQpVcFrLgm9e0t8G24V28gj1IsX9KvVIP9cIitS9K_O6h9LTltnShBe_Y_J_aZwvQaDg",
+      "now": 1792000000,
+      "expected_op": "example.run-command",
+      "expected_pd": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+      "expect": {
+        "ok": true,
+        "op": "example.run-command",
+        "sid": "sess-0001",
+        "acked_by": "example-operator",
+        "rid": "0123456789abcdef0123456789abcdef",
+        "pd": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+      }
+    },
+    {
+      "id": "approval-valid-es256",
+      "description": "An approval, ES256.",
+      "token": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImVzLTEiLCJ0eXAiOiJjbGFnZW50aWMtYXBwcm92YWwrand0In0.eyJhY2tlZF9ieSI6ImV4YW1wbGUtb3BlcmF0b3IiLCJjYXAiOjEsImV4cCI6MTc5MjAwMDI0MCwiaWF0IjoxNzkxOTk5OTQwLCJpc3MiOiJodHRwczovL2lzc3Vlci5leGFtcGxlIiwib3AiOiJleGFtcGxlLnJ1bi1jb21tYW5kIiwicGQiOiJmZWRjYmE5ODc2NTQzMjEwZmVkY2JhOTg3NjU0MzIxMGZlZGNiYTk4NzY1NDMyMTBmZWRjYmE5ODc2NTQzMjEwIiwicmlkIjoiMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYiLCJzaWQiOiJzZXNzLTAwMDEifQ.AD6kQnTvVZNf6h8Kl7TF1WLv1qCsndprRMj1DwJCr9I13idsyHWD00aXekKDBV1xJpj2mcKHL9JlJwWULZEAUg",
+      "now": 1792000000,
+      "expected_op": "example.run-command",
+      "expected_pd": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+      "expect": {
+        "ok": true,
+        "op": "example.run-command",
+        "sid": "sess-0001",
+        "acked_by": "example-operator",
+        "rid": "0123456789abcdef0123456789abcdef",
+        "pd": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+      }
+    },
+    {
+      "id": "approval-valid-rid-differs",
+      "description": "Another request id; the claims read back as signed.",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6ImVkLTEiLCJ0eXAiOiJjbGFnZW50aWMtYXBwcm92YWwrand0In0.eyJhY2tlZF9ieSI6ImV4YW1wbGUtb3BlcmF0b3IiLCJjYXAiOjEsImV4cCI6MTc5MjAwMDI0MCwiaWF0IjoxNzkxOTk5OTQwLCJpc3MiOiJodHRwczovL2lzc3Vlci5leGFtcGxlIiwib3AiOiJleGFtcGxlLnJ1bi1jb21tYW5kIiwicGQiOiJmZWRjYmE5ODc2NTQzMjEwZmVkY2JhOTg3NjU0MzIxMGZlZGNiYTk4NzY1NDMyMTBmZWRjYmE5ODc2NTQzMjEwIiwicmlkIjoiYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWEiLCJzaWQiOiJzZXNzLTAwMDEifQ.5Wt7Z6CatvfUnaeStNUrFphVVOaFn1BZfAJsbOILn-5JTVL0-25ufm4qv5014WyGFA8AXi6a-6QLzlopHuxwAA",
+      "now": 1792000000,
+      "expected_op": "example.run-command",
+      "expected_pd": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+      "expect": {
+        "ok": true,
+        "op": "example.run-command",
+        "sid": "sess-0001",
+        "acked_by": "example-operator",
+        "rid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "pd": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+      }
+    },
+    {
+      "id": "approval-expired",
+      "description": "exp is ten seconds before now.",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6ImVkLTEiLCJ0eXAiOiJjbGFnZW50aWMtYXBwcm92YWwrand0In0.eyJhY2tlZF9ieSI6ImV4YW1wbGUtb3BlcmF0b3IiLCJjYXAiOjEsImV4cCI6MTc5MTk5OTk5MCwiaWF0IjoxNzkxOTk5NjkwLCJpc3MiOiJodHRwczovL2lzc3Vlci5leGFtcGxlIiwib3AiOiJleGFtcGxlLnJ1bi1jb21tYW5kIiwicGQiOiJmZWRjYmE5ODc2NTQzMjEwZmVkY2JhOTg3NjU0MzIxMGZlZGNiYTk4NzY1NDMyMTBmZWRjYmE5ODc2NTQzMjEwIiwicmlkIjoiMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYiLCJzaWQiOiJzZXNzLTAwMDEifQ.JVzZI9caly5nhslnyz10CB0SB_n1E75db9ybqnqJt6VA1Dzid8aWnM8T1NAlzLWtxzpVZn-P-oUci6y8g4jbDw",
+      "now": 1792000000,
+      "expected_op": "example.run-command",
+      "expected_pd": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+      "expect": {
+        "ok": false,
+        "error": "approval_expired"
+      }
+    },
+    {
+      "id": "approval-expired-at-boundary",
+      "description": "exp equal to now is expired.",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6ImVkLTEiLCJ0eXAiOiJjbGFnZW50aWMtYXBwcm92YWwrand0In0.eyJhY2tlZF9ieSI6ImV4YW1wbGUtb3BlcmF0b3IiLCJjYXAiOjEsImV4cCI6MTc5MjAwMDAwMCwiaWF0IjoxNzkxOTk5OTQwLCJpc3MiOiJodHRwczovL2lzc3Vlci5leGFtcGxlIiwib3AiOiJleGFtcGxlLnJ1bi1jb21tYW5kIiwicGQiOiJmZWRjYmE5ODc2NTQzMjEwZmVkY2JhOTg3NjU0MzIxMGZlZGNiYTk4NzY1NDMyMTBmZWRjYmE5ODc2NTQzMjEwIiwicmlkIjoiMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYiLCJzaWQiOiJzZXNzLTAwMDEifQ.G6uMO_17Ktj1R_-kxlh0BNM4-NFybq7_-cE66yg3faf-Tu8F2EUOdk3oYxaFTmyKrIhzLOMVrN2-YZMC1Q-gDQ",
+      "now": 1792000000,
+      "expected_op": "example.run-command",
+      "expected_pd": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+      "expect": {
+        "ok": false,
+        "error": "approval_expired"
+      }
+    },
+    {
+      "id": "approval-not-yet-valid",
+      "description": "iat is after now.",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6ImVkLTEiLCJ0eXAiOiJjbGFnZW50aWMtYXBwcm92YWwrand0In0.eyJhY2tlZF9ieSI6ImV4YW1wbGUtb3BlcmF0b3IiLCJjYXAiOjEsImV4cCI6MTc5MjAwMDEwMCwiaWF0IjoxNzkyMDAwMDEwLCJpc3MiOiJodHRwczovL2lzc3Vlci5leGFtcGxlIiwib3AiOiJleGFtcGxlLnJ1bi1jb21tYW5kIiwicGQiOiJmZWRjYmE5ODc2NTQzMjEwZmVkY2JhOTg3NjU0MzIxMGZlZGNiYTk4NzY1NDMyMTBmZWRjYmE5ODc2NTQzMjEwIiwicmlkIjoiMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYiLCJzaWQiOiJzZXNzLTAwMDEifQ.ZkUtrxqM-HkatMGaEQ0sPonESxXEdz6Hvz-tG7hRoFMF3WulHMOfu22EBd2oRHJebviFz5c_jevQ6DV0jU1HDQ",
+      "now": 1792000000,
+      "expected_op": "example.run-command",
+      "expected_pd": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+      "expect": {
+        "ok": false,
+        "error": "approval_not_yet_valid"
+      }
+    },
+    {
+      "id": "approval-ttl-exceeded",
+      "description": "exp minus iat is 301 seconds.",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6ImVkLTEiLCJ0eXAiOiJjbGFnZW50aWMtYXBwcm92YWwrand0In0.eyJhY2tlZF9ieSI6ImV4YW1wbGUtb3BlcmF0b3IiLCJjYXAiOjEsImV4cCI6MTc5MjAwMDI0MSwiaWF0IjoxNzkxOTk5OTQwLCJpc3MiOiJodHRwczovL2lzc3Vlci5leGFtcGxlIiwib3AiOiJleGFtcGxlLnJ1bi1jb21tYW5kIiwicGQiOiJmZWRjYmE5ODc2NTQzMjEwZmVkY2JhOTg3NjU0MzIxMGZlZGNiYTk4NzY1NDMyMTBmZWRjYmE5ODc2NTQzMjEwIiwicmlkIjoiMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYiLCJzaWQiOiJzZXNzLTAwMDEifQ.y16jxjSYBgSFhcVE8swx6PXXcBsYrO8lyadHuYKS1zU7OJ0vAaylhPcy1g_bJS3afqs4PzgYsAQQn4lHZeUcBQ",
+      "now": 1792000000,
+      "expected_op": "example.run-command",
+      "expected_pd": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+      "expect": {
+        "ok": false,
+        "error": "approval_ttl_exceeded"
+      }
+    },
+    {
+      "id": "approval-tampered-op",
+      "description": "The op changed after signing.",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6ImVkLTEiLCJ0eXAiOiJjbGFnZW50aWMtYXBwcm92YWwrand0In0.eyJhY2tlZF9ieSI6ImV4YW1wbGUtb3BlcmF0b3IiLCJjYXAiOjEsImV4cCI6MTc5MjAwMDI0MCwiaWF0IjoxNzkxOTk5OTQwLCJpc3MiOiJodHRwczovL2lzc3Vlci5leGFtcGxlIiwib3AiOiJleGFtcGxlLm90aGVyLWNvbW1hbmQiLCJwZCI6ImZlZGNiYTk4NzY1NDMyMTBmZWRjYmE5ODc2NTQzMjEwZmVkY2JhOTg3NjU0MzIxMGZlZGNiYTk4NzY1NDMyMTAiLCJyaWQiOiIwMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZiIsInNpZCI6InNlc3MtMDAwMSJ9.L425J3-kf0H1_RVqv3vQpVcFrLgm9e0t8G24V28gj1IsX9KvVIP9cIitS9K_O6h9LTltnShBe_Y_J_aZwvQaDg",
+      "now": 1792000000,
+      "expected_op": "example.run-command",
+      "expected_pd": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+      "expect": {
+        "ok": false,
+        "error": "approval_signature_invalid"
+      }
+    },
+    {
+      "id": "approval-tampered-digest",
+      "description": "The pd changed after signing.",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6ImVkLTEiLCJ0eXAiOiJjbGFnZW50aWMtYXBwcm92YWwrand0In0.eyJhY2tlZF9ieSI6ImV4YW1wbGUtb3BlcmF0b3IiLCJjYXAiOjEsImV4cCI6MTc5MjAwMDI0MCwiaWF0IjoxNzkxOTk5OTQwLCJpc3MiOiJodHRwczovL2lzc3Vlci5leGFtcGxlIiwib3AiOiJleGFtcGxlLnJ1bi1jb21tYW5kIiwicGQiOiIwMGRjYmE5ODc2NTQzMjEwZmVkY2JhOTg3NjU0MzIxMGZlZGNiYTk4NzY1NDMyMTBmZWRjYmE5ODc2NTQzMjEwIiwicmlkIjoiMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYiLCJzaWQiOiJzZXNzLTAwMDEifQ.L425J3-kf0H1_RVqv3vQpVcFrLgm9e0t8G24V28gj1IsX9KvVIP9cIitS9K_O6h9LTltnShBe_Y_J_aZwvQaDg",
+      "now": 1792000000,
+      "expected_op": "example.run-command",
+      "expected_pd": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+      "expect": {
+        "ok": false,
+        "error": "approval_signature_invalid"
+      }
+    },
+    {
+      "id": "approval-wrong-key",
+      "description": "Names the trusted issuer and its kid but is signed by a different key.",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6ImVkLTEiLCJ0eXAiOiJjbGFnZW50aWMtYXBwcm92YWwrand0In0.eyJhY2tlZF9ieSI6ImV4YW1wbGUtb3BlcmF0b3IiLCJjYXAiOjEsImV4cCI6MTc5MjAwMDI0MCwiaWF0IjoxNzkxOTk5OTQwLCJpc3MiOiJodHRwczovL2lzc3Vlci5leGFtcGxlIiwib3AiOiJleGFtcGxlLnJ1bi1jb21tYW5kIiwicGQiOiJmZWRjYmE5ODc2NTQzMjEwZmVkY2JhOTg3NjU0MzIxMGZlZGNiYTk4NzY1NDMyMTBmZWRjYmE5ODc2NTQzMjEwIiwicmlkIjoiMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYiLCJzaWQiOiJzZXNzLTAwMDEifQ.u-UHVHfsi38JhEW603dwjBh1hlYldZcPH8RR9UFoUEPbGpVGUyOOvn0E6bAUw1VSh2N6hbhZUs2LdrW0uNrKAw",
+      "now": 1792000000,
+      "expected_op": "example.run-command",
+      "expected_pd": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+      "expect": {
+        "ok": false,
+        "error": "approval_signature_invalid"
+      }
+    },
+    {
+      "id": "approval-key-not-found",
+      "description": "kid is not in the issuer's key set.",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6ImVkLTkiLCJ0eXAiOiJjbGFnZW50aWMtYXBwcm92YWwrand0In0.eyJhY2tlZF9ieSI6ImV4YW1wbGUtb3BlcmF0b3IiLCJjYXAiOjEsImV4cCI6MTc5MjAwMDI0MCwiaWF0IjoxNzkxOTk5OTQwLCJpc3MiOiJodHRwczovL2lzc3Vlci5leGFtcGxlIiwib3AiOiJleGFtcGxlLnJ1bi1jb21tYW5kIiwicGQiOiJmZWRjYmE5ODc2NTQzMjEwZmVkY2JhOTg3NjU0MzIxMGZlZGNiYTk4NzY1NDMyMTBmZWRjYmE5ODc2NTQzMjEwIiwicmlkIjoiMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYiLCJzaWQiOiJzZXNzLTAwMDEifQ.wdv7ipoPpqEajvoEeuJBGyjGUqgCLZSLFYTa0CMZ3p32klHQUg3ThfuXI5D2qLK4vT6Bxos9DTZsmSm0oJHEDw",
+      "now": 1792000000,
+      "expected_op": "example.run-command",
+      "expected_pd": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+      "expect": {
+        "ok": false,
+        "error": "approval_key_not_found"
+      }
+    },
+    {
+      "id": "approval-issuer-untrusted",
+      "description": "Validly signed, iss is not a trusted issuer.",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6ImVkLTEiLCJ0eXAiOiJjbGFnZW50aWMtYXBwcm92YWwrand0In0.eyJhY2tlZF9ieSI6ImV4YW1wbGUtb3BlcmF0b3IiLCJjYXAiOjEsImV4cCI6MTc5MjAwMDI0MCwiaWF0IjoxNzkxOTk5OTQwLCJpc3MiOiJodHRwczovL290aGVyLWlzc3Vlci5leGFtcGxlIiwib3AiOiJleGFtcGxlLnJ1bi1jb21tYW5kIiwicGQiOiJmZWRjYmE5ODc2NTQzMjEwZmVkY2JhOTg3NjU0MzIxMGZlZGNiYTk4NzY1NDMyMTBmZWRjYmE5ODc2NTQzMjEwIiwicmlkIjoiMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYiLCJzaWQiOiJzZXNzLTAwMDEifQ.tdqF7heF2MOV_gEK9bfKkBGFOlOQOgRYtk1g7dH6LiwGWHNxQng2FrN_raI7O9eVKvobRqPbclp6_x2jeG_nDg",
+      "now": 1792000000,
+      "expected_op": "example.run-command",
+      "expected_pd": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+      "expect": {
+        "ok": false,
+        "error": "approval_issuer_untrusted"
+      }
+    },
+    {
+      "id": "approval-wrong-typ",
+      "description": "Validly signed, typ is JWT.",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6ImVkLTEiLCJ0eXAiOiJKV1QifQ.eyJhY2tlZF9ieSI6ImV4YW1wbGUtb3BlcmF0b3IiLCJjYXAiOjEsImV4cCI6MTc5MjAwMDI0MCwiaWF0IjoxNzkxOTk5OTQwLCJpc3MiOiJodHRwczovL2lzc3Vlci5leGFtcGxlIiwib3AiOiJleGFtcGxlLnJ1bi1jb21tYW5kIiwicGQiOiJmZWRjYmE5ODc2NTQzMjEwZmVkY2JhOTg3NjU0MzIxMGZlZGNiYTk4NzY1NDMyMTBmZWRjYmE5ODc2NTQzMjEwIiwicmlkIjoiMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYiLCJzaWQiOiJzZXNzLTAwMDEifQ.RAjkSiNal9N1GFd4DUmc0KqPQjYpiXzYPcNPOcTxjSuBJLb5TzHl1zFt5-MOgzOCf-Xp8fOmMmfzr-fFPVWwDw",
+      "now": 1792000000,
+      "expected_op": "example.run-command",
+      "expected_pd": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+      "expect": {
+        "ok": false,
+        "error": "approval_typ_invalid"
+      }
+    },
+    {
+      "id": "approval-missing-typ",
+      "description": "Validly signed with no typ: an identity assertion is not an approval.",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6ImVkLTEifQ.eyJhY2tlZF9ieSI6ImV4YW1wbGUtb3BlcmF0b3IiLCJjYXAiOjEsImV4cCI6MTc5MjAwMDI0MCwiaWF0IjoxNzkxOTk5OTQwLCJpc3MiOiJodHRwczovL2lzc3Vlci5leGFtcGxlIiwib3AiOiJleGFtcGxlLnJ1bi1jb21tYW5kIiwicGQiOiJmZWRjYmE5ODc2NTQzMjEwZmVkY2JhOTg3NjU0MzIxMGZlZGNiYTk4NzY1NDMyMTBmZWRjYmE5ODc2NTQzMjEwIiwicmlkIjoiMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYiLCJzaWQiOiJzZXNzLTAwMDEifQ.kvBFxraFJJ57CX0DMC6fsHFnjV-mE6QRtRx7hLsvIIw9s0YAPyx6Qi5jNeEYuGPMMpg1QkTXYnd72waYUSwpCA",
+      "now": 1792000000,
+      "expected_op": "example.run-command",
+      "expected_pd": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+      "expect": {
+        "ok": false,
+        "error": "approval_typ_invalid"
+      }
+    },
+    {
+      "id": "approval-alg-none",
+      "description": "Unsigned token with alg none.",
+      "token": "eyJhbGciOiJub25lIiwia2lkIjoiZWQtMSIsInR5cCI6ImNsYWdlbnRpYy1hcHByb3ZhbCtqd3QifQ.eyJhY2tlZF9ieSI6ImV4YW1wbGUtb3BlcmF0b3IiLCJjYXAiOjEsImV4cCI6MTc5MjAwMDI0MCwiaWF0IjoxNzkxOTk5OTQwLCJpc3MiOiJodHRwczovL2lzc3Vlci5leGFtcGxlIiwib3AiOiJleGFtcGxlLnJ1bi1jb21tYW5kIiwicGQiOiJmZWRjYmE5ODc2NTQzMjEwZmVkY2JhOTg3NjU0MzIxMGZlZGNiYTk4NzY1NDMyMTBmZWRjYmE5ODc2NTQzMjEwIiwicmlkIjoiMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYiLCJzaWQiOiJzZXNzLTAwMDEifQ.",
+      "now": 1792000000,
+      "expected_op": "example.run-command",
+      "expected_pd": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+      "expect": {
+        "ok": false,
+        "error": "approval_alg_not_allowed"
+      }
+    },
+    {
+      "id": "approval-alg-hs256",
+      "description": "HMAC token, algorithm confusion attempt.",
+      "token": "eyJhbGciOiJIUzI1NiIsImtpZCI6ImVkLTEiLCJ0eXAiOiJjbGFnZW50aWMtYXBwcm92YWwrand0In0.eyJhY2tlZF9ieSI6ImV4YW1wbGUtb3BlcmF0b3IiLCJjYXAiOjEsImV4cCI6MTc5MjAwMDI0MCwiaWF0IjoxNzkxOTk5OTQwLCJpc3MiOiJodHRwczovL2lzc3Vlci5leGFtcGxlIiwib3AiOiJleGFtcGxlLnJ1bi1jb21tYW5kIiwicGQiOiJmZWRjYmE5ODc2NTQzMjEwZmVkY2JhOTg3NjU0MzIxMGZlZGNiYTk4NzY1NDMyMTBmZWRjYmE5ODc2NTQzMjEwIiwicmlkIjoiMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYiLCJzaWQiOiJzZXNzLTAwMDEifQ.MscTuVliMED8CauMrZjDH1HWlb1NWD495QLDMIFlmYA",
+      "now": 1792000000,
+      "expected_op": "example.run-command",
+      "expected_pd": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+      "expect": {
+        "ok": false,
+        "error": "approval_alg_not_allowed"
+      }
+    },
+    {
+      "id": "approval-malformed-segments",
+      "description": "Two segments only.",
+      "token": "abc.def",
+      "now": 1792000000,
+      "expected_op": "example.run-command",
+      "expected_pd": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+      "expect": {
+        "ok": false,
+        "error": "approval_malformed"
+      }
+    },
+    {
+      "id": "approval-malformed-payload-trailing-junk",
+      "description": "Payload segment holds a valid object followed by junk; validly signed.",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6ImVkLTEiLCJ0eXAiOiJjbGFnZW50aWMtYXBwcm92YWwrand0In0.eyJhY2tlZF9ieSI6ImV4YW1wbGUtb3BlcmF0b3IiLCJjYXAiOjEsImV4cCI6MTc5MjAwMDI0MCwiaWF0IjoxNzkxOTk5OTQwLCJpc3MiOiJodHRwczovL2lzc3Vlci5leGFtcGxlIiwib3AiOiJleGFtcGxlLnJ1bi1jb21tYW5kIiwicGQiOiJmZWRjYmE5ODc2NTQzMjEwZmVkY2JhOTg3NjU0MzIxMGZlZGNiYTk4NzY1NDMyMTBmZWRjYmE5ODc2NTQzMjEwIiwicmlkIjoiMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYiLCJzaWQiOiJzZXNzLTAwMDEifSBqdW5r.HqRYvqNOgfycPyoadKlayzMXPapjrO1a23oOalOYVtltUc376Bw515dmR8GOW11fb5op18wxvhKw7XPpyp65Cg",
+      "now": 1792000000,
+      "expected_op": "example.run-command",
+      "expected_pd": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+      "expect": {
+        "ok": false,
+        "error": "approval_malformed"
+      }
+    },
+    {
+      "id": "approval-claims-missing-rid",
+      "description": "rid is absent.",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6ImVkLTEiLCJ0eXAiOiJjbGFnZW50aWMtYXBwcm92YWwrand0In0.eyJhY2tlZF9ieSI6ImV4YW1wbGUtb3BlcmF0b3IiLCJjYXAiOjEsImV4cCI6MTc5MjAwMDI0MCwiaWF0IjoxNzkxOTk5OTQwLCJpc3MiOiJodHRwczovL2lzc3Vlci5leGFtcGxlIiwib3AiOiJleGFtcGxlLnJ1bi1jb21tYW5kIiwicGQiOiJmZWRjYmE5ODc2NTQzMjEwZmVkY2JhOTg3NjU0MzIxMGZlZGNiYTk4NzY1NDMyMTBmZWRjYmE5ODc2NTQzMjEwIiwic2lkIjoic2Vzcy0wMDAxIn0.r-ZaM-pianUjrOaBjx7SqzAYvFyZH6nHP_Hwt33QVfhH5V5C_f5GB5yB1ZYwhjCbq7UZxf3bOY-5o346RN4kCg",
+      "now": 1792000000,
+      "expected_op": "example.run-command",
+      "expected_pd": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+      "expect": {
+        "ok": false,
+        "error": "approval_claims_invalid"
+      }
+    },
+    {
+      "id": "approval-claims-bad-rid",
+      "description": "rid is not 32 lower-case hex characters.",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6ImVkLTEiLCJ0eXAiOiJjbGFnZW50aWMtYXBwcm92YWwrand0In0.eyJhY2tlZF9ieSI6ImV4YW1wbGUtb3BlcmF0b3IiLCJjYXAiOjEsImV4cCI6MTc5MjAwMDI0MCwiaWF0IjoxNzkxOTk5OTQwLCJpc3MiOiJodHRwczovL2lzc3Vlci5leGFtcGxlIiwib3AiOiJleGFtcGxlLnJ1bi1jb21tYW5kIiwicGQiOiJmZWRjYmE5ODc2NTQzMjEwZmVkY2JhOTg3NjU0MzIxMGZlZGNiYTk4NzY1NDMyMTBmZWRjYmE5ODc2NTQzMjEwIiwicmlkIjoic2hvcnQiLCJzaWQiOiJzZXNzLTAwMDEifQ.Ts1x-zwa1zCl7zMiHnxodEgCPdP8qD0rNjmtEPzikEVd9sTKUWdtFutVUqOTZ8JIk57XD8ZqKqltEtI382FfAQ",
+      "now": 1792000000,
+      "expected_op": "example.run-command",
+      "expected_pd": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+      "expect": {
+        "ok": false,
+        "error": "approval_claims_invalid"
+      }
+    },
+    {
+      "id": "approval-claims-upper-case-digest",
+      "description": "pd is upper case: the digest is 64 lower-case hex characters.",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6ImVkLTEiLCJ0eXAiOiJjbGFnZW50aWMtYXBwcm92YWwrand0In0.eyJhY2tlZF9ieSI6ImV4YW1wbGUtb3BlcmF0b3IiLCJjYXAiOjEsImV4cCI6MTc5MjAwMDI0MCwiaWF0IjoxNzkxOTk5OTQwLCJpc3MiOiJodHRwczovL2lzc3Vlci5leGFtcGxlIiwib3AiOiJleGFtcGxlLnJ1bi1jb21tYW5kIiwicGQiOiJGRURDQkE5ODc2NTQzMjEwRkVEQ0JBOTg3NjU0MzIxMEZFRENCQTk4NzY1NDMyMTBGRURDQkE5ODc2NTQzMjEwIiwicmlkIjoiMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYiLCJzaWQiOiJzZXNzLTAwMDEifQ.8Q4U2KMEn940xc6Nm9WkekcdlDIGl19ezEXriV-UoEbU51H06PTctQyDmeeYU5ZgPvk8jS_QOL0xrcQsLAVADw",
+      "now": 1792000000,
+      "expected_op": "example.run-command",
+      "expected_pd": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+      "expect": {
+        "ok": false,
+        "error": "approval_claims_invalid"
+      }
+    },
+    {
+      "id": "approval-claims-cap-2",
+      "description": "cap is 2: an approval is for one use.",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6ImVkLTEiLCJ0eXAiOiJjbGFnZW50aWMtYXBwcm92YWwrand0In0.eyJhY2tlZF9ieSI6ImV4YW1wbGUtb3BlcmF0b3IiLCJjYXAiOjIsImV4cCI6MTc5MjAwMDI0MCwiaWF0IjoxNzkxOTk5OTQwLCJpc3MiOiJodHRwczovL2lzc3Vlci5leGFtcGxlIiwib3AiOiJleGFtcGxlLnJ1bi1jb21tYW5kIiwicGQiOiJmZWRjYmE5ODc2NTQzMjEwZmVkY2JhOTg3NjU0MzIxMGZlZGNiYTk4NzY1NDMyMTBmZWRjYmE5ODc2NTQzMjEwIiwicmlkIjoiMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYiLCJzaWQiOiJzZXNzLTAwMDEifQ.Oy5z_7zLwDo-5L1MMIltt5w5kDyiUdFKFWc79vgQ6ic7_iV8y2XapdmT67x-rYzXAhAAQM52khx1LsZgIPEmDA",
+      "now": 1792000000,
+      "expected_op": "example.run-command",
+      "expected_pd": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+      "expect": {
+        "ok": false,
+        "error": "approval_claims_invalid"
+      }
+    },
+    {
+      "id": "approval-claims-empty-sid",
+      "description": "sid is empty.",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6ImVkLTEiLCJ0eXAiOiJjbGFnZW50aWMtYXBwcm92YWwrand0In0.eyJhY2tlZF9ieSI6ImV4YW1wbGUtb3BlcmF0b3IiLCJjYXAiOjEsImV4cCI6MTc5MjAwMDI0MCwiaWF0IjoxNzkxOTk5OTQwLCJpc3MiOiJodHRwczovL2lzc3Vlci5leGFtcGxlIiwib3AiOiJleGFtcGxlLnJ1bi1jb21tYW5kIiwicGQiOiJmZWRjYmE5ODc2NTQzMjEwZmVkY2JhOTg3NjU0MzIxMGZlZGNiYTk4NzY1NDMyMTBmZWRjYmE5ODc2NTQzMjEwIiwicmlkIjoiMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYiLCJzaWQiOiIifQ.RcxDxk4wFgUjIlLKPhNoVdIan-0yP0jAnnK4t_56nNjuDiO44adweQIlj6szarUNaA7WG3-J0pwBTqXbLyb0CA",
+      "now": 1792000000,
+      "expected_op": "example.run-command",
+      "expected_pd": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+      "expect": {
+        "ok": false,
+        "error": "approval_claims_invalid"
+      }
+    },
+    {
+      "id": "approval-claims-exp-string",
+      "description": "exp is a string; the type is checked before any comparison.",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6ImVkLTEiLCJ0eXAiOiJjbGFnZW50aWMtYXBwcm92YWwrand0In0.eyJhY2tlZF9ieSI6ImV4YW1wbGUtb3BlcmF0b3IiLCJjYXAiOjEsImV4cCI6IjE3OTIwMDAyNDAiLCJpYXQiOjE3OTE5OTk5NDAsImlzcyI6Imh0dHBzOi8vaXNzdWVyLmV4YW1wbGUiLCJvcCI6ImV4YW1wbGUucnVuLWNvbW1hbmQiLCJwZCI6ImZlZGNiYTk4NzY1NDMyMTBmZWRjYmE5ODc2NTQzMjEwZmVkY2JhOTg3NjU0MzIxMGZlZGNiYTk4NzY1NDMyMTAiLCJyaWQiOiIwMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZiIsInNpZCI6InNlc3MtMDAwMSJ9.isc6hXu8vnxzI6cZYe_W1gNelCQdTB8iT9KEYNCMYDiBB6upqO0JWqZbb-Ir0n9mYtpopGupInr-YD1ruVtRDg",
+      "now": 1792000000,
+      "expected_op": "example.run-command",
+      "expected_pd": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+      "expect": {
+        "ok": false,
+        "error": "approval_claims_invalid"
+      }
+    },
+    {
+      "id": "approval-op-mismatch",
+      "description": "A valid approval for another operation than the one the consumer is about to run.",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6ImVkLTEiLCJ0eXAiOiJjbGFnZW50aWMtYXBwcm92YWwrand0In0.eyJhY2tlZF9ieSI6ImV4YW1wbGUtb3BlcmF0b3IiLCJjYXAiOjEsImV4cCI6MTc5MjAwMDI0MCwiaWF0IjoxNzkxOTk5OTQwLCJpc3MiOiJodHRwczovL2lzc3Vlci5leGFtcGxlIiwib3AiOiJleGFtcGxlLnJ1bi1jb21tYW5kIiwicGQiOiJmZWRjYmE5ODc2NTQzMjEwZmVkY2JhOTg3NjU0MzIxMGZlZGNiYTk4NzY1NDMyMTBmZWRjYmE5ODc2NTQzMjEwIiwicmlkIjoiMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYiLCJzaWQiOiJzZXNzLTAwMDEifQ.L425J3-kf0H1_RVqv3vQpVcFrLgm9e0t8G24V28gj1IsX9KvVIP9cIitS9K_O6h9LTltnShBe_Y_J_aZwvQaDg",
+      "now": 1792000000,
+      "expected_op": "example.other-command",
+      "expected_pd": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+      "expect": {
+        "ok": false,
+        "error": "approval_op_mismatch"
+      }
+    },
+    {
+      "id": "approval-digest-mismatch",
+      "description": "A valid approval for other parameters than the ones the consumer is about to run.",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6ImVkLTEiLCJ0eXAiOiJjbGFnZW50aWMtYXBwcm92YWwrand0In0.eyJhY2tlZF9ieSI6ImV4YW1wbGUtb3BlcmF0b3IiLCJjYXAiOjEsImV4cCI6MTc5MjAwMDI0MCwiaWF0IjoxNzkxOTk5OTQwLCJpc3MiOiJodHRwczovL2lzc3Vlci5leGFtcGxlIiwib3AiOiJleGFtcGxlLnJ1bi1jb21tYW5kIiwicGQiOiJmZWRjYmE5ODc2NTQzMjEwZmVkY2JhOTg3NjU0MzIxMGZlZGNiYTk4NzY1NDMyMTBmZWRjYmE5ODc2NTQzMjEwIiwicmlkIjoiMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYiLCJzaWQiOiJzZXNzLTAwMDEifQ.L425J3-kf0H1_RVqv3vQpVcFrLgm9e0t8G24V28gj1IsX9KvVIP9cIitS9K_O6h9LTltnShBe_Y_J_aZwvQaDg",
+      "now": 1792000000,
+      "expected_op": "example.run-command",
+      "expected_pd": "00dcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+      "expect": {
+        "ok": false,
+        "error": "approval_digest_mismatch"
+      }
+    }
+  ]
+}

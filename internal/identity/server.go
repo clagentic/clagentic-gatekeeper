@@ -85,6 +85,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET "+PathJWKS, s.jwks)
 	mux.HandleFunc("POST "+PathIssueSession, s.issueSession)
 	mux.HandleFunc("POST "+PathIssueChild, s.issueChild)
+	mux.HandleFunc("POST "+PathApprovalRequest, s.approvalRequest)
+	mux.HandleFunc("POST "+PathApprovalGrant, s.approvalGrant)
+	mux.HandleFunc("POST "+PathApprovalFetch, s.approvalFetch)
 	return mux
 }
 
@@ -122,6 +125,49 @@ func (s *Server) issueChild(w http.ResponseWriter, r *http.Request) {
 	s.respond(w)(s.Issuer.IssueChild(peer, req))
 }
 
+// The approval handlers log one line per outcome that changes state, so the
+// operator has a record of what was asked for, granted and handed out. A line
+// names the request id, the operation and the session; the summary is the
+// requester's own text and is logged quoted.
+func (s *Server) approvalRequest(w http.ResponseWriter, r *http.Request) {
+	var req ApprovalRequest
+	peer, ok := s.decode(w, r, &req)
+	if !ok {
+		return
+	}
+	out, err := s.Issuer.RequestApproval(peer, req)
+	if err == nil {
+		s.log()("identity: approval requested rid=%s op=%s summary=%q pid=%d", out.Rid, req.Op, req.Summary, peer.PID)
+	}
+	s.respond(w)(out, err)
+}
+
+func (s *Server) approvalGrant(w http.ResponseWriter, r *http.Request) {
+	var req ApprovalGrantRequest
+	peer, ok := s.decode(w, r, &req)
+	if !ok {
+		return
+	}
+	out, err := s.Issuer.GrantApproval(peer, req)
+	if err == nil {
+		s.log()("identity: approval granted rid=%s pid=%d", out.Rid, peer.PID)
+	}
+	s.respond(w)(out, err)
+}
+
+func (s *Server) approvalFetch(w http.ResponseWriter, r *http.Request) {
+	var req ApprovalFetchRequest
+	peer, ok := s.decode(w, r, &req)
+	if !ok {
+		return
+	}
+	out, err := s.Issuer.FetchApproval(peer, req)
+	if err == nil {
+		s.log()("identity: approval fetched rid=%s pid=%d", out.Rid, peer.PID)
+	}
+	s.respond(w)(out, err)
+}
+
 func (s *Server) decode(w http.ResponseWriter, r *http.Request, into any) (Peer, bool) {
 	peer, ok := peerOf(r)
 	if !ok {
@@ -157,8 +203,8 @@ func decodeOneObject(body io.Reader, into any) error {
 	return nil
 }
 
-func (s *Server) respond(w http.ResponseWriter) func(*Issued, error) {
-	return func(out *Issued, err error) {
+func (s *Server) respond(w http.ResponseWriter) func(any, error) {
+	return func(out any, err error) {
 		if err != nil {
 			if ie, ok := IsIssueError(err); ok {
 				s.writeRefusal(w, ie)
