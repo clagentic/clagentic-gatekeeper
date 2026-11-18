@@ -1,10 +1,14 @@
 # Clagentic Identity Assertion contract
 
-Contract version: **2.1.0** (assertion version claim `cia` = `1` or `2`).
+Contract version: **2.2.0** (assertion version claim `cia` = `1` or `2`).
 Major 2 adds one `origin` value, `driven` (section 3.3), and ships alongside
 major 1: both verify, every major 1 assertion and vector stays valid, and the
 version policy is in section 11. Version 2.1.0 adds an optional, informational
-delivery signal that says why no identity was delivered (section 6.1).
+delivery signal that says why no identity was delivered (section 6.1). Version
+2.2.0 adds the operator approval (section 13), a signed statement that the
+operator approved one operation, as a sibling artifact of the assertion; the
+assertion, its claims, its verification and its vectors are unchanged. The
+version history is in section 11.1.
 
 This document is normative. It defines one artifact, the **Identity
 Assertion**: a signed statement of which actor is acting, on whose behalf,
@@ -476,6 +480,24 @@ in their own tests.
   codes form a closed set; adding a code later is a MINOR change, and a
   consumer treats a code it does not know as plain absent. The signal is
   independent of `cia`: a major 1 verifier MAY implement it too.
+- Contract 2.2.0 is a MINOR change: the operator approval of section 13 is a
+  new artifact with its own JWS `typ`, its own schema (`approval/1.json`), its
+  own failure codes (every one starts with `approval_`) and its own vectors
+  (`vectors/approval/`). It adds no claim to the assertion, changes no `cia`,
+  no assertion failure code and no identity schema `$id`, and the `v1/` and
+  `v2/` vector sets are byte-identical to 2.1.0 (their manifests keep the
+  contract version they were generated for). A verifier that does not
+  implement section 13 is unaffected, and it refuses an approval presented as
+  an assertion: the approval has no `cia`.
+
+### 11.1 Changelog
+
+| Version | Kind | Change |
+|---------|------|--------|
+| 1.0.0 | initial | The Identity Assertion, `cia` 1. |
+| 2.0.0 | MAJOR | `cia` 2 and the `driven` origin (section 3.3). |
+| 2.1.0 | MINOR | The optional unavailability signal (section 6.1). |
+| 2.2.0 | MINOR | The operator approval, a sibling artifact (section 13). |
 
 ## 12. Security considerations
 
@@ -494,3 +516,191 @@ in their own tests.
   any authorization decision: a consumer refuses exactly as it would for an
   absent identity. Whatever can set the environment can forge it, which only
   misattributes why an identity is missing.
+
+## 13. Operator approval
+
+An **operator approval** is a signed statement that the operator approved one
+operation with one set of parameters, in one session. A tool that must not run
+an operation on an agent's say-so asks for one, and verifies it with a standard
+JWS library and the issuer's JWKS, the same way it verifies an assertion. The
+tool reads no value an agent typed, and no environment variable.
+
+It is a sibling artifact of the assertion, not a claim of it. It has its own
+JWS `typ`, its own claim set and its own failure codes, and it changes nothing
+about the assertion (section 11, contract 2.2.0).
+
+### 13.1 Artifact
+
+A compact JWS (RFC 7515) signed with the issuer's signing key, so section 2 and
+section 5 apply unchanged: the same two algorithms, the same `kid` selection,
+the same JWKS discovery and fetching rules, and the same refusal of `jku`,
+`jwk`, `x5u`, `x5c` and `crit`. The protected header MUST carry `alg`, `kid`
+and `typ`, and `typ` MUST be `clagentic-approval+jwt`. An identity assertion
+carries no `typ`, so the header alone tells the two apart.
+
+The machine-readable claim set is
+[`schemas/approval.json`](../schemas/approval.json)
+(`https://schemas.clagentic.ai/approval/1.json`).
+
+| Claim | Type | Meaning |
+|-------|------|---------|
+| `iss` | string | The issuer, matched against the verifier's trusted issuers as in section 5. |
+| `rid` | string | The request id: 32 lower-case hexadecimal characters. Unique per request. |
+| `op` | string | The operation approved, `[A-Za-z0-9._:/@+-]{1,128}`. Its meaning is the consumer's; the issuer treats it as an opaque name. |
+| `pd` | string | The digest of the operation's parameters: 64 lower-case hexadecimal characters. How it is computed is the consumer's; the issuer does not see the parameters. |
+| `sid` | string | The session id (section 3, `sid`) of the session the approval was requested in and granted in. |
+| `acked_by` | string | The approver name from the issuer's configuration, `[A-Za-z0-9._:@+-]{1,128}`. It is never taken from the request or from the typed prompt. |
+| `iat` | integer | Issued at, NumericDate (seconds). |
+| `exp` | integer | Expiry, NumericDate. `exp - iat` is at most 300. |
+| `cap` | integer | Always `1`: the approval is for one use. |
+
+A verifier MUST ignore claims it does not know.
+
+### 13.2 Flow
+
+1. **Request.** A session that holds an assertion asks its issuer to record a
+   pending approval for an operation, a params digest and a one-line summary
+   (`gatekeeper approval request`). The issuer binds the pending request to the
+   `sid` of the assertion presented, which it verifies exactly as it verifies a
+   parent token for a child (the assertion is unexpired, was issued by this
+   issuer to the runtime asking, and the asking runtime is the one it was
+   issued to). It returns the request id, its expiry (at most 300 seconds on)
+   and the phrase to type, `approve <rid>`. The phrase is not a secret.
+2. **The operator types the phrase** as a whole prompt in that same session.
+   Surrounding whitespace is ignored; any other text makes it not the phrase.
+3. **Grant.** The prompt hook of the runtime sees the prompt. Only when it can
+   show that the operator typed the turn (the order of
+   [`RUNTIME-HOOKS.md`](RUNTIME-HOOKS.md), "Operator approval") it asks the
+   issuer to grant, presenting the session's assertion. The issuer signs the
+   approval only for a request that is pending, unexpired, not yet granted and
+   bound to the same `sid` as the assertion presented. The approval's `exp` is
+   the grant time plus the configured lifetime, at most 300 seconds.
+4. **Fetch.** Any caller the issuer admits fetches the signed approval by
+   request id (`gatekeeper approval fetch`). The approval is returned once.
+   No parentage is checked: the fetcher need not be the requester, the
+   granting session or a descendant of either. This is what lets a coordinator
+   session make the request on behalf of a lane and the lane's process use
+   the approval.
+
+The issuer keeps requests and approvals in memory only. A restart drops every
+pending request and every approval not yet fetched; the operator is asked
+again.
+
+Operator approval is off unless the issuer is configured with an approver name
+(`identity.approval.approver`); every operation below is then refused with
+`approval_off`.
+
+### 13.2.1 Issuer refusals
+
+The issuer's refusals live in their own namespace and carry one fixed message
+per code, like the identity codes. None is ever raised for an identity
+operation.
+
+| Code | Raised when |
+|------|-------------|
+| `approval_off` | No approver is configured. |
+| `approval_op_invalid` | The operation name is empty, longer than 128 characters or outside its character set. |
+| `approval_digest_invalid` | The params digest is not 64 hexadecimal characters. |
+| `approval_session_invalid` | The session assertion presented is not accepted: not issued by this issuer, expired, unknown to it, or presented by another runtime or user than it was issued to. |
+| `approval_session_mismatch` | A grant comes from a session other than the one that made the request. |
+| `approval_unknown` | No request has this id, or its record has been dropped. |
+| `approval_expired` | The request, or the granted approval, is past its expiry. |
+| `approval_already_granted` | The request was granted before. |
+| `approval_not_granted` | A fetch for a request that is pending. |
+| `approval_already_fetched` | The approval was fetched before. |
+
+### 13.3 Verification
+
+A conformant verifier performs these steps in this order and reports the first
+failure by its code, so two verifiers agree on the code for a token with
+several faults. The consumer supplies the operation and the params digest it
+is about to run.
+
+1. Split into three base64url segments; decode the header and payload as JSON
+   objects, each exactly one object with nothing after it. A `crit` header
+   member is also a failure: `approval_malformed`.
+2. Header `alg` MUST be `EdDSA` or `ES256`: `approval_alg_not_allowed`.
+3. Header `typ` MUST be `clagentic-approval+jwt`: `approval_typ_invalid`.
+4. `iss` MUST be a string equal to a trusted issuer:
+   `approval_issuer_untrusted`.
+5. Resolve the issuer's JWKS (section 5) and find the key whose `kid` equals the
+   header `kid`: `approval_key_not_found`.
+6. Verify the signature over `header.payload` as sent, with a key whose type
+   matches `alg`: `approval_signature_invalid`.
+7. Time. `iat` and `exp` MUST be integer NumericDates (`approval_claims_invalid`
+   otherwise, before any comparison). Then, with `now` read once: `exp <= now`
+   is `approval_expired`; `iat > now` is `approval_not_yet_valid`;
+   `exp - iat > 300` is `approval_ttl_exceeded`.
+8. The claim shapes of section 13.1, every claim of the table present and
+   matching its pattern, and `cap` equal to `1`: `approval_claims_invalid`.
+9. The binding. `op` MUST equal the operation the consumer is about to run:
+   `approval_op_mismatch`. `pd` MUST equal the digest of the parameters the
+   consumer is about to run: `approval_digest_mismatch`.
+
+A consumer decides what else it requires. It SHOULD read `sid` and decide
+whether the session that asked is one it accepts, and it SHOULD remember `rid`
+until `exp` and refuse an approval it has already acted on, because `cap` is
+the issuer's promise to hand the approval out once, not a mark on a token the
+holder can copy.
+
+| Code | Raised when |
+|------|-------------|
+| `approval_malformed` | Not a three-segment compact JWS, header or payload not exactly one JSON object, or a `crit` header. |
+| `approval_alg_not_allowed` | Header `alg` is not `EdDSA` or `ES256`. |
+| `approval_typ_invalid` | Header `typ` is absent or is not `clagentic-approval+jwt`. An identity assertion fails here. |
+| `approval_issuer_untrusted` | `iss` is absent, not a string, or not a trusted issuer. |
+| `approval_key_not_found` | The issuer's JWKS has no key with the header `kid`. |
+| `approval_signature_invalid` | The signature does not verify, or the key type does not match `alg`. A changed `op` or `pd` fails here. |
+| `approval_expired` | `exp <= now`. |
+| `approval_not_yet_valid` | `iat` is in the future. |
+| `approval_ttl_exceeded` | `exp - iat` is greater than 300 seconds. |
+| `approval_claims_invalid` | A required claim is missing or has the wrong type or pattern, a time claim is not an integer, or `cap` is not `1`. |
+| `approval_op_mismatch` | The approval is for another operation than the consumer is about to run. |
+| `approval_digest_mismatch` | The approval is for other parameters than the consumer is about to run. |
+
+Every code has at least one vector in
+[`vectors/approval/`](../vectors/README.md). The set is signed with throwaway
+keys, like the identity sets, and a verifier is conformant when it reproduces
+every expected outcome.
+
+### 13.4 Trust grade
+
+The trust grade of an approval is **attribution-grade while agents run as the
+same user as the issuer** (the host runs them as uid 0). It is not proof, and
+this contract does not claim it is.
+
+What makes it better than a value an agent typed is where the grant comes
+from, not secrecy: the issuer signs only when a hook of the runtime observed a
+turn the operator typed, and the signature binds that to one operation, one
+params digest and one session. A consumer that reads an approval reads a
+statement the issuer made about a turn, not a string the requesting agent
+supplied.
+
+The residual risks, stated so a consumer can weigh them:
+
+- Whatever runs as the issuer's user can read the issuer's key and
+  configuration, and can call the issuer's socket. An agent with that reach can
+  forge what this artifact attests. The approval narrows that to deliberate
+  action; it does not remove it.
+- The approval is fetched once, by any caller the issuer admits. A caller that
+  fetches first uses up the approval. It can run only the exact operation and
+  parameters the approval names, until it expires.
+- A session assertion says how a session was started, never that a person is
+  present. A headless run an agent launched may be indistinguishable from a
+  terminal the operator started, to the hook. The approval carries the `sid` of
+  the session it was issued in, so a consumer can tell an approval issued in a
+  session it knows an operator drives from one issued in a session an agent
+  asserted.
+- A session assertion refreshed between the request and the grant has a new
+  `sid`, and the grant is refused with `approval_session_mismatch`; the request
+  is made again.
+
+### 13.5 Conformance
+
+[`vectors/approval/`](../vectors/approval/) is the vector set of section 13.3:
+valid approvals in both algorithms, expiry, time and lifetime bounds, a changed
+`op` and a changed `pd`, the wrong `typ`, the wrong key, an unknown key and
+issuer, algorithm confusion, malformed tokens, bad claims, and an approval
+presented for another operation or other parameters than the one the consumer
+is about to run. The identity vector sets under `vectors/v1/` and
+`vectors/v2/` are unchanged.
