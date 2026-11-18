@@ -28,6 +28,10 @@ type Install struct {
 	RefreshBelow time.Duration
 	// Compose is passed to pre-tool-use-bash when set.
 	Compose string
+	// Config is the absolute path of the gatekeeper config file, passed to
+	// user-prompt-submit when set so that hook can read identity.approval.turn_origin.
+	// Its registration timeout then also covers the provider's longest run.
+	Config string
 	// TimeoutSeconds is the runtime-side timeout of every hook; the hook itself
 	// gives up sooner. For the composed pre-tool-use-bash entry it is the budget
 	// the composed hook gets, the timeout it had when registered alone, and the
@@ -46,8 +50,12 @@ const composeAllowanceSeconds = 8
 
 // timeoutFor is the runtime-side timeout registered for event.
 func (in Install) timeoutFor(event string) int {
-	if event == EventPreToolUseBash && in.Compose != "" {
+	switch {
+	case event == EventPreToolUseBash && in.Compose != "":
 		return in.TimeoutSeconds + composeAllowanceSeconds
+	case event == EventUserPromptSubmit && in.Config != "":
+		// The hook can run a turn-origin provider before it asks the issuer.
+		return in.TimeoutSeconds + int(MaxProviderTimeout/time.Second)
 	}
 	return in.TimeoutSeconds
 }
@@ -85,6 +93,8 @@ func (in Install) Validate() error {
 		return errors.New("--state-dir must be an absolute path")
 	case in.Compose != "" && !filepath.IsAbs(in.Compose):
 		return errors.New("--compose must be an absolute path")
+	case in.Config != "" && !filepath.IsAbs(in.Config):
+		return errors.New("--config must be an absolute path")
 	case in.Origin == "human":
 		return ErrOriginHuman
 	}
@@ -115,6 +125,9 @@ func (in Install) Command(event string) string {
 	case EventUserPromptSubmit:
 		if in.RefreshBelow > 0 {
 			parts = append(parts, "--refresh-below", in.RefreshBelow.String())
+		}
+		if in.Config != "" {
+			parts = append(parts, "--config", shellQuote(in.Config))
 		}
 	case EventPreToolUseBash:
 	}

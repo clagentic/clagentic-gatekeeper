@@ -51,9 +51,9 @@ func main() {
 		}
 	case "hook":
 		os.Exit(runHook(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
-	case "hooks-install", "render-agent", "self-check":
+	case "hooks-install", "render-agent", "self-check", "approval":
 		run := map[string]func([]string, io.Writer) error{
-			"hooks-install": runHooksInstall, "render-agent": runRenderAgent, "self-check": runSelfCheck,
+			"hooks-install": runHooksInstall, "render-agent": runRenderAgent, "self-check": runSelfCheck, "approval": runApproval,
 		}[os.Args[1]]
 		if err := run(os.Args[2:], os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -79,6 +79,8 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  serve [--socket <path>] [--config <path>]   (linux only)")
 	fmt.Fprintln(os.Stderr, "  issue-session [--socket <path>] [--config <path>] [--definition <name>] [--origin <origin>] [--runtime] [--runtime-id <id>] [--runtime-version <v>] [--json]")
 	fmt.Fprintln(os.Stderr, "  issue-child [--socket <path>] [--config <path>] [--parent-token-file <path>] --agent-type <name> --agent-id <id> [--json]")
+	fmt.Fprintln(os.Stderr, "  approval request [--socket <path>] [--config <path>] [--token-file <path>] --op <op> --params-digest <sha256> [--summary <text>]   (records a pending operator approval and prints the phrase to type)")
+	fmt.Fprintln(os.Stderr, "  approval fetch [--socket <path>] [--config <path>] --rid <rid>   (prints the signed approval of a granted request, once)")
 	fmt.Fprintln(os.Stderr, "  self-check [--socket <path>] [--config <path>] [--jwks-path <path>]   (socket reachable, key set file identical to the served key set)")
 	fmt.Fprintln(os.Stderr, "  hook claude-code <session-start|subagent-start|pre-tool-use-bash|subagent-stop|user-prompt-submit> --socket <path> --state-dir <dir> [--mode warn|enforce]   (reads the hook JSON on stdin)")
 	fmt.Fprintln(os.Stderr, "  hook process --socket <path> [--definition <name>] [--origin <origin>]   (prints "+hookEnvName+"=<dir> for a launcher's child)")
