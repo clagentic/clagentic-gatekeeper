@@ -8,7 +8,6 @@
 package hook
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -34,14 +33,6 @@ type Payload struct {
 	AgentType string
 	ToolName  string
 	ToolInput map[string]json.RawMessage
-	// Prompt is the text of a UserPromptSubmit turn.
-	Prompt string
-	// SourcePresent is whether the payload carries a source member that is not
-	// null, and Source is its value when that is a string. A source that is
-	// present but not a string is present with an empty Source, so it is never
-	// mistaken for an absent one.
-	SourcePresent bool
-	Source        string
 }
 
 // ParsePayload reads one JSON object. A member of an unexpected type reads as
@@ -65,10 +56,6 @@ func ParsePayload(r io.Reader) (Payload, error) {
 	p.AgentID = stringMember(m, "agent_id")
 	p.AgentType = stringMember(m, "agent_type")
 	p.ToolName = stringMember(m, "tool_name")
-	p.Prompt = stringMember(m, "prompt")
-	if src, ok := m["source"]; ok && !bytes.Equal(bytes.TrimSpace(src), []byte("null")) {
-		p.SourcePresent, p.Source = true, stringMember(m, "source")
-	}
 	if in, ok := m["tool_input"]; ok {
 		// A tool_input that is not an object reads as absent.
 		_ = json.Unmarshal(in, &p.ToolInput)

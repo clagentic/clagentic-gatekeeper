@@ -29,11 +29,6 @@ type Settings struct {
 	// RetiredKeys are previous signing keys published beside the current one;
 	// see LoadKeyringRetired.
 	RetiredKeys []JWK
-	// Approver is the name signed into every approval as acked_by. Empty means
-	// operator approval is off. ApprovalTTL is how long a request and a granted
-	// approval each live; zero means the maximum, MaxApprovalTTLSeconds.
-	Approver    string
-	ApprovalTTL time.Duration
 }
 
 // NewIssuer validates s, verifies every trust root it names (signing key,
@@ -75,13 +70,6 @@ func NewIssuer(s Settings) (*Issuer, error) {
 		return nil, fmt.Errorf("identity.spawn_root %q must be absolute", root)
 	}
 
-	var approvals *Approvals
-	if s.Approver != "" {
-		var err error
-		if approvals, err = NewApprovals(s.Approver, s.ApprovalTTL); err != nil {
-			return nil, err
-		}
-	}
 	keys, err := LoadKeyringRetired(s.KeyPath, s.Alg, s.RetiredKeys)
 	if err != nil {
 		return nil, err
@@ -117,7 +105,7 @@ func NewIssuer(s Settings) (*Issuer, error) {
 		Issuer: issuer, Keys: keys, Defs: defs, Dirs: dirs,
 		Registry: NewRegistry(), Proc: ReadProc, Now: time.Now,
 		RuntimeRoles:   s.RuntimeRoles,
-		DelegableRoles: s.DelegableRoles, SessionTTL: ttl, HelperExe: s.HelperExe, Approvals: approvals,
+		DelegableRoles: s.DelegableRoles, SessionTTL: ttl, HelperExe: s.HelperExe,
 	}, nil
 }
 

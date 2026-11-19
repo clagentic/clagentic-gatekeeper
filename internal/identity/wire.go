@@ -18,26 +18,6 @@ const (
 	PathIssueChild   = "/v1/issue-child"
 )
 
-// Operator approval wire paths.
-const (
-	PathApprovalRequest = "/v1/approval/request"
-	PathApprovalGrant   = "/v1/approval/grant"
-	PathApprovalFetch   = "/v1/approval/fetch"
-)
-
-// Operator approval (docs/identity-contract.md, section 13).
-const (
-	// ApprovalTyp is the JWS `typ` of an approval, which tells it from an
-	// identity assertion, whose header carries none.
-	ApprovalTyp = "clagentic-approval+jwt"
-	// MaxApprovalTTLSeconds caps both the life of a pending request and the life
-	// of a granted approval.
-	MaxApprovalTTLSeconds = 300
-	// ApprovalPhrasePrefix is the word that precedes the request id in the phrase
-	// an operator types.
-	ApprovalPhrasePrefix = "approve "
-)
-
 // DefaultSocketPath is used when neither --socket nor identity.socket_path is set.
 const DefaultSocketPath = "/run/clagentic-gatekeeper/identity.sock"
 
@@ -69,21 +49,6 @@ const (
 	CodeLifetimeEmpty     = "lifetime_empty"
 	CodeSpawnDir          = "spawn_dir"
 	CodeInternal          = "internal"
-)
-
-// Approval codes live in their own namespace: each starts with "approval_", and
-// none is ever raised for an identity operation.
-const (
-	CodeApprovalOff             = "approval_off"
-	CodeApprovalOp              = "approval_op_invalid"
-	CodeApprovalDigest          = "approval_digest_invalid"
-	CodeApprovalSession         = "approval_session_invalid"
-	CodeApprovalSessionMismatch = "approval_session_mismatch"
-	CodeApprovalUnknown         = "approval_unknown"
-	CodeApprovalExpired         = "approval_expired"
-	CodeApprovalAlreadyGranted  = "approval_already_granted"
-	CodeApprovalNotGranted      = "approval_not_granted"
-	CodeApprovalAlreadyFetched  = "approval_already_fetched"
 )
 
 // IssueError is a refusal with a stable code and message a client can act on.
@@ -129,48 +94,6 @@ type ChildRequest struct {
 	ParentToken string `json:"parent_token"`
 	AgentType   string `json:"agent_type"`
 	AgentID     string `json:"agent_id"`
-}
-
-// ApprovalRequest is the body of approval/request. Token is the caller's
-// session assertion; the issuer takes the session id from it.
-type ApprovalRequest struct {
-	Token        string `json:"token"`
-	Op           string `json:"op"`
-	ParamsDigest string `json:"params_digest"`
-	Summary      string `json:"summary,omitempty"`
-}
-
-// ApprovalPending is the answer to a request: the id, when it lapses and the
-// exact phrase the operator types.
-type ApprovalPending struct {
-	Rid       string `json:"rid"`
-	ExpiresAt int64  `json:"expires_at"`
-	Phrase    string `json:"phrase"`
-}
-
-// ApprovalGrantRequest is the body of approval/grant. Token is the session
-// assertion of the session the operator typed the phrase in.
-type ApprovalGrantRequest struct {
-	Token string `json:"token"`
-	Rid   string `json:"rid"`
-}
-
-// ApprovalGranted reports that an approval is signed and waiting to be fetched.
-type ApprovalGranted struct {
-	Rid       string `json:"rid"`
-	ExpiresAt int64  `json:"expires_at"`
-}
-
-// ApprovalFetchRequest is the body of approval/fetch.
-type ApprovalFetchRequest struct {
-	Rid string `json:"rid"`
-}
-
-// ApprovalFetched carries the signed approval, returned once.
-type ApprovalFetched struct {
-	Rid       string `json:"rid"`
-	Approval  string `json:"approval"`
-	ExpiresAt int64  `json:"expires_at"`
 }
 
 // PolicyStep is the roles one policy removed.

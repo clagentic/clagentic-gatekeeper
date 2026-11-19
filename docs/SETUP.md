@@ -656,8 +656,6 @@ what it finds. Nothing a client sends can change who the kernel says it is.
 | `gatekeeper serve [--socket <path>] [--config <path>]` | Run the issuer. Socket: `--socket`, else `identity.socket_path`, else `/run/clagentic-gatekeeper/identity.sock`. |
 | `gatekeeper issue-session [--socket <path>] [--config <path>] [--definition <name>] [--origin <origin>] [--runtime] [--runtime-id <id>] [--runtime-version <v>] [--json]` | Ask for a session assertion. Prints the token, or the full response with `--json`. |
 | `gatekeeper issue-child [--socket <path>] [--config <path>] [--parent-token-file <path>] --agent-type <name> --agent-id <id> [--json]` | Ask for a child assertion. The parent token defaults to `$CLAGENTIC_IDENTITY_DIR/identity.jwt`. |
-| `gatekeeper approval request [--socket <path>] [--config <path>] [--token-file <path>] --op <op> --params-digest <sha256> [--summary <text>]` | Ask for an operator approval of one operation, from the session whose assertion `$CLAGENTIC_IDENTITY_DIR/identity.jwt` (or `--token-file`) holds. Prints JSON with `rid`, `expires_at` and the `phrase` (`approve <rid>`) the operator types. Needs `identity.approval.approver`; see [contract section 13](identity-contract.md). |
-| `gatekeeper approval fetch [--socket <path>] [--config <path>] --rid <rid>` | Print the signed approval of a granted request, once, as JSON with `approval` (the compact JWS), `rid` and `expires_at`. Any process the issuer admits may fetch. |
 | `gatekeeper self-check [--socket <path>] [--config <path>] [--jwks-path <path>]` | Check that a running `serve` is reachable and that the key set file is byte-identical to the key set the socket serves. |
 
 Every command that names the issuer socket resolves it in one order: the

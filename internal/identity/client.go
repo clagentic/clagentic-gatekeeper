@@ -59,72 +59,34 @@ func (c Client) do(method, path string, body any) ([]byte, int, error) {
 	return out, resp.StatusCode, err
 }
 
-// issue posts req and decodes the answer into out; a refusal comes back as an
-// *IssueError. It is the one place a refusal is read off the wire, for every
-// operation the server offers.
-func (c Client) issue(path string, req, out any) error {
+func (c Client) issue(path string, req any) (*Issued, error) {
 	body, status, err := c.do(http.MethodPost, path, req)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if status != http.StatusOK {
 		var ie IssueError
 		if json.Unmarshal(body, &ie) == nil && ie.Code != "" {
 			ie.Status = status
-			return &ie
+			return nil, &ie
 		}
-		return fmt.Errorf("server answered %d: %.200s", status, body)
+		return nil, fmt.Errorf("server answered %d: %.200s", status, body)
 	}
-	if err := json.Unmarshal(body, out); err != nil {
-		return fmt.Errorf("server reply: %w", err)
+	var out Issued
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, fmt.Errorf("server reply: %w", err)
 	}
-	return nil
+	return &out, nil
 }
 
 // IssueSession asks for a session assertion.
 func (c Client) IssueSession(req SessionRequest) (*Issued, error) {
-	var out Issued
-	if err := c.issue(PathIssueSession, req, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
+	return c.issue(PathIssueSession, req)
 }
 
 // IssueChild asks for a child assertion.
 func (c Client) IssueChild(req ChildRequest) (*Issued, error) {
-	var out Issued
-	if err := c.issue(PathIssueChild, req, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-// RequestApproval records a pending operator approval bound to the session the
-// token belongs to.
-func (c Client) RequestApproval(req ApprovalRequest) (*ApprovalPending, error) {
-	var out ApprovalPending
-	if err := c.issue(PathApprovalRequest, req, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-// GrantApproval asks the issuer to sign the approval for a pending request.
-func (c Client) GrantApproval(req ApprovalGrantRequest) (*ApprovalGranted, error) {
-	var out ApprovalGranted
-	if err := c.issue(PathApprovalGrant, req, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-// FetchApproval returns the signed approval of a granted request, once.
-func (c Client) FetchApproval(req ApprovalFetchRequest) (*ApprovalFetched, error) {
-	var out ApprovalFetched
-	if err := c.issue(PathApprovalFetch, req, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
+	return c.issue(PathIssueChild, req)
 }
 
 // FetchJWKSBytes reads the key set document exactly as the server sends it, so
