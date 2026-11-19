@@ -246,7 +246,7 @@ The private key is read server-side only, used to sign the App JWT, and never re
 
 ## Docs
 
-- [`docs/identity-contract.md`](docs/identity-contract.md) — the Identity Assertion contract: claims, key discovery, local delivery, A2A peer validation, versioning, and the operator approval of a single operation
+- [`docs/identity-contract.md`](docs/identity-contract.md) — the Identity Assertion contract: claims, key discovery, local delivery, A2A peer validation, versioning
 - [`docs/RUNTIME-HOOKS.md`](docs/RUNTIME-HOOKS.md) — how an assertion is bound to its runtime process, and the Claude Code and process adapters that deliver it
 - [`docs/LIVE-TEST.md`](docs/LIVE-TEST.md) — `make live-test`: the real caller shapes run against an isolated issuer, for a merge gate or a developer
 - [`schemas/`](schemas/) — JSON Schemas for the assertion claims and issuer trust / key discovery

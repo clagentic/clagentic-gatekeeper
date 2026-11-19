@@ -22,17 +22,6 @@ var publicMessages = map[string]string{
 	CodeLifetimeEmpty:     "the assertion would not outlive its issue time",
 	CodeSpawnDir:          "the assertion could not be delivered; retry the request, and if it fails again ask the operator to check the issuer log",
 	CodeInternal:          "the issuer failed to complete the request; see the issuer log",
-
-	CodeApprovalOff:             "operator approval is not enabled on this issuer",
-	CodeApprovalOp:              "the operation name is empty or is not an accepted name",
-	CodeApprovalDigest:          "the params digest must be 64 hexadecimal characters",
-	CodeApprovalSession:         "the session assertion was not accepted; request a new session and retry",
-	CodeApprovalSessionMismatch: "this approval was requested by a different session",
-	CodeApprovalUnknown:         "no approval request has this id",
-	CodeApprovalExpired:         "the approval has expired; make a new request",
-	CodeApprovalAlreadyGranted:  "this approval request was already granted",
-	CodeApprovalNotGranted:      "this approval request has not been granted yet",
-	CodeApprovalAlreadyFetched:  "this approval was already fetched and can be fetched once",
 }
 
 // refuse builds a refusal. The message is looked up by code and takes no

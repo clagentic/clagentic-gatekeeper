@@ -29,28 +29,6 @@ it implements, because the signal is independent of `cia`; a verifier that does
 not implement the signal still passes the `identity_dir_missing` outcome of
 each and ignores `withheld`.
 
-## Operator approval vectors
-
-`approval/` is the vector set of the operator approval (contract 2.2.0,
-[section 13](../docs/identity-contract.md)). It is a separate artifact from the
-identity assertion, with its own keys and its own manifest, so `v1/` and `v2/`
-are unchanged and a verifier that does not implement section 13 ignores the
-directory. Its schema is
-`https://schemas.clagentic.ai/approval/1.json`
-([`approval.json`](../schemas/approval.json)).
-
-`approval/manifest.json` carries `contract_version`, `typ`, the trusted issuer
-list, `jwks_files`, and vectors of one kind. Each vector has `id`,
-`description`, `token`, `now` (NumericDate, zero leeway), `expected_op` and
-`expected_pd` (what the consumer is about to run) and `expect`:
-`{"ok": true, "op", "sid", "acked_by", "rid", "pd"}` with the claims the
-verifier reads back, or `{"ok": false, "error": <code>}` with a code from the
-verification table of section 13.3. Every code has a vector. The keys are
-throwaway and only their public halves are published, in `approval/jwks.json`.
-
-`go test ./vectors -run TestRegenerateApprovalVectors -args -regenerate-approval`
-rewrites `approval/` with fresh keys.
-
 ## Files
 
 | File | Content |

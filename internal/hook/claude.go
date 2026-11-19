@@ -56,17 +56,6 @@ func (u UnavailableIssuer) IssueChild(identity.ChildRequest) (*identity.Issued, 
 	return nil, u.Err
 }
 
-// Granter is the part of the issuer client a hook needs to turn a typed
-// approval phrase into a signed approval.
-type Granter interface {
-	GrantApproval(identity.ApprovalGrantRequest) (*identity.ApprovalGranted, error)
-}
-
-// GrantApproval always fails with the configured error.
-func (u UnavailableIssuer) GrantApproval(identity.ApprovalGrantRequest) (*identity.ApprovalGranted, error) {
-	return nil, u.Err
-}
-
 // Event names the registered hook subcommands accept.
 const (
 	EventSessionStart     = "session-start"
@@ -105,15 +94,6 @@ type ClaudeCode struct {
 	Now             func() time.Time
 	// HookPID is the pid whose ancestry is captured.
 	HookPID int
-	// Granter signs the approval a typed approval phrase asks for. Nil means the
-	// phrase is recognised and logged and nothing is signed.
-	Granter Granter
-	// TurnOrigin finds the turn-origin provider. It is called only for a prompt
-	// that is exactly the approval phrase and whose payload names no source, and
-	// returns a nil provider when none is configured. Nil means none is.
-	TurnOrigin func() (OriginProvider, error)
-	// Getenv reads the process environment; nil is os.Getenv.
-	Getenv func(string) string
 }
 
 // ErrOriginHuman is the one message for a request that names origin human. The
@@ -168,7 +148,7 @@ func (h *ClaudeCode) Handle(event string, in io.Reader) Result {
 	case EventSessionStart:
 		decision, err = h.sessionStart(p)
 	case EventUserPromptSubmit:
-		decision, err = h.userPromptSubmit(p, raw)
+		decision, err = h.userPromptSubmit(p)
 	case EventSubagentStart:
 		decision, err = h.subagentStart(p)
 	case EventSubagentStop:
@@ -247,16 +227,7 @@ func (h *ClaudeCode) sessionStart(p Payload) (string, error) {
 	return "session-issued", nil
 }
 
-// userPromptSubmit answers the approval phrase when the prompt is one, then
-// refreshes the session assertion as before. The grant goes first because it
-// must present the assertion the request was made under, and a refresh below
-// replaces that assertion with one of a new session.
-func (h *ClaudeCode) userPromptSubmit(p Payload, raw []byte) (string, error) {
-	h.approvePhrase(p, raw)
-	return h.refreshSession(p)
-}
-
-func (h *ClaudeCode) refreshSession(p Payload) (string, error) {
+func (h *ClaudeCode) userPromptSubmit(p Payload) (string, error) {
 	if h.RefreshBelow <= 0 || !safeName.MatchString(p.SessionID) {
 		return "skipped", nil
 	}

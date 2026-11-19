@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/clagentic/clagentic-gatekeeper/internal/config"
 	"github.com/clagentic/clagentic-gatekeeper/internal/hook"
 	"github.com/clagentic/clagentic-gatekeeper/internal/identity"
 )
@@ -341,50 +340,18 @@ func serveClaudeCode(args []string, stdin io.Reader, stderr io.Writer) (hook.Res
 	// with every failed issue.
 	sock, err := explicitSocket(*socket, *cfgPath)
 	if err != nil {
-		unavailable := hook.UnavailableIssuer{Err: err}
-		h.Issuer, h.Granter = unavailable, unavailable
+		h.Issuer = hook.UnavailableIssuer{Err: err}
 	} else {
-		client := identity.Client{Socket: sock, Timeout: callTimeout}
-		h.Issuer, h.Granter = client, client
+		h.Issuer = identity.Client{Socket: sock, Timeout: callTimeout}
 	}
-	h.TurnOrigin = turnOriginLookup(*cfgPath)
 
-	// user-prompt-submit may run a turn-origin provider before it asks the issuer.
-	deadline := callTimeout + hookOwnSlack
-	if event == hook.EventUserPromptSubmit {
-		deadline += hook.MaxProviderTimeout
-	}
-	res := runBounded(deadline, fallback(), log, event, func() hook.Result {
+	res := runBounded(callTimeout+hookOwnSlack, fallback(), log, event, func() hook.Result {
 		if composing {
 			return h.HandleComposed(raw, up, upErr)
 		}
 		return h.Handle(event, stdin)
 	})
 	return res, log, event
-}
-
-// turnOriginLookup returns what a hook calls to find the turn-origin provider. It
-// reads the config only when called, which is only for a prompt that is exactly
-// the approval phrase, so no other prompt pays for the read. It returns a nil
-// provider when there is no --config or the config names none. A config that
-// cannot be read is an error, not "no provider": the provider may be the thing
-// that says a turn was not typed, and it must not be skipped by breaking the
-// file.
-func turnOriginLookup(cfgPath string) func() (hook.OriginProvider, error) {
-	if cfgPath == "" {
-		return nil
-	}
-	return func() (hook.OriginProvider, error) {
-		cfg, err := config.Load(cfgPath)
-		if err != nil {
-			return nil, err
-		}
-		t := cfg.Identity.Approval.TurnOrigin
-		if t == nil {
-			return nil, nil
-		}
-		return hook.CommandProvider{Argv: t.Command, Timeout: t.Timeout()}, nil
-	}
 }
 
 func knownEvent(event string) bool {
@@ -445,7 +412,7 @@ func runHooksInstall(args []string, stdout io.Writer) error {
 	runtimeName := fs.String("runtime", "", "runtime to register hooks for: claude-code (required)")
 	settings := fs.String("settings", "", "settings file to edit (required)")
 	socket := fs.String("socket", "", "issuer unix socket written into each hook (required unless --config names one)")
-	cfgPath := fs.String("config", "", "config file whose identity.socket_path names the socket; it is also passed to user-prompt-submit, which reads identity.approval.turn_origin from it")
+	cfgPath := fs.String("config", "", "config file whose identity.socket_path names the socket")
 	stateDir := fs.String("state-dir", "", "absolute hook state directory (default: a per-user cache directory)")
 	modeName := fs.String("mode", string(hook.ModeWarn), "warn (default: issue and capture, rewrite nothing) or enforce")
 	origin := fs.String("origin", "", "origin for issue-session: scheduled, loop, trigger, agent or driven")
@@ -489,13 +456,6 @@ func runHooksInstall(args []string, stdout io.Writer) error {
 		in = &hook.Install{
 			Binary: bin, Socket: sock, StateDir: state, Mode: mode, Origin: *origin,
 			RefreshBelow: *refresh, Compose: *compose, TimeoutSeconds: *timeoutSeconds,
-		}
-		if *cfgPath != "" {
-			// user-prompt-submit reads identity.approval.turn_origin from it, so a
-			// registered hook never resolves it against the runtime's directory.
-			if in.Config, err = filepath.Abs(*cfgPath); err != nil {
-				return fmt.Errorf("resolve --config: %w", err)
-			}
 		}
 		if err := in.Validate(); err != nil {
 			return err
