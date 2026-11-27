@@ -103,37 +103,49 @@ func TestComposedUpstreamOutcomesPassThroughByteForByte(t *testing.T) {
 		"exit 127":                {`exit 127`, "", 127},
 		"killed by signal":        {`kill -9 $$`, "", 1},
 	}
-	for name, c := range cases {
-		h := composedHarness(t, ModeEnforce, c.body)
-		res := h.fire(EventPreToolUseBash, bashPayload("", "", "ls"))
-		if string(res.Stdout) != c.stdout || res.ExitCode != c.wantExit {
-			t.Errorf("%s: stdout %q exit %d, want %q exit %d", name, res.Stdout, res.ExitCode, c.stdout, c.wantExit)
-		}
-		if strings.Contains(string(res.Stdout), EnvDir) {
-			t.Errorf("%s: the statement was added to a verdict that must pass through", name)
-		}
-		if c.wantExit == 2 && !strings.Contains(string(res.Stderr), "err") {
-			t.Errorf("%s: stderr %q", name, res.Stderr)
+	// The allow-rewritten setting never turns a verdict that passes through into
+	// anything else.
+	for _, allow := range []bool{false, true} {
+		for name, c := range cases {
+			h := composedHarness(t, ModeEnforce, c.body)
+			h.hook.AllowRewritten = allow
+			res := h.fire(EventPreToolUseBash, bashPayload("", "", "ls"))
+			if string(res.Stdout) != c.stdout || res.ExitCode != c.wantExit {
+				t.Errorf("allow=%v %s: stdout %q exit %d, want %q exit %d", allow, name, res.Stdout, res.ExitCode, c.stdout, c.wantExit)
+			}
+			if strings.Contains(string(res.Stdout), EnvDir) {
+				t.Errorf("allow=%v %s: the statement was added to a verdict that must pass through", allow, name)
+			}
+			if c.wantExit == 2 && !strings.Contains(string(res.Stderr), "err") {
+				t.Errorf("allow=%v %s: stderr %q", allow, name, res.Stderr)
+			}
 		}
 	}
 }
 
 // An upstream that allows, or that made no decision, gets the statement; its
-// decision is kept as given and none is added where it gave none.
+// decision is kept as given and none is added where it gave none, except that the
+// allow-rewritten setting (the allow column) adds allow where it gave none.
 func TestComposedAllowedOrUndecidedUpstreamGetsTheStatement(t *testing.T) {
 	cases := map[string]struct {
 		body         string
 		wantDecision string
 		wantReason   string
 		wantExtra    string
+		allow        bool
 	}{
-		"allow without a rewrite": {printing(`{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"theirs"}}`), "allow", "theirs", ""},
-		"silent":                  {"true", "", "", ""},
-		"empty object":            {printing(`{}`), "", "", ""},
-		"context only":            {printing(`{"systemMessage":"note","hookSpecificOutput":{"additionalContext":"c"}}`), "", "", "note"},
+		"allow without a rewrite":  {printing(`{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"theirs"}}`), "allow", "theirs", "", false},
+		"silent":                   {"true", "", "", "", false},
+		"empty object":             {printing(`{}`), "", "", "", false},
+		"context only":             {printing(`{"systemMessage":"note","hookSpecificOutput":{"additionalContext":"c"}}`), "", "", "note", false},
+		"allow kept, setting on":   {printing(`{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"theirs"}}`), "allow", "theirs", "", true},
+		"silent, setting on":       {"true", "allow", "", "", true},
+		"empty object, setting on": {printing(`{}`), "allow", "", "", true},
+		"context only, setting on": {printing(`{"systemMessage":"note","hookSpecificOutput":{"additionalContext":"c"}}`), "allow", "", "note", true},
 	}
 	for name, c := range cases {
 		h := composedHarness(t, ModeEnforce, c.body)
+		h.hook.AllowRewritten = c.allow
 		res := h.fire(EventPreToolUseBash, bashPayload("", "", programCommand))
 		command, out := rewrittenCommand(t, res)
 		if !strings.HasSuffix(command, "; "+programCommand) || strings.Count(command, "export ") != 1 {

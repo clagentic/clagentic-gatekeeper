@@ -125,7 +125,12 @@ func (e *Env) sandboxSetup(ctx context.Context, name string, deny ...string) (*r
 	return &runtimeSetup{cli: cli, settings: settings, work: work, agents: string(agents)}, outside, nil
 }
 
-// sandboxSteps are the commands each actor runs, in this order.
+// sandboxSteps are the commands each actor runs, in this order. A read-only
+// command is never rewritten (so the hook gives it no allow), and the denied
+// credential reads must be calls the hook did rewrite and allow, so each is joined
+// to a command that is not read-only. Every non-read-only step is a rewritten
+// call: without the allow it would prompt, which a headless run records as a
+// denial, so a run with no denial shows the allow was given.
 func sandboxSteps(kind, outside string) []string {
 	return []string{
 		"find . -maxdepth 1",
@@ -134,8 +139,8 @@ func sandboxSteps(kind, outside string) []string {
 		"touch ./made-" + kind,
 		printenvCommand,
 		"touch " + filepath.Join(outside, kind+"-marker"),
-		"cat ./creds/.env.dummy",
-		"date && cat ./creds/.env.dummy",
+		"touch ./made-" + kind + "-b && cat ./creds/.env.dummy",
+		printenvCommand + " && cat ./creds/.env.dummy",
 	}
 }
 
@@ -227,10 +232,20 @@ func (e *Env) shapeSandboxDeny(ctx context.Context) error {
 	if len(run.denials) == 0 {
 		return errors.New("a command matched by a deny rule was not denied under the hook allow")
 	}
+	// The deny must hold over a call that carried the hook's allow: the denied
+	// command text is the rewritten one, the delivery statement in front of the
+	// mkdir. A denial of the bare command would pass without any allow given.
+	rewritten := false
 	for _, d := range run.denials {
 		if !strings.Contains(d, "mkdir") {
 			return fmt.Errorf("an unexpected denial: %.200s", d)
 		}
+		if strings.Contains(d, deliveryPrefix) && strings.Contains(d, "; "+deniedCommand) {
+			rewritten = true
+		}
+	}
+	if !rewritten {
+		return fmt.Errorf("the denied call did not carry the hook's rewrite, so the deny was not shown holding over an allow: %.300s", strings.Join(run.denials, " | "))
 	}
 	if _, err := os.Stat(filepath.Join(setup.work, "denied-dir")); err == nil {
 		return errors.New("the denied command ran")
