@@ -280,6 +280,59 @@ func TestWrapperReturnsWrappedExitStatus(t *testing.T) {
 	}
 }
 
+// --shape keeps only shapes with a matching name prefix, reports a prefix that
+// matches nothing, and each sandbox shape is selectable alone by its own name.
+func TestShapeSelection(t *testing.T) {
+	e := &Env{}
+	all := append(e.runtimeShapes(), e.sandboxShapes()...)
+	for _, c := range []struct {
+		prefixes  []string
+		want      int
+		unmatched int
+	}{
+		{nil, len(all), 0},
+		{[]string{"runtime-claude-code/sandbox-main"}, 1, 0},
+		{[]string{"runtime-claude-code/sandbox-foreground"}, 1, 0},
+		{[]string{"runtime-claude-code/sandbox-background"}, 1, 0},
+		{[]string{"runtime-claude-code/sandbox-worktree"}, 1, 0},
+		{[]string{"runtime-claude-code/sandbox-native-deny-still-wins"}, 1, 0},
+		{[]string{"runtime-claude-code/sandbox-"}, 5, 0},
+		{[]string{"runtime-claude-code/sandbox-main", "runtime-claude-code/sandbox-worktree"}, 2, 0},
+		{[]string{"runtime-claude-code/sandbx-main"}, 0, 1},
+		{[]string{"runtime-claude-code/sandbox-main", "nope"}, 1, 1},
+	} {
+		kept, unmatched := selectShapes(all, c.prefixes)
+		if len(kept) != c.want || len(unmatched) != c.unmatched {
+			t.Errorf("%v: kept %d unmatched %v, want %d and %d", c.prefixes, len(kept), unmatched, c.want, c.unmatched)
+		}
+	}
+
+	// Through the harness: a typo fails with a reason and runs nothing; a real
+	// prefix runs only its shape, and the summary counts only that.
+	bin := gatekeeperBinary(t)
+	for _, c := range []struct {
+		prefix   string
+		wantCode int
+		wantRan  int
+	}{
+		{"issuer/session-direct-cl", ExitOK, 1},
+		{"issuer/no-such-shape", ExitFailed, 0},
+	} {
+		var out bytes.Buffer
+		code := Run(context.Background(), Options{Binary: bin, TempParent: shortParent(t), Shapes: []string{c.prefix}}, &out)
+		results, summary := parseReport(t, out.String())
+		ran := 0
+		for name := range results {
+			if strings.HasPrefix(name, "issuer/") {
+				ran++
+			}
+		}
+		if code != c.wantCode || ran != c.wantRan || (c.wantCode == ExitFailed && results["shape-filter"].Reason == "") {
+			t.Errorf("%s: exit %d ran %d summary %v\n%s", c.prefix, code, ran, summary, out.String())
+		}
+	}
+}
+
 func TestDeliveredDirsAndDenials(t *testing.T) {
 	e := &Env{Spawn: "/x/spawn"}
 	stream := `{"a":"/x/spawn/abc-1 and /x/spawn/def_2"} {"b":"/x/spawn/abc-1"} /elsewhere/spawn/zzz`

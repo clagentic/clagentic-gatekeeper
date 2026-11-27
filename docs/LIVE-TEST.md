@@ -34,6 +34,7 @@ platform it reports one skip and exits 0.
 | `--runtime-cli <name-or-path>` | The agent runtime CLI to drive. Default: the runtime's usual command name on `PATH`. Also read from `GATEKEEPER_LIVETEST_RUNTIME_CLI`. |
 | `--runtime-env KEY=VALUE` | Extra environment for the runtime process (repeatable), for example a state directory or a credential. |
 | `--no-runtime` | Skip every runtime shape without looking for the CLI. |
+| `--shape <prefix>` | Run only the shapes whose name starts with the prefix; repeatable. Setup and teardown still run. Shapes that do not match are neither run nor reported, and the summary counts only the shapes that ran. A prefix that matches no shape fails the run with a `shape-filter` line naming it, so a typo never passes as an empty green run. Without it every shape runs. |
 | `--nested-sandbox` | Set the runtime's weaker nested-sandbox mode in the sandboxed runtime shapes, for a host that is itself inside a container or sandbox. |
 | `--require-runtime` | Turn a runtime shape that would skip into a failure, for a gate that must have the runtime evidence. |
 | `--runtime-attempts N` | Attempts for a runtime shape whose model did not do what the prompt asked. Default 2. |
@@ -203,6 +204,22 @@ private directory and starts nothing that outlives it, so it needs no operator
 acknowledgement of its own. A step that does touch live shared state (the
 installed binary, user-level settings, a real git host) is not part of it and
 still needs one.
+
+A command runner that bounds one command's duration, or that admits no
+whitespace inside an argument, runs one shape at a time with `--shape`, which
+takes a name prefix and is repeatable. From the checkout:
+
+```
+go -C <checkout> run ./cmd/livetest --require-runtime --nested-sandbox --shape runtime-claude-code/sandbox-main
+```
+
+Each sandboxed shape has a name no other shape's name starts with, so its full
+name selects it alone: `runtime-claude-code/sandbox-main`,
+`runtime-claude-code/sandbox-foreground`, `runtime-claude-code/sandbox-background`,
+`runtime-claude-code/sandbox-worktree` and
+`runtime-claude-code/sandbox-native-deny-still-wins`. The prefix
+`runtime-claude-code/sandbox-` selects all five. Setup and teardown run with each
+selection, and `--require-runtime` keeps its meaning for the shapes that run.
 
 What the run cannot cover, because it needs real credentials or live shared
 state: a mint against a real git host with a real App key, a real secret store,
