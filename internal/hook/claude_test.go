@@ -137,6 +137,18 @@ func testRewriteExactlyOneStatement(t *testing.T, allow bool) {
 			t.Errorf("more than one delivery statement: %q", command)
 		}
 		hso := out["hookSpecificOutput"].(map[string]any)
+		// The whole reply, byte for byte: with the setting off it is the reply of
+		// the build at a79ab19c, and with it on the same bytes plus the one member.
+		decisionMember := ""
+		if allow {
+			decisionMember = `"permissionDecision":"allow",`
+		}
+		quoted, _ := json.Marshal(command)
+		wantBytes := `{"hookSpecificOutput":{"hookEventName":"PreToolUse",` + decisionMember +
+			`"updatedInput":{"command":` + string(quoted) + `,"description":"d","run_in_background":false,"timeout":60000}}}`
+		if string(res.Stdout) != wantBytes {
+			t.Errorf("allow=%v reply bytes\n got %s\nwant %s", allow, res.Stdout, wantBytes)
+		}
 		got, has := hso["permissionDecision"]
 		if has != allow || (allow && got != wantDecision) || hso["hookEventName"] != "PreToolUse" {
 			t.Errorf("allow=%v reply %+v", allow, hso)

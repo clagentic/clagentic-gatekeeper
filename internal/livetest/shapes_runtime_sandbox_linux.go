@@ -69,11 +69,14 @@ func (e *Env) sandboxSetup(ctx context.Context, name string, deny ...string) (*r
 	if err := os.WriteFile(filepath.Join(creds, ".env.dummy"), []byte(credMarker+"\n"), 0o600); err != nil {
 		return nil, "", err
 	}
-	// A worktree-isolated subagent needs a repository to branch from.
-	for _, args := range [][]string{{"init", "-q"}, {"-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "--allow-empty", "-m", "base"}} {
-		res, err := e.run(ctx, runOpts{Dir: work}, "git", args...)
-		if err != nil || res.Code != 0 {
-			return nil, "", skipf("git could not prepare a repository for the worktree shape: %v %.200s", err, res.Stderr)
+	// Only a worktree-isolated subagent needs a repository to branch from; on a
+	// host without git, just that shape skips.
+	if name == "worktree" {
+		for _, args := range [][]string{{"init", "-q"}, {"-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "--allow-empty", "-m", "base"}} {
+			res, err := e.run(ctx, runOpts{Dir: work}, "git", args...)
+			if err != nil || res.Code != 0 {
+				return nil, "", skipf("git could not prepare a repository for the worktree shape: %v %.200s", err, res.Stderr)
+			}
 		}
 	}
 	settings := filepath.Join(root, "settings.json")

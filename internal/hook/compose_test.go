@@ -53,6 +53,13 @@ func TestComposedUpstreamRewriteIsKeptAndTheStatementPrefixed(t *testing.T) {
 	if hso["permissionDecision"] != "allow" || hso["permissionDecisionReason"] != "upstream" {
 		t.Fatalf("the upstream reply was not kept: %+v", hso)
 	}
+	// The whole composed reply, byte for byte; it is the reply of the build at
+	// a79ab19c, and the setting adds nothing where the upstream already allowed.
+	wantBytes := `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"upstream",` +
+		`"updatedInput":{"command":"export ` + EnvDir + `=` + dir + `; export UPSTREAM=1; ls -l","timeout":5}}}`
+	if string(res.Stdout) != wantBytes {
+		t.Fatalf("composed reply bytes\n got %s\nwant %s", res.Stdout, wantBytes)
+	}
 	if hso["updatedInput"].(map[string]any)["timeout"] != float64(5) {
 		t.Fatalf("upstream tool_input members were lost: %+v", hso["updatedInput"])
 	}
@@ -175,6 +182,13 @@ func TestComposedSilentUpstreamEqualsTheStandaloneReply(t *testing.T) {
 	cmdGot, outGot := rewrittenCommand(t, got)
 	if strings.Replace(cmdWant, dirOf(t, cmdWant), "D", 1) != strings.Replace(cmdGot, dirOf(t, cmdGot), "D", 1) {
 		t.Fatalf("commands differ: %q %q", cmdWant, cmdGot)
+	}
+	// Byte for byte, apart from the per-call directory.
+	norm := func(res Result, command string) string {
+		return strings.Replace(string(res.Stdout), dirOf(t, command), "D", -1)
+	}
+	if norm(want, cmdWant) != norm(got, cmdGot) || len(got.Stderr) != 0 || got.ExitCode != 0 {
+		t.Fatalf("replies differ\n got %s\nwant %s", got.Stdout, want.Stdout)
 	}
 	a, _ := json.Marshal(outWant["hookSpecificOutput"].(map[string]any)["permissionDecision"])
 	b, _ := json.Marshal(outGot["hookSpecificOutput"].(map[string]any)["permissionDecision"])
