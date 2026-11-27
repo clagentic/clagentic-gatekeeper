@@ -352,15 +352,35 @@ func TestDeliveredDirsAndDenials(t *testing.T) {
 	sandboxStream := strings.Join([]string{
 		`{"type":"assistant","message":{"content":[{"type":"tool_use","input":{"command":"export CLAGENTIC_IDENTITY_DIR=/x/spawn/rewritten-only; ls"}}]}}`,
 		rec(`"/x/spawn/printed-1\n"`),
-		rec(`[{"type":"text","text":"cat: ./creds/.env.dummy: No such file or directory ` + credMarker + `"}]`),
+		rec(`[{"type":"text","text":"` + controlMarker + `"}]`),
+		rec(`[{"type":"text","text":"cat: /w/creds/.env.dummy: No such file or directory ` + credMarker + `"}]`),
 		rec(`"touch: cannot touch '/o/main-marker': Read-only file system"`),
 	}, "\n")
 	texts := toolResults(sandboxStream)
 	if got := e.printedDirs(texts); len(got) != 1 || got[0] != "/x/spawn/printed-1" {
 		t.Fatalf("printed dirs %v", got)
 	}
-	if credReadFailure(texts) != "No such file or directory" || outsideWriteFailure(texts, "main-marker") != "Read-only file system" || credReadFailure(nil) != "" {
-		t.Fatalf("failure evidence %q %q", credReadFailure(texts), outsideWriteFailure(texts, "main-marker"))
+	if outsideWriteFailure(texts, "main-marker") != "Read-only file system" {
+		t.Fatalf("outside write evidence %q", outsideWriteFailure(texts, "main-marker"))
+	}
+	// A denied read counts only with the control read shown: a stream with the
+	// cat error and no control marker, or a different path, must fail.
+	for name, c := range map[string]struct {
+		texts   []string
+		want    string
+		wantErr bool
+	}{
+		"control and denied read":      {texts, "No such file or directory", false},
+		"control missing":              {[]string{"cat: /w/creds/.env.dummy: No such file or directory"}, "", true},
+		"control shown, no cat error":  {[]string{controlMarker}, "", true},
+		"control shown, other path":    {[]string{controlMarker, "cat: /elsewhere/.env.dummy: Permission denied"}, "", true},
+		"control and permission error": {[]string{controlMarker, "cat: /w/creds/.env.dummy: Permission denied"}, "Permission denied", false},
+		"no results":                   {nil, "", true},
+	} {
+		got, err := deniedReadEvidence(c.texts, "/w/creds/.env.dummy")
+		if (err != nil) != c.wantErr || got != c.want {
+			t.Errorf("%s: %q, %v", name, got, err)
+		}
 	}
 	if ex := resultExcerpt(append(texts, strings.Repeat("cat: x ", 200))); strings.Contains(ex, credMarker) || len(ex) > 700 {
 		t.Fatalf("excerpt %d bytes: %.100s", len(ex), ex)

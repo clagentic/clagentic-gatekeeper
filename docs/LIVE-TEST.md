@@ -181,9 +181,14 @@ The sandboxed shapes rest their evidence on tool results, not on the model's
 reply or the rewrite a tool call carries. A delivery directory counts when a
 `printenv` result printed it (a subagent shape has the session print its own
 first, so the agent's must differ); the denied read counts only when a tool
-result shows `cat: ./creds/.env.dummy:` followed by an OS error (`Permission
-denied`, `No such file or directory` or `Operation not permitted`), and the
-outside write only when a result shows its file name with a sandbox error. A
+result shows `cat: <absolute path of the denied file>:` followed by an OS error
+(`Permission denied`, `No such file or directory` or `Operation not permitted`)
+and an earlier control read of a readable sibling of the denied directory (by
+absolute path, in no `denyRead`) shows its marker, which proves the parent path is
+visible in the sandbox view; without the control the denied read does not count,
+and the harness checks after the run that the denied file still holds its
+marker. The outside write counts only when a result shows its file name with a
+sandbox error. A
 passing line carries the observed error text as its reason; a failing one carries
 a bounded excerpt of the relevant tool results, never the marker.
 

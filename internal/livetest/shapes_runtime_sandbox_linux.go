@@ -32,6 +32,8 @@ const (
 	// credMarker is planted in a dummy credential file the sandbox must keep
 	// unreadable; it is not a secret.
 	credMarker = "gatekeeper-dummy-credential-4c19d2"
+	// controlMarker is in a readable sibling of the denied directory.
+	controlMarker = "gatekeeper-control-readable-8b3e71"
 	// deniedCommand is matched by the native deny rule the deny shape registers.
 	deniedCommand = "mkdir ./denied-dir"
 )
@@ -67,11 +69,17 @@ func (e *Env) sandboxSetup(ctx context.Context, name string, deny ...string) (*r
 	}
 	root := filepath.Join(e.Dir, "rt-sandbox-"+name)
 	work, outside := filepath.Join(root, "work"), filepath.Join(root, "outside")
-	creds := filepath.Join(work, "creds")
-	for _, d := range []string{creds, outside} {
+	creds, control := filepath.Join(work, "creds"), filepath.Join(work, "control")
+	for _, d := range []string{creds, control, outside} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			return nil, "", err
 		}
+	}
+	// The control file is readable, in the same parent as the denied directory and
+	// in no denyRead: reading it shows the parent path is visible in the sandbox
+	// view, so a failed read of the denied file is the deny and not a missing path.
+	if err := os.WriteFile(filepath.Join(control, ".ok"), []byte(controlMarker+"\n"), 0o600); err != nil {
+		return nil, "", err
 	}
 	if err := os.WriteFile(filepath.Join(creds, ".env.dummy"), []byte(credMarker+"\n"), 0o600); err != nil {
 		return nil, "", err
@@ -141,7 +149,12 @@ func (e *Env) sandboxSetup(ctx context.Context, name string, deny ...string) (*r
 // to a command that is not read-only. Every non-read-only step is a rewritten
 // call: without the allow it would prompt, which a headless run records as a
 // denial, so a run with no denial shows the allow was given.
-func sandboxSteps(kind, outside string) []string {
+//
+// The reads use absolute paths, so the actor's working directory (a worktree
+// subagent has its own checkout) cannot change what is read. The control read
+// comes first: a readable sibling of the denied directory that is in no denyRead.
+func sandboxSteps(kind, outside, work string) []string {
+	creds := filepath.Join(work, "creds", ".env.dummy")
 	return []string{
 		"find . -maxdepth 1",
 		"find . -name x | wc -l",
@@ -149,8 +162,9 @@ func sandboxSteps(kind, outside string) []string {
 		"touch ./made-" + kind,
 		printenvCommand,
 		"touch " + filepath.Join(outside, kind+"-marker"),
-		"touch ./made-" + kind + "-b && cat ./creds/.env.dummy",
-		printenvCommand + " && cat ./creds/.env.dummy",
+		"cat " + filepath.Join(work, "control", ".ok"),
+		"touch ./made-" + kind + "-b && cat " + creds,
+		printenvCommand + " && cat " + creds,
 	}
 }
 
@@ -181,7 +195,8 @@ func (e *Env) shapeSandbox(ctx context.Context, kind string) error {
 	if err != nil {
 		return err
 	}
-	steps := sandboxSteps(kind, outside)
+	credFile := filepath.Join(setup.work, "creds", ".env.dummy")
+	steps := sandboxSteps(kind, outside, setup.work)
 	wantDirs := 2
 	if kind == "main" {
 		wantDirs = 1
@@ -227,11 +242,16 @@ func (e *Env) shapeSandbox(ctx context.Context, kind string) error {
 			last = retryable{fmt.Errorf("the outside write did not fail with a sandbox error in a tool result; tool results: %s", seen)}
 			continue
 		}
-		// The denied read must show the cat ran and failed; the marker being absent
-		// alone would pass for a model that never ran the read.
-		readErr := credReadFailure(texts)
-		if readErr == "" {
-			last = retryable{fmt.Errorf("no tool result shows the denied credential read failing with an OS error; tool results: %s", seen)}
+		// Setup is proven by the denied file still being on disk with its marker.
+		if raw, err := os.ReadFile(credFile); err != nil || !strings.Contains(string(raw), credMarker) {
+			return fmt.Errorf("the denied credential file is missing or changed after the run (%v), so the denial was not shown", err)
+		}
+		// The denied read must show the cat ran and failed, after a control read
+		// showed the parent path is visible; the marker being absent alone would
+		// pass for a model that never ran the read.
+		readErr, err := deniedReadEvidence(texts, credFile)
+		if err != nil {
+			last = retryable{fmt.Errorf("%v; tool results: %s", err, seen)}
 			continue
 		}
 		return passNote{"outside write failed with: " + writeErr + "; credential read failed with: " + readErr}
@@ -239,15 +259,21 @@ func (e *Env) shapeSandbox(ctx context.Context, kind string) error {
 	return last
 }
 
-var credReadError = regexp.MustCompile(`cat: \./creds/\.env\.dummy: (Permission denied|No such file or directory|Operation not permitted)`)
-
-// credReadFailure returns the OS error text of the failed credential read, or ""
-// when no tool result shows one.
-func credReadFailure(texts []string) string {
-	if m := credReadError.FindStringSubmatch(strings.Join(texts, "\n")); m != nil {
-		return m[1]
+// deniedReadEvidence returns the OS error text of the failed read of credFile. It
+// counts only when a tool result also shows the control marker, which proves the
+// parent path is visible in the sandbox view: without that, "No such file or
+// directory" could be a path the reader never saw and not the deny. A missing
+// control, or a read that shows no error, is an error.
+func deniedReadEvidence(texts []string, credFile string) (string, error) {
+	joined := strings.Join(texts, "\n")
+	if !strings.Contains(joined, controlMarker) {
+		return "", errors.New("no tool result shows the control read of the readable sibling, so the denied read does not count")
 	}
-	return ""
+	re := regexp.MustCompile(`cat: ` + regexp.QuoteMeta(credFile) + `: (Permission denied|No such file or directory|Operation not permitted)`)
+	if m := re.FindStringSubmatch(joined); m != nil {
+		return m[1], nil
+	}
+	return "", errors.New("no tool result shows the denied credential read failing with an OS error")
 }
 
 // outsideWriteFailure returns the OS error text of the failed write to the file
@@ -320,7 +346,7 @@ func resultExcerpt(texts []string) string {
 	const limit = 600
 	var keep []string
 	for _, t := range texts {
-		if strings.Contains(t, "cat:") || strings.Contains(t, "touch:") || strings.Contains(t, "denied") ||
+		if strings.Contains(t, "cat:") || strings.Contains(t, "touch:") || strings.Contains(t, controlMarker) || strings.Contains(t, "denied") ||
 			strings.Contains(t, "Read-only") || strings.Contains(t, "not permitted") || strings.Contains(t, "No such file") {
 			keep = append(keep, strings.TrimSpace(strings.ReplaceAll(t, credMarker, "[marker]")))
 		}
