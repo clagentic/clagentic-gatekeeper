@@ -34,6 +34,7 @@ platform it reports one skip and exits 0.
 | `--runtime-cli <name-or-path>` | The agent runtime CLI to drive. Default: the runtime's usual command name on `PATH`. Also read from `GATEKEEPER_LIVETEST_RUNTIME_CLI`. |
 | `--runtime-env KEY=VALUE` | Extra environment for the runtime process (repeatable), for example a state directory or a credential. |
 | `--no-runtime` | Skip every runtime shape without looking for the CLI. |
+| `--nested-sandbox` | Set the runtime's weaker nested-sandbox mode in the sandboxed runtime shapes, for a host that is itself inside a container or sandbox. |
 | `--require-runtime` | Turn a runtime shape that would skip into a failure, for a gate that must have the runtime evidence. |
 | `--runtime-attempts N` | Attempts for a runtime shape whose model did not do what the prompt asked. Default 2. |
 | `--runtime-timeout D` | Bound on one runtime invocation. Default 4m. |
@@ -101,6 +102,7 @@ shapes of the runtime to the real binary, as separate processes:
 | `adapter-claude-code/event-sequence-payload-driven` | session start, subagent start (one through a wrapper), per-agent rewrite with no permission decision and the original command byte for byte, a non-Bash tool left alone, subagent stop removing only its own directory. |
 | `adapter-claude-code/compose-synthetic-upstream` | Composed after an upstream hook the harness writes itself: an allowing upstream gets the statement in front of its command; a denying one passes through byte for byte. |
 | `adapter-claude-code/read-only-commands-not-rewritten-mixed-still-delivered` | Read-only commands (closed set, `docs/RUNTIME-HOOKS.md`) get no reply at all, as the other no-rewrite paths do; mixed commands (a read-only utility next to a program, a substitution, a write redirection or `printenv`) get the statement in front of their exact text; composed, a read-only command yields the upstream's bytes. |
+| `adapter-claude-code/allow-rewritten-setting` | With `--allow-rewritten` on: a rewrite carries `permissionDecision: allow` and the original command byte for byte; a read-only command and a non-Bash tool get no reply; composed, an allowing upstream is kept, a silent one gets `allow` with the statement, and a denying or asking one passes through byte for byte. |
 
 Mint, always run. These run the real `gatekeeper mint` as a separate process,
 resolving identity from an assertion this run's issuer issued and delivered
@@ -156,6 +158,23 @@ nothing else:
 | `runtime-claude-code/read-only-commands-no-new-prompt` | With only the rule `hooks-install` writes (no rule for any command the shape runs), `date`, `pwd`, `ls`, `cat`, `head`, `wc`, `ls \| wc -l` and `echo` run with no permission denial, and the file they read is printed. `compound-command` is the mixed counterpart: a read-only utility next to a program is still delivered the variable. |
 | `runtime-claude-code/foreground-subagent-mint/<configuration>` | A foreground subagent runs `mint`. With the assertion configured it mints from the assertion the hook delivered to that agent (an audit line is printed); with none it mints from the sidecar the runtime's environment selects and prints nothing else. |
 | `runtime-claude-code/background-subagent-mint/<configuration>` | The same for a background subagent. |
+
+Sandboxed runtime shapes: each is one headless session registered by
+`hooks-install --allow-rewritten` (so with no export-prefix allow rule) and a
+`sandbox` block with `enabled`, `failIfUnavailable` and `autoAllowBashIfSandboxed`,
+a dummy credential file in `sandbox.filesystem.denyRead`, and a sibling directory
+outside the sandbox write roots. On a host that is itself inside a container or
+sandbox, pass `--nested-sandbox` to set `enableWeakerNestedSandbox`. A shape whose
+sandbox cannot start skips with the reason (a failure under `--require-runtime`);
+it never passes unsandboxed.
+
+| Shape | What it proves |
+|-------|----------------|
+| `runtime-claude-code/sandbox-main` | The main session runs a read-only command, a piped one, a compound one, an in-directory write and `printenv` with no permission denial; a write outside the sandbox write roots fails with the sandbox's error and the file does not exist; a read of the denied dummy credential fails and its marker is nowhere in the stream; the session's directory verifies against the published key set. |
+| `runtime-claude-code/sandbox-foreground` | The same for a foreground subagent, whose directory is distinct from the session's. |
+| `runtime-claude-code/sandbox-background` | The same for a background subagent. |
+| `runtime-claude-code/sandbox-worktree` | The same for a worktree-isolated subagent. |
+| `runtime-claude-code/sandbox-native-deny-still-wins` | A command matched by a native `permissions.deny` rule is denied and does not run, though the hook allows its rewrite. |
 
 The model is asked to run fixed commands and never to expand a shell variable
 itself (a runtime refuses a command whose variable it cannot check before it

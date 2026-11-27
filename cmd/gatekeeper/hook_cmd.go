@@ -155,6 +155,7 @@ type claudeCodeFlags struct {
 	compose         *string
 	upstreamTimeout *string
 	timeout         *time.Duration
+	allowRewritten  *bool
 }
 
 func newClaudeCodeFlags(event string, out io.Writer) *claudeCodeFlags {
@@ -171,6 +172,7 @@ func newClaudeCodeFlags(event string, out io.Writer) *claudeCodeFlags {
 		compose:         fs.String("compose", "", "pre-tool-use-bash: absolute path of another Bash-rewriting hook to run first (hooks-install writes it directly after the event)"),
 		upstreamTimeout: fs.String("upstream-timeout", "", "pre-tool-use-bash with --compose: the budget of the composed hook, equal to the timeout it has when registered alone; a value that is not a positive duration means the default"),
 		timeout:         fs.Duration("timeout", hookCallTimeout, "bound on each call to the issuer"),
+		allowRewritten:  fs.Bool("allow-rewritten", false, "pre-tool-use-bash: a rewritten call also carries permissionDecision allow; only for sessions under the runtime's sandbox (default off)"),
 	}
 }
 
@@ -332,7 +334,8 @@ func serveClaudeCode(args []string, stdin io.Reader, stderr io.Writer) (hook.Res
 	h := &hook.ClaudeCode{
 		Store: hook.Store{Root: root},
 		Mode:  mode, Origin: *origin, RefreshBelow: *refresh,
-		Log: log, Capture: capture,
+		AllowRewritten: *f.allowRewritten && event == hook.EventPreToolUseBash,
+		Log:            log, Capture: capture,
 		HookPID: os.Getpid(),
 	}
 	// An issuer that cannot be named is an issuer that always refuses: the event
@@ -418,6 +421,7 @@ func runHooksInstall(args []string, stdout io.Writer) error {
 	origin := fs.String("origin", "", "origin for issue-session: scheduled, loop, trigger, agent or driven")
 	refresh := fs.Duration("refresh-below", defaultRefreshBelow, "refresh the session assertion below this remaining lifetime (0 disables)")
 	compose := fs.String("compose", "", "absolute path of another Bash-rewriting hook to compose on pre-tool-use-bash")
+	allowRewritten := fs.Bool("allow-rewritten", false, "register pre-tool-use-bash so a rewritten call carries permissionDecision allow, and add no export-prefix allow rule; only for sessions under the runtime's sandbox (default off)")
 	binary := fs.String("binary", "", "absolute path of the gatekeeper binary (default: this binary)")
 	timeoutSeconds := fs.Int("timeout", defaultHookTimeoutSeconds, "runtime-side timeout in seconds for each hook; with --compose it is the budget of the composed hook (the timeout it has registered alone), and the composed entry's own timeout is that plus allowance for gatekeeper's part")
 	remove := fs.Bool("remove", false, "unregister the hooks (the rollback); other settings are untouched")
@@ -455,7 +459,7 @@ func runHooksInstall(args []string, stdout io.Writer) error {
 		}
 		in = &hook.Install{
 			Binary: bin, Socket: sock, StateDir: state, Mode: mode, Origin: *origin,
-			RefreshBelow: *refresh, Compose: *compose, TimeoutSeconds: *timeoutSeconds,
+			RefreshBelow: *refresh, Compose: *compose, AllowRewritten: *allowRewritten, TimeoutSeconds: *timeoutSeconds,
 		}
 		if err := in.Validate(); err != nil {
 			return err

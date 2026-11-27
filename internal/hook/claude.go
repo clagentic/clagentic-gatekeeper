@@ -85,6 +85,11 @@ type ClaudeCode struct {
 	// Compose names an executable run first on pre-tool-use-bash; see
 	// composedPreToolUse. It is fixed at registration, never read from a payload.
 	Compose string
+	// AllowRewritten makes a rewritten Bash call carry permissionDecision allow
+	// next to updatedInput. It is a documented setting for sessions that run under
+	// the runtime's sandbox, fixed at registration and never read from a payload.
+	// Off (the default), the reply carries no decision, as it always has.
+	AllowRewritten bool
 	// UpstreamTimeout is the budget the composed hook gets: the timeout the
 	// registration gives it, so a slow upstream is cut off exactly where the
 	// runtime would have cut it off alone. Zero means DefaultUpstreamTimeout.
@@ -338,9 +343,10 @@ func (h *ClaudeCode) subagentStop(p Payload) (string, error) {
 	return "agent-removed", nil
 }
 
-// preToolUseBash decides the rewrite of one Bash call. The reply carries no
-// permission decision, ever: a rewrite is updatedInput alone and every other
-// outcome is empty output, so the runtime's own permission flow decides.
+// preToolUseBash decides the rewrite of one Bash call. A rewrite is updatedInput
+// alone, and every other outcome is empty output, so the runtime's own permission
+// flow decides. The one exception is the AllowRewritten setting, under which a
+// rewrite also carries permissionDecision allow.
 func (h *ClaudeCode) preToolUseBash(p Payload) (Result, string, error) {
 	if p.ToolName != "Bash" {
 		return Result{}, "not-bash", nil
@@ -405,10 +411,11 @@ func (h *ClaudeCode) prefix(p Payload, command string) (rewritten, decision stri
 // copied whole so members other than the command (timeout, description,
 // run_in_background) survive, and every other member of reply is kept.
 //
-// No permission decision is ever added: the harness checks the rewritten
+// A permission decision is added only when allow is set (the AllowRewritten
+// setting) and the reply carries none: otherwise the harness checks the rewritten
 // command part by part, and the leading export is covered by the one allow rule
 // hooks-install registers. A decision the upstream gave is kept as it was.
-func mergeRewrite(reply, specific, base map[string]json.RawMessage, command string) ([]byte, error) {
+func mergeRewrite(reply, specific, base map[string]json.RawMessage, command string, allow bool) ([]byte, error) {
 	updated := make(map[string]json.RawMessage, len(base)+1)
 	for k, v := range base {
 		updated[k] = v
@@ -428,6 +435,17 @@ func mergeRewrite(reply, specific, base map[string]json.RawMessage, command stri
 	}
 	if err := set(specific, "updatedInput", updated); err != nil {
 		return nil, err
+	}
+	if allow {
+		var given string
+		if raw, ok := specific["permissionDecision"]; ok {
+			_ = json.Unmarshal(raw, &given)
+		}
+		if given == "" {
+			if err := set(specific, "permissionDecision", "allow"); err != nil {
+				return nil, err
+			}
+		}
 	}
 	if _, ok := specific["hookEventName"]; !ok {
 		if err := set(specific, "hookEventName", "PreToolUse"); err != nil {

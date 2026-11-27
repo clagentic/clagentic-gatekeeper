@@ -135,7 +135,7 @@ func TestHostWithoutRuntimeSkipsRuntimeShapesAndPassesTheRest(t *testing.T) {
 			t.Errorf("%s: %+v", name, r)
 		}
 	}
-	if runtimeShapes != 11 || summary["fail"] != 0 || summary["skip"] != 11 || summary["pass"] < 50 {
+	if runtimeShapes != 16 || summary["fail"] != 0 || summary["skip"] != 16 || summary["pass"] < 50 {
 		t.Fatalf("runtime shapes %d, summary %v\n%s", runtimeShapes, summary, out.String())
 	}
 	if left := leftovers(t, parent); len(left) != 0 {

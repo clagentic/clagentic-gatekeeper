@@ -24,6 +24,9 @@ type Options struct {
 	// RequireRuntime turns a runtime shape that would skip into a failure, for a
 	// gate that must have the runtime evidence.
 	RequireRuntime bool
+	// NestedSandbox sets the runtime's weaker nested-sandbox mode in the sandboxed
+	// runtime shapes, for a host that is itself inside a container or sandbox.
+	NestedSandbox bool
 	// RuntimeAttempts bounds how often a runtime shape is retried when the model
 	// did not do what the prompt asked. Default 2.
 	RuntimeAttempts int

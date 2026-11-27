@@ -43,6 +43,7 @@ func Run(ctx context.Context, opts Options, out io.Writer) int {
 	all = append(all, env.callerShapes()...)
 	all = append(all, env.runtimeShapes()...)
 	all = append(all, env.runtimeMintShapes()...)
+	all = append(all, env.sandboxShapes()...)
 	for _, s := range all {
 		if ctx.Err() != nil {
 			rep.Add(Result{Shape: s.name, Status: Fail, Reason: "interrupted before it ran"})

@@ -43,6 +43,7 @@ func main() {
 	fs.Var(&runtimeEnv, "runtime-env", "KEY=VALUE added to the runtime's environment (repeatable)")
 	fs.BoolVar(&opts.NoRuntime, "no-runtime", false, "skip every runtime shape without looking for the CLI")
 	fs.BoolVar(&opts.RequireRuntime, "require-runtime", false, "fail, instead of skip, a runtime shape that cannot run")
+	fs.BoolVar(&opts.NestedSandbox, "nested-sandbox", false, "set the runtime's weaker nested-sandbox mode in the sandboxed runtime shapes, for a host that is itself inside a container or sandbox")
 	fs.IntVar(&opts.RuntimeAttempts, "runtime-attempts", 2, "attempts for a runtime shape whose model did not follow the prompt")
 	fs.DurationVar(&opts.RuntimeTimeout, "runtime-timeout", 4*time.Minute, "bound on one runtime invocation")
 	if err := fs.Parse(os.Args[1:]); err != nil {

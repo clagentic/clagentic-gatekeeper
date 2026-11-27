@@ -14,6 +14,10 @@ import (
 	"time"
 )
 
+// AllowRewrittenFlag is the pre-tool-use-bash flag, and the hooks-install flag,
+// that turn the allow-with-rewrite setting on.
+const AllowRewrittenFlag = "--allow-rewritten"
+
 // Install describes the registration of the Claude Code hooks.
 type Install struct {
 	// Binary is the absolute path of the gatekeeper binary the hooks run.
@@ -28,6 +32,10 @@ type Install struct {
 	RefreshBelow time.Duration
 	// Compose is passed to pre-tool-use-bash when set.
 	Compose string
+	// AllowRewritten is passed to pre-tool-use-bash when set: a rewritten call
+	// then carries permissionDecision allow, so no export-prefix allow rule is
+	// registered. Meant only for sessions that run under the runtime's sandbox.
+	AllowRewritten bool
 	// TimeoutSeconds is the runtime-side timeout of every hook; the hook itself
 	// gives up sooner. For the composed pre-tool-use-bash entry it is the budget
 	// the composed hook gets, the timeout it had when registered alone, and the
@@ -117,6 +125,9 @@ func (in Install) Command(event string) string {
 			parts = append(parts, "--refresh-below", in.RefreshBelow.String())
 		}
 	case EventPreToolUseBash:
+		if in.AllowRewritten {
+			parts = append(parts, AllowRewrittenFlag)
+		}
 	}
 	return strings.Join(parts, " ")
 }
@@ -259,6 +270,11 @@ func (in Install) Apply(root settings) (bool, error) {
 			changed = true
 		}
 		h[r.runtime] = groups
+	}
+	// The allow makes the export-prefix rule unnecessary; one already present is
+	// left as it is and --remove still deletes it.
+	if in.AllowRewritten {
+		return changed, nil
 	}
 	ruleAdded, err := addAllowRule(root)
 	if err != nil {

@@ -18,7 +18,91 @@ func (e *Env) hookShapes() []shape {
 		{"adapter-claude-code/event-sequence-payload-driven", e.shapeHookSequence},
 		{"adapter-claude-code/compose-synthetic-upstream", e.shapeHookCompose},
 		{"adapter-claude-code/read-only-commands-not-rewritten-mixed-still-delivered", e.shapeHookReadOnly},
+		{"adapter-claude-code/allow-rewritten-setting", e.shapeHookAllowRewritten},
 	}
+}
+
+// allowFlag is the setting that makes a rewrite carry permissionDecision allow.
+const allowFlag = "--allow-rewritten"
+
+// shapeHookAllowRewritten drives the setting through the real binary: a rewrite
+// carries allow, a call that is not rewritten carries nothing, and composed an
+// allowing upstream is kept, a silent one gets allow with the statement, and a
+// denying or asking one passes through byte for byte.
+func (e *Env) shapeHookAllowRewritten(ctx context.Context) error {
+	state := filepath.Join(e.Dir, "allow-state")
+	if err := e.hookEvent(ctx, false, state, "session-start", `{"hook_event_name":"SessionStart","session_id":"live-s1","source":"startup","agent_type":"`+defLead+`"}`); err != nil {
+		return err
+	}
+	on := func(rest ...string) []string { return append(e.hookArgs("pre-tool-use-bash", state, rest...), allowFlag) }
+
+	res, err := e.hook(ctx, false, bashPayloadJSON("", "date && find . -maxdepth 1"), on())
+	if err != nil {
+		return err
+	}
+	r, err := decodeRewrite(res.Stdout)
+	if err != nil || res.Code != 0 || r.Specific.Decision != "allow" {
+		return fmt.Errorf("a rewrite with the setting on: exit %d stdout %.200q err %v", res.Code, res.Stdout, err)
+	}
+	if _, rest, ok := splitDelivery(r.Specific.Updated.Command); !ok || rest != "date && find . -maxdepth 1" {
+		return fmt.Errorf("rewrite %.200q does not prefix exactly one statement", r.Specific.Updated.Command)
+	}
+	res, err = e.hook(ctx, false, bashPayloadJSON("", "ls -la"), on())
+	if err := silent("read-only command with the setting on", res, err); err != nil {
+		return err
+	}
+	res, err = e.hook(ctx, false, `{"hook_event_name":"PreToolUse","session_id":"live-s1","tool_name":"Read","tool_input":{"file_path":"x"}}`, on())
+	if err := silent("non-Bash tool with the setting on", res, err); err != nil {
+		return err
+	}
+
+	sh, err := lookShell()
+	if err != nil {
+		return err
+	}
+	upstream := func(name, reply string) (string, error) {
+		script := filepath.Join(e.Dir, name+".sh")
+		body := "#!" + sh + "\ncat >/dev/null\nprintf '%s' '" + reply + "'\n"
+		return script, os.WriteFile(script, []byte(body), 0o700)
+	}
+	payload := bashPayloadJSON("", "make build")
+	compose := func(script string) (procResult, error) {
+		return e.hook(ctx, false, payload, on("--compose", script, "--upstream-timeout", "5s"))
+	}
+	for _, c := range []struct{ name, reply, want string }{
+		{"allow-upstream", `{"hookSpecificOutput":{"permissionDecision":"allow","permissionDecisionReason":"theirs"}}`, "allow"},
+		{"silent-upstream", `{}`, "allow"},
+	} {
+		script, err := upstream("allowed-"+c.name, c.reply)
+		if err != nil {
+			return err
+		}
+		res, err := compose(script)
+		if err != nil {
+			return err
+		}
+		r, derr := decodeRewrite(res.Stdout)
+		if derr != nil || res.Code != 0 || r.Specific.Decision != c.want || !strings.HasPrefix(r.Specific.Updated.Command, deliveryPrefix) {
+			return fmt.Errorf("composed %s: exit %d stdout %.300q err %v", c.name, res.Code, res.Stdout, derr)
+		}
+	}
+	for _, c := range []struct{ name, reply string }{
+		{"deny-upstream", `{"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"synthetic"}}`},
+		{"ask-upstream", `{"hookSpecificOutput":{"permissionDecision":"ask","updatedInput":{"command":"x"}}}`},
+	} {
+		script, err := upstream("allowed-"+c.name, c.reply)
+		if err != nil {
+			return err
+		}
+		res, err := compose(script)
+		if err != nil {
+			return err
+		}
+		if res.Code != 0 || res.Stdout != c.reply {
+			return fmt.Errorf("composed %s was not passed through byte for byte: exit %d stdout %.200q", c.name, res.Code, res.Stdout)
+		}
+	}
+	return nil
 }
 
 // readOnlyCommands run only utilities of the closed read-only set: the hook must
