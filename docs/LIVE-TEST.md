@@ -177,6 +177,16 @@ it never passes unsandboxed.
 | `runtime-claude-code/sandbox-worktree` | The same for a worktree-isolated subagent. |
 | `runtime-claude-code/sandbox-native-deny-still-wins` | A command matched by a native `permissions.deny` rule is denied and does not run, though the hook allows its rewrite. |
 
+The sandboxed shapes rest their evidence on tool results, not on the model's
+reply or the rewrite a tool call carries. A delivery directory counts when a
+`printenv` result printed it (a subagent shape has the session print its own
+first, so the agent's must differ); the denied read counts only when a tool
+result shows `cat: ./creds/.env.dummy:` followed by an OS error (`Permission
+denied`, `No such file or directory` or `Operation not permitted`), and the
+outside write only when a result shows its file name with a sandbox error. A
+passing line carries the observed error text as its reason; a failing one carries
+a bounded excerpt of the relevant tool results, never the marker.
+
 The model is asked to run fixed commands and never to expand a shell variable
 itself (a runtime refuses a command whose variable it cannot check before it
 runs, which would test the runtime and not the hook). Each shape checks what

@@ -111,9 +111,12 @@ func finish(ctx context.Context, rep *Reporter) int {
 func execute(ctx context.Context, s shape, opts Options) Result {
 	err := s.run(ctx)
 	var skip skipError
+	var note passNote
 	switch {
 	case err == nil:
 		return Result{Shape: s.name, Status: Pass}
+	case errors.As(err, &note):
+		return Result{Shape: s.name, Status: Pass, Reason: note.note}
 	case ctx.Err() != nil:
 		return Result{Shape: s.name, Status: Fail, Reason: "interrupted"}
 	case errors.As(err, &skip):

@@ -10,8 +10,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
+
+// passNote is returned by a shape that passed and has evidence worth recording;
+// the harness reports it as the reason of the pass line.
+type passNote struct{ note string }
+
+func (p passNote) Error() string { return p.note }
 
 // Runtime shapes for a session under the runtime's sandbox, registered with the
 // allow-rewritten setting and with no export-prefix allow rule. They prove the
@@ -152,7 +159,9 @@ func (e *Env) sandboxPrompt(kind string, steps []string) string {
 	if kind == "main" {
 		return driverPreamble + "Run these commands one at a time, each exactly as written (they are separated by ' ;; ', which is not part of any command), even if one fails: " + list + ". Then reply with the word done."
 	}
-	sub := "Use the example-builder subagent with this prompt: Run these commands one at a time, each exactly as written (separated by ' ;; ', which is not part of any command), even if one fails, and reply with all their output: " + list + ". "
+	// The session prints its own directory first, so the subagent's is shown to
+	// differ from it.
+	sub := "Step 1: run this exact command: " + printenvCommand + ". Step 2: use the example-builder subagent with this prompt: Run these commands one at a time, each exactly as written (separated by ' ;; ', which is not part of any command), even if one fails, and reply with all their output: " + list + ". "
 	switch kind {
 	case "background":
 		sub += "Start it in the background (run_in_background true). Then run the command sleep 20, up to five times, until its result has arrived. "
@@ -183,8 +192,10 @@ func (e *Env) shapeSandbox(ctx context.Context, kind string) error {
 		if err != nil {
 			return err
 		}
+		texts := toolResults(run.stream)
+		seen := resultExcerpt(texts)
 		if len(run.denials) > 0 {
-			return fmt.Errorf("a permission prompt was raised under the setting: %.300s", strings.Join(run.denials, " | "))
+			return fmt.Errorf("a permission prompt was raised under the setting: %.300s; tool results: %s", strings.Join(run.denials, " | "), seen)
 		}
 		if strings.Contains(run.stream, credMarker) {
 			return errors.New("the dummy credential was read: the hook allow opened a path the sandbox denyRead closes")
@@ -192,33 +203,133 @@ func (e *Env) shapeSandbox(ctx context.Context, kind string) error {
 		if _, err := os.Stat(filepath.Join(outside, kind+"-marker")); err == nil {
 			return errors.New("a write outside the sandbox write roots succeeded")
 		}
-		if err := e.expectDirs(run, wantDirs); err != nil {
-			last = err
+		// The count rests on directories a printenv result printed, not on the
+		// rewrite prefix a tool call carries. The session printed its own first, so
+		// a subagent's directory must differ from it to count.
+		if err := e.expectDirs(&runtimeRun{dirs: e.printedDirs(texts)}, wantDirs); err != nil {
+			last = fmt.Errorf("%v; tool results: %s", err, seen)
 			var again retryable
 			if errors.As(err, &again) {
 				continue
 			}
-			return err
+			return last
 		}
 		// A worktree agent writes in its own checkout, so only the others leave
 		// the file in the work directory.
 		if kind != "worktree" {
 			if _, err := os.Stat(filepath.Join(setup.work, "made-"+kind)); err != nil {
-				last = retryable{fmt.Errorf("the in-directory write did not happen: %w", err)}
+				last = retryable{fmt.Errorf("the in-directory write did not happen: %v; tool results: %s", err, seen)}
 				continue
 			}
 		}
-		if !strings.Contains(run.stream, "Read-only file system") && !strings.Contains(run.stream, "Operation not permitted") {
-			last = retryable{errors.New("the outside write did not fail with a sandbox error in the tool result")}
+		writeErr := outsideWriteFailure(texts, kind+"-marker")
+		if writeErr == "" {
+			last = retryable{fmt.Errorf("the outside write did not fail with a sandbox error in a tool result; tool results: %s", seen)}
 			continue
 		}
-		if !strings.Contains(run.stream, "Permission denied") {
-			last = retryable{errors.New("the denied credential read did not fail with an OS error in the tool result")}
+		// The denied read must show the cat ran and failed; the marker being absent
+		// alone would pass for a model that never ran the read.
+		readErr := credReadFailure(texts)
+		if readErr == "" {
+			last = retryable{fmt.Errorf("no tool result shows the denied credential read failing with an OS error; tool results: %s", seen)}
 			continue
 		}
-		return nil
+		return passNote{"outside write failed with: " + writeErr + "; credential read failed with: " + readErr}
 	}
 	return last
+}
+
+var credReadError = regexp.MustCompile(`cat: \./creds/\.env\.dummy: (Permission denied|No such file or directory|Operation not permitted)`)
+
+// credReadFailure returns the OS error text of the failed credential read, or ""
+// when no tool result shows one.
+func credReadFailure(texts []string) string {
+	if m := credReadError.FindStringSubmatch(strings.Join(texts, "\n")); m != nil {
+		return m[1]
+	}
+	return ""
+}
+
+// outsideWriteFailure returns the OS error text of the failed write to the file
+// named name outside the sandbox write roots, or "" when none is shown.
+func outsideWriteFailure(texts []string, name string) string {
+	for _, t := range texts {
+		if !strings.Contains(t, name) {
+			continue
+		}
+		for _, phrase := range []string{"Read-only file system", "Operation not permitted", "Permission denied"} {
+			if strings.Contains(t, phrase) {
+				return phrase
+			}
+		}
+	}
+	return ""
+}
+
+// toolResults returns the text of every tool result in a stream-json record.
+func toolResults(stream string) []string {
+	var out []string
+	for _, line := range strings.Split(stream, "\n") {
+		var rec struct {
+			Message struct {
+				Content json.RawMessage `json:"content"`
+			} `json:"message"`
+		}
+		if json.Unmarshal([]byte(line), &rec) != nil || len(rec.Message.Content) == 0 {
+			continue
+		}
+		var blocks []struct {
+			Type    string          `json:"type"`
+			Content json.RawMessage `json:"content"`
+			Text    string          `json:"text"`
+		}
+		if json.Unmarshal(rec.Message.Content, &blocks) != nil {
+			continue
+		}
+		for _, b := range blocks {
+			if b.Type != "tool_result" {
+				continue
+			}
+			var s string
+			if json.Unmarshal(b.Content, &s) == nil {
+				out = append(out, s)
+				continue
+			}
+			var parts []struct {
+				Text string `json:"text"`
+			}
+			if json.Unmarshal(b.Content, &parts) == nil {
+				for _, p := range parts {
+					out = append(out, p.Text)
+				}
+			}
+		}
+	}
+	return out
+}
+
+// printedDirs lists the distinct delivery directories that tool results printed.
+func (e *Env) printedDirs(texts []string) []string {
+	return e.deliveredDirs(strings.Join(texts, "\n"))
+}
+
+// resultExcerpt is a bounded excerpt of the tool results that bear on a failure,
+// so a failing run can be diagnosed after its directory is gone. The credential
+// marker is never included.
+func resultExcerpt(texts []string) string {
+	const limit = 600
+	var keep []string
+	for _, t := range texts {
+		if strings.Contains(t, "cat:") || strings.Contains(t, "touch:") || strings.Contains(t, "denied") ||
+			strings.Contains(t, "Read-only") || strings.Contains(t, "not permitted") || strings.Contains(t, "No such file") {
+			keep = append(keep, strings.TrimSpace(strings.ReplaceAll(t, credMarker, "[marker]")))
+		}
+	}
+	s := strings.Join(keep, " | ")
+	if len(s) > limit {
+		s = strings.ToValidUTF8(s[:limit], "") + "..."
+	}
+	return s
 }
 
 // shapeSandboxDeny proves a native deny rule still holds over the hook's allow.

@@ -343,6 +343,28 @@ func TestDeliveredDirsAndDenials(t *testing.T) {
 	if got := denialsOf(final); len(got) != 1 || got[0] != "Bash: touch m" {
 		t.Fatalf("%v", got)
 	}
+	// Evidence for the sandbox shapes comes from tool results only: a directory
+	// printed, a failed cat, a failed write; the rewrite prefix in a tool call
+	// counts for nothing, and an excerpt is bounded and never carries the marker.
+	rec := func(content string) string {
+		return `{"type":"user","message":{"content":[{"type":"tool_result","content":` + content + `}]}}`
+	}
+	sandboxStream := strings.Join([]string{
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","input":{"command":"export CLAGENTIC_IDENTITY_DIR=/x/spawn/rewritten-only; ls"}}]}}`,
+		rec(`"/x/spawn/printed-1\n"`),
+		rec(`[{"type":"text","text":"cat: ./creds/.env.dummy: No such file or directory ` + credMarker + `"}]`),
+		rec(`"touch: cannot touch '/o/main-marker': Read-only file system"`),
+	}, "\n")
+	texts := toolResults(sandboxStream)
+	if got := e.printedDirs(texts); len(got) != 1 || got[0] != "/x/spawn/printed-1" {
+		t.Fatalf("printed dirs %v", got)
+	}
+	if credReadFailure(texts) != "No such file or directory" || outsideWriteFailure(texts, "main-marker") != "Read-only file system" || credReadFailure(nil) != "" {
+		t.Fatalf("failure evidence %q %q", credReadFailure(texts), outsideWriteFailure(texts, "main-marker"))
+	}
+	if ex := resultExcerpt(append(texts, strings.Repeat("cat: x ", 200))); strings.Contains(ex, credMarker) || len(ex) > 700 {
+		t.Fatalf("excerpt %d bytes: %.100s", len(ex), ex)
+	}
 	if err := e.expectDirs(&runtimeRun{dirs: []string{"/x/spawn/a"}}, 2); err == nil {
 		t.Fatal("one directory satisfied a want of two")
 	} else if _, ok := err.(retryable); !ok {
