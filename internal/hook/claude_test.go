@@ -97,10 +97,22 @@ func TestSubagentGetsAChildOfTheSessionAndItsOwnDirectory(t *testing.T) {
 	}
 }
 
-// The reply for a rewritten call carries updatedInput and no permission decision.
+// The reply for a rewritten call carries updatedInput and no permission decision,
+// unless the allow-rewritten setting is on, which adds allow and nothing else.
 func TestRewriteAddsExactlyOneExportStatementAndKeepsTheCommandByteForByte(t *testing.T) {
+	for _, allow := range []bool{false, true} {
+		testRewriteExactlyOneStatement(t, allow)
+	}
+}
+
+func testRewriteExactlyOneStatement(t *testing.T, allow bool) {
 	h := newHarness(t, ModeEnforce)
+	h.hook.AllowRewritten = allow
 	startSession(t, h, "")
+	wantDecision := ""
+	if allow {
+		wantDecision = "allow"
+	}
 	commands := []string{
 		"echo a; make b",
 		"make build && make test",
@@ -125,8 +137,21 @@ func TestRewriteAddsExactlyOneExportStatementAndKeepsTheCommandByteForByte(t *te
 			t.Errorf("more than one delivery statement: %q", command)
 		}
 		hso := out["hookSpecificOutput"].(map[string]any)
-		if _, has := hso["permissionDecision"]; has || hso["hookEventName"] != "PreToolUse" {
-			t.Errorf("reply %+v", hso)
+		// The whole reply, byte for byte: with the setting off it is the reply of
+		// the build at a79ab19c, and with it on the same bytes plus the one member.
+		decisionMember := ""
+		if allow {
+			decisionMember = `"permissionDecision":"allow",`
+		}
+		quoted, _ := json.Marshal(command)
+		wantBytes := `{"hookSpecificOutput":{"hookEventName":"PreToolUse",` + decisionMember +
+			`"updatedInput":{"command":` + string(quoted) + `,"description":"d","run_in_background":false,"timeout":60000}}}`
+		if string(res.Stdout) != wantBytes {
+			t.Errorf("allow=%v reply bytes\n got %s\nwant %s", allow, res.Stdout, wantBytes)
+		}
+		got, has := hso["permissionDecision"]
+		if has != allow || (allow && got != wantDecision) || hso["hookEventName"] != "PreToolUse" {
+			t.Errorf("allow=%v reply %+v", allow, hso)
 		}
 		updated := hso["updatedInput"].(map[string]any)
 		if updated["timeout"] != float64(60000) || updated["run_in_background"] != false || updated["description"] != "d" {
@@ -136,9 +161,17 @@ func TestRewriteAddsExactlyOneExportStatementAndKeepsTheCommandByteForByte(t *te
 }
 
 // Every outcome that does not rewrite the call returns nothing at all, so the
-// runtime's own permission flow is untouched.
+// runtime's own permission flow is untouched, with the allow-rewritten setting
+// on or off.
 func TestUnrewrittenCallsReturnNoPermissionDecision(t *testing.T) {
+	for _, allow := range []bool{false, true} {
+		testUnrewrittenCalls(t, allow)
+	}
+}
+
+func testUnrewrittenCalls(t *testing.T, allow bool) {
 	h := newHarness(t, ModeEnforce)
+	h.hook.AllowRewritten = allow
 	cases := map[string]Result{}
 	// No session yet.
 	cases["no session"] = h.fire(EventPreToolUseBash, bashPayload("", "", programCommand))
@@ -152,6 +185,7 @@ func TestUnrewrittenCallsReturnNoPermissionDecision(t *testing.T) {
 	cases["command is not a string"] = h.fire(EventPreToolUseBash, map[string]any{
 		"session_id": testSession, "tool_name": "Bash", "tool_input": map[string]any{"command": 7},
 	})
+	cases["read-only command"] = h.fire(EventPreToolUseBash, bashPayload("", "", "ls -la"))
 	cases["already delivered"] = h.fire(EventPreToolUseBash, bashPayload("", "", "export "+EnvDir+"=/x; ls"))
 	cases["agent without type"] = h.fire(EventPreToolUseBash, map[string]any{
 		"session_id": testSession, "tool_name": "Bash", "agent_id": "a1", "tool_input": map[string]any{"command": programCommand},
@@ -161,7 +195,7 @@ func TestUnrewrittenCallsReturnNoPermissionDecision(t *testing.T) {
 	})
 	for name, res := range cases {
 		if len(res.Stdout) != 0 || res.ExitCode != 0 {
-			t.Errorf("%s: stdout %q exit %d", name, res.Stdout, res.ExitCode)
+			t.Errorf("allow=%v %s: stdout %q exit %d", allow, name, res.Stdout, res.ExitCode)
 		}
 	}
 	if res := h.hook.Handle(EventPreToolUseBash, strings.NewReader("not json")); len(res.Stdout) != 0 || res.ExitCode != 0 {
@@ -169,6 +203,12 @@ func TestUnrewrittenCallsReturnNoPermissionDecision(t *testing.T) {
 	}
 	if res := h.hook.Handle("no-such-event", strings.NewReader("{}")); len(res.Stdout) != 0 || res.ExitCode != 0 {
 		t.Errorf("an unknown event: %+v", res)
+	}
+	warn := newHarness(t, ModeWarn)
+	warn.hook.AllowRewritten = allow
+	startSession(t, warn, "")
+	if res := warn.fire(EventPreToolUseBash, bashPayload("", "", programCommand)); len(res.Stdout) != 0 || res.ExitCode != 0 {
+		t.Errorf("allow=%v warn mode: %+v", allow, res)
 	}
 }
 

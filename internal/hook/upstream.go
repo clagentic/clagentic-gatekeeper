@@ -301,7 +301,8 @@ func (h *ClaudeCode) HandleComposed(raw []byte, up Result, upErr error) Result {
 //   - upstream allows or makes no decision and its command is known (its
 //     updatedInput.command, else the payload's): the statement is added in front
 //     of that command. Its reply is kept, its decision included; where it made
-//     no decision the reply carries none either.
+//     no decision the reply carries none either, unless the AllowRewritten
+//     setting is on, which then adds allow.
 //
 // Warn mode, an issuer failure, an already-delivered command, a payload that is
 // oversized or unparseable, a tool that is not Bash: byte for byte the upstream's
@@ -351,7 +352,7 @@ func (h *ClaudeCode) composedPreToolUse(p Payload, up Result) (Result, string, e
 	if rewritten == "" {
 		return pass, decision, err
 	}
-	out, err := mergeRewrite(reply, specific, base, rewritten)
+	out, err := mergeRewrite(reply, specific, base, rewritten, h.AllowRewritten)
 	if err != nil {
 		return pass, "encode-failed", err
 	}
@@ -384,7 +385,7 @@ func (h *ClaudeCode) standalone(p Payload) (Result, string, error) {
 	if rewritten == "" {
 		return Result{}, decision, err
 	}
-	out, err := mergeRewrite(map[string]json.RawMessage{}, map[string]json.RawMessage{}, p.ToolInput, rewritten)
+	out, err := mergeRewrite(map[string]json.RawMessage{}, map[string]json.RawMessage{}, p.ToolInput, rewritten, h.AllowRewritten)
 	if err != nil {
 		return Result{}, "encode-failed", err
 	}

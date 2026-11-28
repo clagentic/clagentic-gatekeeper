@@ -22,6 +22,8 @@ func TestHandWrittenRegistrationKeepsTheUpstreamVerdictInAnyFlagOrder(t *testing
 		"budget before the path":   {"--socket", "/x", "--upstream-timeout", "5s", "--bogus", "--compose", deny},
 		"state dir then unknown":   {"--state-dir", "/nonexistent-dir", "--nope", "--compose", deny, "--mode", "enforce"},
 		"compose before bad value": {"--socket", "/x", "--compose", deny, "--timeout", "forever"},
+		"allow flag before":        {"--allow-rewritten", "--compose", deny},
+		"allow flag after":         {"--compose", deny, "--allow-rewritten"},
 	}
 	for name, args := range cases {
 		stdout, stderr, code := runComposed(t, bashCall, args...)

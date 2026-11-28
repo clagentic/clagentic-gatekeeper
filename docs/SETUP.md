@@ -660,7 +660,12 @@ what it finds. Nothing a client sends can change who the kernel says it is.
 
 Every command that names the issuer socket resolves it in one order: the
 `--socket` flag, then `identity.socket_path` from `--config`, then
-`/run/clagentic-gatekeeper/identity.sock`. The commands a hook or a registration
+`/run/clagentic-gatekeeper/identity.sock`. `hooks-install` takes
+an optional `--allow-rewritten` setting (off by default): a rewritten Bash call
+then carries `permissionDecision: allow` and no export-prefix allow rule is
+added. It is meant only for sessions that run under the runtime's sandbox, where
+the sandbox and the deny rules are the bound; see `docs/RUNTIME-HOOKS.md`
+("Allow with the rewrite"). The commands a hook or a registration
 runs (`hook`, `hooks-install`) have no built-in default: they need `--socket` or
 a `--config` that sets `identity.socket_path`. A socket path from any of these
 must be absolute and at most 107 bytes (the unix socket path limit); a relative

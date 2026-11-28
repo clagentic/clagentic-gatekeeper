@@ -195,10 +195,12 @@ holds on the chained path (`--compose`) too.
 
 ### No new permission prompts
 
-The hook never returns a `permissionDecision`. A rewritten call is
+By default the hook never returns a `permissionDecision`. A rewritten call is
 `updatedInput` alone; every other event, and every Bash call that is not
 rewritten (no session, a non-Bash tool, expired assertion, warn mode), exits 0
-with empty output. The runtime's own permission flow decides every call.
+with empty output. The runtime's own permission flow decides every call. The one
+exception is the opt-in setting described under "Allow with the rewrite
+(sandboxed sessions only)" below.
 
 Delivery relies on **one permissions allow rule**:
 
@@ -215,6 +217,44 @@ duplicates it and never edits another rule; `--remove` deletes the hooks and
 that rule and nothing else. **A registrar that does not use `hooks-install` must
 add the rule itself**; without it a rewritten call prompts. The prompt and
 no-prompt behaviour is proven in the live run, not by the unit tests.
+
+**The rule does not make the prefix transparent in a sandboxed session.** Observed
+on Claude Code 2.1.322 with the runtime's sandbox on: a rewritten command still
+prompts with the rule present. The runtime checks the command part by part, and
+its sandbox auto-allow does not apply to the compound the prefix creates. A
+deployment that runs sessions under the sandbox uses the setting below instead.
+
+### Allow with the rewrite (sandboxed sessions only)
+
+`--allow-rewritten` is a setting, **off by default**. With it on, a rewritten
+Bash call carries `permissionDecision: "allow"` next to `updatedInput`, so the
+rewrite raises no prompt because of how the identity was delivered, and no
+export-prefix allow rule is needed.
+
+- Where it applies: only a call this hook rewrites in enforce mode. Every
+  no-rewrite path (warn mode, a read-only command, an already-delivered command,
+  no session, an expired or unusable assertion, a non-Bash tool, any error or
+  missed deadline) emits exactly what it emits with the setting off.
+- Composed (`--compose`): an upstream allow is kept as it was; an upstream that
+  gave no decision gets `allow` together with the statement; an upstream deny,
+  ask, defer or stop, a non-zero exit and every fallback pass through byte for
+  byte. Gatekeeper never turns a deny or ask into an allow.
+- Turn it on: `hooks-install ... --allow-rewritten` (the flag is written into the
+  `pre-tool-use-bash` command; a registrar that does not use `hooks-install`
+  adds `--allow-rewritten` to that command itself and needs no export-prefix
+  rule). Turn it off: re-run `hooks-install` without the flag (the entry is
+  rewritten in place and the export-prefix rule is added again) or run
+  `--remove`.
+- Meant only for sessions that run under the runtime's sandbox. A hook allow
+  skips the runtime's own permission prompt and also its built-in path check for
+  reads. Outside a sandbox that removes the only bound. Inside one, the bound is
+  the sandbox: writes are limited to the sandbox write roots, and reads of
+  sensitive paths must be closed by the sandbox filesystem `denyRead` setting
+  and by `Read` deny rules (a `denyRead` binds Bash reads; the `Read` tool needs
+  its own deny rule). Native `permissions.deny` rules still win over the hook
+  allow. The hook does not detect whether a sandbox is on and refuses nothing;
+  turning the setting on is the builder's decision for the sessions it is
+  registered in.
 
 ### Read-only commands are not rewritten
 
@@ -321,7 +361,8 @@ that hook produced.
   byte;
 - it allows or makes no decision: the statement goes in front of its command (or
   the payload's), and the rest of its reply, its permission decision included, is
-  kept; no decision is added where it gave none.
+  kept; no decision is added where it gave none, unless `--allow-rewritten` is
+  on, which adds `allow` there.
 
 In warn mode the composed hook's reply is returned unchanged.
 
@@ -363,7 +404,7 @@ code is still the upstream's). Details:
 ```
 gatekeeper hooks-install --runtime claude-code --settings <path> --socket <path> \
     [--state-dir <dir>] [--mode warn|enforce] [--origin <o>] [--refresh-below 30m] \
-    [--compose <path>] [--binary <path>] [--dry-run]
+    [--compose <path>] [--allow-rewritten] [--binary <path>] [--dry-run]
 gatekeeper hooks-install --runtime claude-code --settings <path> --remove
 ```
 
@@ -376,7 +417,9 @@ never edited. The settings file is parsed and rewritten as JSON, so object keys
 come out sorted and formatting is normalized on the first write.
 
 It also adds the one allow rule `Bash(export CLAGENTIC_IDENTITY_DIR=*)` to
-`permissions.allow` (see "No new permission prompts").
+`permissions.allow` (see "No new permission prompts"), except with
+`--allow-rewritten`, which adds no rule and leaves one already present as it is
+(see "Allow with the rewrite").
 
 `--remove` is the rollback: it deletes exactly the adapter's entries, the groups
 that held only them, and that one allow rule (an allow list or permissions

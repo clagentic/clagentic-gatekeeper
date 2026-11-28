@@ -135,7 +135,7 @@ func TestHostWithoutRuntimeSkipsRuntimeShapesAndPassesTheRest(t *testing.T) {
 			t.Errorf("%s: %+v", name, r)
 		}
 	}
-	if runtimeShapes != 11 || summary["fail"] != 0 || summary["skip"] != 11 || summary["pass"] < 50 {
+	if runtimeShapes != 16 || summary["fail"] != 0 || summary["skip"] != 16 || summary["pass"] < 50 {
 		t.Fatalf("runtime shapes %d, summary %v\n%s", runtimeShapes, summary, out.String())
 	}
 	if left := leftovers(t, parent); len(left) != 0 {
@@ -280,6 +280,59 @@ func TestWrapperReturnsWrappedExitStatus(t *testing.T) {
 	}
 }
 
+// --shape keeps only shapes with a matching name prefix, reports a prefix that
+// matches nothing, and each sandbox shape is selectable alone by its own name.
+func TestShapeSelection(t *testing.T) {
+	e := &Env{}
+	all := append(e.runtimeShapes(), e.sandboxShapes()...)
+	for _, c := range []struct {
+		prefixes  []string
+		want      int
+		unmatched int
+	}{
+		{nil, len(all), 0},
+		{[]string{"runtime-claude-code/sandbox-main"}, 1, 0},
+		{[]string{"runtime-claude-code/sandbox-foreground"}, 1, 0},
+		{[]string{"runtime-claude-code/sandbox-background"}, 1, 0},
+		{[]string{"runtime-claude-code/sandbox-worktree"}, 1, 0},
+		{[]string{"runtime-claude-code/sandbox-native-deny-still-wins"}, 1, 0},
+		{[]string{"runtime-claude-code/sandbox-"}, 5, 0},
+		{[]string{"runtime-claude-code/sandbox-main", "runtime-claude-code/sandbox-worktree"}, 2, 0},
+		{[]string{"runtime-claude-code/sandbx-main"}, 0, 1},
+		{[]string{"runtime-claude-code/sandbox-main", "nope"}, 1, 1},
+	} {
+		kept, unmatched := selectShapes(all, c.prefixes)
+		if len(kept) != c.want || len(unmatched) != c.unmatched {
+			t.Errorf("%v: kept %d unmatched %v, want %d and %d", c.prefixes, len(kept), unmatched, c.want, c.unmatched)
+		}
+	}
+
+	// Through the harness: a typo fails with a reason and runs nothing; a real
+	// prefix runs only its shape, and the summary counts only that.
+	bin := gatekeeperBinary(t)
+	for _, c := range []struct {
+		prefix   string
+		wantCode int
+		wantRan  int
+	}{
+		{"issuer/session-direct-cl", ExitOK, 1},
+		{"issuer/no-such-shape", ExitFailed, 0},
+	} {
+		var out bytes.Buffer
+		code := Run(context.Background(), Options{Binary: bin, TempParent: shortParent(t), Shapes: []string{c.prefix}}, &out)
+		results, summary := parseReport(t, out.String())
+		ran := 0
+		for name := range results {
+			if strings.HasPrefix(name, "issuer/") {
+				ran++
+			}
+		}
+		if code != c.wantCode || ran != c.wantRan || (c.wantCode == ExitFailed && results["shape-filter"].Reason == "") {
+			t.Errorf("%s: exit %d ran %d summary %v\n%s", c.prefix, code, ran, summary, out.String())
+		}
+	}
+}
+
 func TestDeliveredDirsAndDenials(t *testing.T) {
 	e := &Env{Spawn: "/x/spawn"}
 	stream := `{"a":"/x/spawn/abc-1 and /x/spawn/def_2"} {"b":"/x/spawn/abc-1"} /elsewhere/spawn/zzz`
@@ -289,6 +342,48 @@ func TestDeliveredDirsAndDenials(t *testing.T) {
 	final := map[string]any{"permission_denials": []any{map[string]any{"tool_name": "Bash", "tool_input": map[string]any{"command": "touch m"}}}}
 	if got := denialsOf(final); len(got) != 1 || got[0] != "Bash: touch m" {
 		t.Fatalf("%v", got)
+	}
+	// Evidence for the sandbox shapes comes from tool results only: a directory
+	// printed, a failed cat, a failed write; the rewrite prefix in a tool call
+	// counts for nothing, and an excerpt is bounded and never carries the marker.
+	rec := func(content string) string {
+		return `{"type":"user","message":{"content":[{"type":"tool_result","content":` + content + `}]}}`
+	}
+	sandboxStream := strings.Join([]string{
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","input":{"command":"export CLAGENTIC_IDENTITY_DIR=/x/spawn/rewritten-only; ls"}}]}}`,
+		rec(`"/x/spawn/printed-1\n"`),
+		rec(`[{"type":"text","text":"` + controlMarker + `"}]`),
+		rec(`[{"type":"text","text":"cat: /w/creds/.env.dummy: No such file or directory ` + credMarker + `"}]`),
+		rec(`"touch: cannot touch '/o/main-marker': Read-only file system"`),
+	}, "\n")
+	texts := toolResults(sandboxStream)
+	if got := e.printedDirs(texts); len(got) != 1 || got[0] != "/x/spawn/printed-1" {
+		t.Fatalf("printed dirs %v", got)
+	}
+	if outsideWriteFailure(texts, "main-marker") != "Read-only file system" {
+		t.Fatalf("outside write evidence %q", outsideWriteFailure(texts, "main-marker"))
+	}
+	// A denied read counts only with the control read shown: a stream with the
+	// cat error and no control marker, or a different path, must fail.
+	for name, c := range map[string]struct {
+		texts   []string
+		want    string
+		wantErr bool
+	}{
+		"control and denied read":      {texts, "No such file or directory", false},
+		"control missing":              {[]string{"cat: /w/creds/.env.dummy: No such file or directory"}, "", true},
+		"control shown, no cat error":  {[]string{controlMarker}, "", true},
+		"control shown, other path":    {[]string{controlMarker, "cat: /elsewhere/.env.dummy: Permission denied"}, "", true},
+		"control and permission error": {[]string{controlMarker, "cat: /w/creds/.env.dummy: Permission denied"}, "Permission denied", false},
+		"no results":                   {nil, "", true},
+	} {
+		got, err := deniedReadEvidence(c.texts, "/w/creds/.env.dummy")
+		if (err != nil) != c.wantErr || got != c.want {
+			t.Errorf("%s: %q, %v", name, got, err)
+		}
+	}
+	if ex := resultExcerpt(append(texts, strings.Repeat("cat: x ", 200))); strings.Contains(ex, credMarker) || len(ex) > 700 {
+		t.Fatalf("excerpt %d bytes: %.100s", len(ex), ex)
 	}
 	if err := e.expectDirs(&runtimeRun{dirs: []string{"/x/spawn/a"}}, 2); err == nil {
 		t.Fatal("one directory satisfied a want of two")

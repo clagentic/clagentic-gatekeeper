@@ -72,6 +72,60 @@ func TestInstallCreatesPermissionsWhenAbsentAndDoesNotDuplicateAnExistingRule(t 
 	}
 }
 
+// The install tests are single flows, not tables, so the allow-rewritten setting
+// has its own flow here: the flag reaches only the pre-tool-use-bash command, no
+// export rule is added with it, an existing rule is left alone, turning it off
+// restores the entry and the rule in place, and --remove still deletes the rule.
+func TestInstallWithAllowRewrittenAddsNoRuleAndRoundTrips(t *testing.T) {
+	in := testInstall(t)
+	on := in
+	on.AllowRewritten = true
+	for _, ev := range Events {
+		if got := strings.Contains(on.Command(ev), AllowRewrittenFlag); got != (ev == EventPreToolUseBash) {
+			t.Errorf("%s: flag present=%v", ev, got)
+		}
+		if strings.Contains(in.Command(ev), AllowRewrittenFlag) {
+			t.Errorf("%s: flag present by default", ev)
+		}
+	}
+	if !strings.HasSuffix(on.Command(EventPreToolUseBash), " "+AllowRewrittenFlag) {
+		t.Fatalf("command %q", on.Command(EventPreToolUseBash))
+	}
+
+	path := writeSettings(t, foreignSettings)
+	if _, _, err := ApplySettingsFile(path, &on, false, false); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(path)
+	if countRule(allowList(t, raw)) != 0 || strings.Count(string(raw), AllowRewrittenFlag) != 1 {
+		t.Fatalf("on-run settings:\n%s", raw)
+	}
+	if changed, _, err := ApplySettingsFile(path, &on, false, false); err != nil || changed {
+		t.Fatalf("second identical run: changed=%v err=%v", changed, err)
+	}
+	if _, _, err := ApplySettingsFile(path, &in, false, false); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ = os.ReadFile(path)
+	if countRule(allowList(t, raw)) != 1 || strings.Contains(string(raw), AllowRewrittenFlag) {
+		t.Fatalf("off-run settings:\n%s", raw)
+	}
+	if _, _, err := ApplySettingsFile(path, &on, false, false); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ = os.ReadFile(path)
+	if countRule(allowList(t, raw)) != 1 {
+		t.Fatalf("the on-run removed an existing rule:\n%s", raw)
+	}
+	if _, _, err := ApplySettingsFile(path, nil, true, false); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ = os.ReadFile(path)
+	if strings.Contains(string(raw), AllowRule) || strings.Contains(string(raw), "claude-code") {
+		t.Fatalf("after --remove:\n%s", raw)
+	}
+}
+
 func TestInstallRefusesMalformedPermissions(t *testing.T) {
 	in := testInstall(t)
 	for name, body := range map[string]string{

@@ -43,6 +43,14 @@ func Run(ctx context.Context, opts Options, out io.Writer) int {
 	all = append(all, env.callerShapes()...)
 	all = append(all, env.runtimeShapes()...)
 	all = append(all, env.runtimeMintShapes()...)
+	all = append(all, env.sandboxShapes()...)
+	all, unmatched := selectShapes(all, opts.Shapes)
+	for _, p := range unmatched {
+		rep.Add(Result{Shape: "shape-filter", Status: Fail, Reason: fmt.Sprintf("--shape %q matches no shape", p)})
+	}
+	if len(unmatched) > 0 {
+		all = nil
+	}
 	for _, s := range all {
 		if ctx.Err() != nil {
 			rep.Add(Result{Shape: s.name, Status: Fail, Reason: "interrupted before it ran"})
@@ -56,6 +64,36 @@ func Run(ctx context.Context, opts Options, out io.Writer) int {
 		rep.Add(Result{Shape: "teardown", Status: Pass})
 	}
 	return finish(ctx, rep)
+}
+
+// selectShapes keeps the shapes whose name starts with one of prefixes, in their
+// original order, and returns the prefixes that matched none. With no prefixes
+// every shape is kept.
+func selectShapes(all []shape, prefixes []string) (kept []shape, unmatched []string) {
+	if len(prefixes) == 0 {
+		return all, nil
+	}
+	for _, p := range prefixes {
+		hit := false
+		for _, s := range all {
+			if strings.HasPrefix(s.name, p) {
+				hit = true
+				break
+			}
+		}
+		if !hit {
+			unmatched = append(unmatched, p)
+		}
+	}
+	for _, s := range all {
+		for _, p := range prefixes {
+			if strings.HasPrefix(s.name, p) {
+				kept = append(kept, s)
+				break
+			}
+		}
+	}
+	return kept, unmatched
 }
 
 func finish(ctx context.Context, rep *Reporter) int {
@@ -73,9 +111,12 @@ func finish(ctx context.Context, rep *Reporter) int {
 func execute(ctx context.Context, s shape, opts Options) Result {
 	err := s.run(ctx)
 	var skip skipError
+	var note passNote
 	switch {
 	case err == nil:
 		return Result{Shape: s.name, Status: Pass}
+	case errors.As(err, &note):
+		return Result{Shape: s.name, Status: Pass, Reason: note.note}
 	case ctx.Err() != nil:
 		return Result{Shape: s.name, Status: Fail, Reason: "interrupted"}
 	case errors.As(err, &skip):
